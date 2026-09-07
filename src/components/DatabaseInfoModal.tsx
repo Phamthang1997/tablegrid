@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { dbHelper, type DatabaseStats, type AllDatabasesStats, type AllDatabasesSizeItem } from '../utils/dbHelper';
-import { RefreshCw, HardDrive, Hash, Table, Search, ArrowUpDown, ExternalLink, ShieldCheck, Database, Server, ScanSearch, Lock, Layers, Eye, Braces, Cog, ChevronRight, ChevronDown } from 'lucide-react';
+import { RefreshCw, HardDrive, Hash, Table, Search, ExternalLink, ShieldCheck, Database, Server, ScanSearch, Lock, Layers, Eye, Braces, Cog, ChevronRight, ChevronDown, Columns3 } from 'lucide-react';
 import { Modal, ModalFooter } from './Modal';
 
 type InfoTab = 'current' | 'all';
 /** The object group being viewed in the "Current database" tab. */
-type ObjKind = 'table' | 'view' | 'function' | 'procedure';
+type ObjKind = 'all' | 'table' | 'view' | 'function' | 'procedure';
 
 /**
  * Caches the "all databases" tab per connection, so reopening the modal shows numbers at
@@ -118,6 +118,7 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
   const [expandedObj, setExpandedObj] = useState<string | null>(null);
   const [objDefs, setObjDefs] = useState<Record<string, string>>({});
   const [loadingDef, setLoadingDef] = useState<string | null>(null);
+  const [selectedTableName, setSelectedTableName] = useState<string | null>(null);
 
   // Tab "all Database"
   const [allStats, setAllStats] = useState<AllDatabasesStats | null>(null);
@@ -150,7 +151,7 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
   };
 
   // The SQL definition of a view, function or procedure: loaded on first expansion and then kept.
-  const toggleObjectDef = async (name: string, kind: Exclude<ObjKind, 'table'>) => {
+  const toggleObjectDef = async (name: string, kind: 'view' | 'function' | 'procedure') => {
     const key = `${kind}:${name}`;
     if (expandedObj === key) {
       setExpandedObj(null);
@@ -296,12 +297,46 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  const filteredTables = useMemo(() => {
+  const allGridItems = useMemo(() => {
     if (!stats?.tables) return [];
-    // Not named `t` — that is the translation function.
-    let list = stats.tables.filter((tbl) =>
-      tbl.table_name.toLowerCase().includes(deferredSearch.toLowerCase().trim())
-    );
+    const items = [...stats.tables];
+    const existingNames = new Set(items.map((i) => i.table_name.toLowerCase()));
+
+    // Include views from objects.views if any weren't returned by stats.tables
+    if (objects?.views) {
+      for (const vName of objects.views) {
+        if (!existingNames.has(vName.toLowerCase())) {
+          items.push({
+            table_name: vName,
+            schema: stats.db_name,
+            kind: 'VIEW',
+            charset: null,
+            rows: 0,
+            is_exact: true,
+            data_size_bytes: null,
+            index_size_bytes: null,
+            total_size_bytes: null,
+            engine: '',
+            collation: null,
+            comment: 'VIEW',
+          });
+        }
+      }
+    }
+    return items;
+  }, [stats, objects]);
+
+  const filteredTables = useMemo(() => {
+    let list = allGridItems;
+    if (objKind === 'table') {
+      list = list.filter((i) => !i.kind || i.kind === 'TABLE');
+    } else if (objKind === 'view') {
+      list = list.filter((i) => i.kind === 'VIEW');
+    }
+    const q = deferredSearch.toLowerCase().trim();
+    if (q) {
+      list = list.filter((tbl) => tbl.table_name.toLowerCase().includes(q));
+    }
 
     return [...list].sort((a, b) => {
       if (sortBy === 'size_desc') {
@@ -316,13 +351,12 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
       }
       return a.table_name.localeCompare(b.table_name);
     });
-  }, [stats, deferredSearch, sortBy, exactCounts]);
+  }, [allGridItems, objKind, deferredSearch, sortBy, exactCounts]);
 
-  // The views/functions/procedures of the selected group (sharing the table search box).
+  // The functions/procedures of the selected group (sharing the table search box).
   const currentObjects = useMemo(() => {
-    if (!objects || objKind === 'table') return [];
-    const src =
-      objKind === 'view' ? objects.views : objKind === 'function' ? objects.functions : objects.procedures;
+    if (!objects || objKind === 'table' || objKind === 'view' || objKind === 'all') return [];
+    const src = objKind === 'function' ? objects.functions : objects.procedures;
     const q = deferredSearch.toLowerCase().trim();
     return [...src].filter((n) => n.toLowerCase().includes(q)).sort((a, b) => a.localeCompare(b));
   }, [objects, objKind, deferredSearch]);
@@ -419,7 +453,7 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
       {/* Segmented tabs: the current database ↔ every database on the server.
           The Refresh button sits on this row rather than in the title bar, so the header is exactly
           as tall as every other dialog's (see `Modal.tsx`). */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: '4px', padding: '10px 24px 0', borderBottom: '1px solid var(--win-border)', background: 'var(--win-bg-tab-bar)' }}>
+      <div className="dbi-tab-bar">
           {([
             {
               key: 'current' as const,
@@ -436,20 +470,11 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
             <button
               key={item.key}
               onClick={() => selectTab(item.key)}
+              className="dbi-tab-btn"
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '9px 16px',
-                fontSize: '12px',
                 fontWeight: tab === item.key ? 600 : 500,
                 color: tab === item.key ? 'var(--win-accent)' : 'var(--win-text-secondary)',
-                background: 'transparent',
-                border: 'none',
                 borderBottom: `2px solid ${tab === item.key ? 'var(--win-accent)' : 'transparent'}`,
-                marginBottom: '-1px',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
               }}
             >
               {item.icon}
@@ -457,19 +482,18 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
             </button>
           ))}
           <button
-            className="btn btn-secondary"
+            className="btn btn-secondary dbi-refresh-btn"
             onClick={() => (tab === 'all' ? fetchAllStats(true) : fetchStats())}
             disabled={busy}
             title={t('dbInfo.refreshTitle')}
-            style={{ marginLeft: 'auto', marginBottom: '8px', padding: '0 10px', display: 'flex', alignItems: 'center', gap: '6px' }}
           >
-            <RefreshCw size={13} className={busy ? 'loading-spinner' : ''} />
+            <RefreshCw size={12} className={busy ? 'loading-spinner' : ''} />
             <span>{busy ? t('dbInfo.loading') : t('dbInfo.refresh')}</span>
           </button>
         </div>
 
         {/* Content Body */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div className="dbi-body">
           {tab === 'current' && (<>
           {error && (
             <div style={{ padding: '12px 16px', background: 'var(--win-status-deleted)', border: '1px solid var(--win-status-deleted-border)', borderRadius: '6px', color: 'var(--win-status-deleted-border)', fontSize: '13px' }}>
@@ -477,307 +501,143 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
             </div>
           )}
 
-          {/* Overview Cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+          {/* Overview Cards (Compact single-line) */}
+          <div className="dbi-metrics-row">
             {/* Card 1: Total Size */}
-            <div style={{ padding: '16px 20px', borderRadius: '8px', background: 'var(--win-bg-window)', border: '1px solid var(--win-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: '12px', color: 'var(--win-text-secondary)', fontWeight: 500, marginBottom: '4px' }}>{t('dbInfo.cardSize')}</div>
-                <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--win-text-primary)' }}>{formatBytes(stats?.total_size_bytes)}</div>
+            <div className="dbi-metric-card">
+              <div className="dbi-metric-icon-wrap dbi-metric-icon-size">
+                <HardDrive size={13} />
               </div>
-              <div style={{ padding: '12px', borderRadius: '8px', background: 'var(--win-accent-glow)', color: 'var(--win-accent)', display: 'flex' }}>
-                <HardDrive size={22} />
+              <div className="dbi-metric-info">
+                <span className="dbi-metric-title">{t('dbInfo.cardSize')}:</span>
+                <span className="dbi-metric-val">{formatBytes(stats?.total_size_bytes)}</span>
               </div>
             </div>
 
             {/* Card 2: Total Rows */}
-            <div style={{ padding: '16px 20px', borderRadius: '8px', background: 'var(--win-bg-window)', border: '1px solid var(--win-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: '12px', color: 'var(--win-text-secondary)', fontWeight: 500, marginBottom: '4px' }}>{t('dbInfo.cardRows')}</div>
-                <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--win-text-primary)' }}>
-                  {stats?.total_rows !== undefined ? Math.max(0, stats.total_rows).toLocaleString() : '-'}
-                </div>
+            <div className="dbi-metric-card">
+              <div className="dbi-metric-icon-wrap dbi-metric-icon-rows">
+                <Hash size={13} />
               </div>
-              <div style={{ padding: '12px', borderRadius: '8px', background: 'var(--win-status-added)', color: 'var(--win-status-added-border)', display: 'flex' }}>
-                <Hash size={22} />
+              <div className="dbi-metric-info">
+                <span className="dbi-metric-title">{t('dbInfo.cardRows')}:</span>
+                <span className="dbi-metric-val">
+                  {stats?.total_rows !== undefined ? Math.max(0, stats.total_rows).toLocaleString() : '-'}
+                </span>
               </div>
             </div>
 
             {/* Card 3: Total Tables */}
-            <div style={{ padding: '16px 20px', borderRadius: '8px', background: 'var(--win-bg-window)', border: '1px solid var(--win-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: '12px', color: 'var(--win-text-secondary)', fontWeight: 500, marginBottom: '4px' }}>{t('dbInfo.cardTables')}</div>
-                <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--win-text-primary)' }}>{stats?.total_tables ?? 0}</div>
+            <div className="dbi-metric-card">
+              <div className="dbi-metric-icon-wrap dbi-metric-icon-tables">
+                <Table size={13} />
               </div>
-              <div style={{ padding: '12px', borderRadius: '8px', background: 'rgba(168, 85, 247, 0.15)', color: '#a855f7', display: 'flex' }}>
-                <Table size={22} />
+              <div className="dbi-metric-info">
+                <span className="dbi-metric-title">{t('dbInfo.cardTables')}:</span>
+                <span className="dbi-metric-val">{stats?.total_tables ?? 0}</span>
               </div>
             </div>
 
             {/* Card 4: views / functions / procedures */}
-            <div style={{ padding: '16px 20px', borderRadius: '8px', background: 'var(--win-bg-window)', border: '1px solid var(--win-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: '12px', color: 'var(--win-text-secondary)', fontWeight: 500, marginBottom: '4px' }}>{t('dbInfo.cardOther')}</div>
-                <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--win-text-primary)' }}>
+            <div
+              className="dbi-metric-card"
+              title={t('dbInfo.otherBreakdown', {
+                views: objectCounts.view,
+                functions: objectCounts.function,
+                procedures: objectCounts.procedure,
+              })}
+            >
+              <div className="dbi-metric-icon-wrap dbi-metric-icon-other">
+                <Layers size={13} />
+              </div>
+              <div className="dbi-metric-info">
+                <span className="dbi-metric-title">{t('dbInfo.cardOther')}:</span>
+                <span className="dbi-metric-val">
                   {objectCounts.view + objectCounts.function + objectCounts.procedure}
-                </div>
-                <div style={{ fontSize: '11px', color: 'var(--win-text-disabled)', marginTop: '2px' }}>
-                  {t('dbInfo.otherBreakdown', {
-                    views: objectCounts.view,
-                    functions: objectCounts.function,
-                    procedures: objectCounts.procedure,
-                  })}
-                </div>
-              </div>
-              <div style={{ padding: '12px', borderRadius: '8px', background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', display: 'flex' }}>
-                <Layers size={22} />
+                </span>
+                <span className="dbi-metric-sub">
+                  ({objectCounts.view}v · {objectCounts.function}f · {objectCounts.procedure}p)
+                </span>
               </div>
             </div>
           </div>
 
-          {/* Choosing which object group is listed below */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-            {([
-              { key: 'table' as const, icon: <Table size={12} />, label: t('dbInfo.kindTable'), count: stats?.total_tables ?? 0 },
-              { key: 'view' as const, icon: <Eye size={12} />, label: t('dbInfo.kindView'), count: objectCounts.view },
-              { key: 'function' as const, icon: <Braces size={12} />, label: t('dbInfo.kindFunction'), count: objectCounts.function },
-              { key: 'procedure' as const, icon: <Cog size={12} />, label: t('dbInfo.kindProcedure'), count: objectCounts.procedure },
-            ]).map((k) => (
-              <button
-                key={k.key}
-                onClick={() => { setObjKind(k.key); setExpandedObj(null); }}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '6px 12px',
-                  fontSize: '12px',
-                  fontWeight: objKind === k.key ? 600 : 500,
-                  borderRadius: '999px',
-                  cursor: 'pointer',
-                  color: objKind === k.key ? 'var(--win-accent)' : 'var(--win-text-secondary)',
-                  background: objKind === k.key ? 'var(--win-accent-glow)' : 'var(--win-bg-window)',
-                  border: `1px solid ${objKind === k.key ? 'var(--win-accent)' : 'var(--win-border)'}`,
-                }}
-              >
-                {k.icon}
-                <span>{k.label}</span>
-                <span style={{ fontFamily: 'var(--win-font-mono, monospace)', opacity: 0.75 }}>{k.count}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Search & Sorting Bar */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap' }}>
-            <div style={{ position: 'relative', width: '300px' }}>
-              <Search size={14} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--win-text-disabled)' }} />
-              <input
-                type="text"
-                placeholder={objKind === 'table' ? t('dbInfo.searchTables') : t('dbInfo.searchObjects')}
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                style={{
-                  width: '100%',
-                  background: 'var(--win-bg-window)',
-                  border: '1px solid var(--win-border)',
-                  borderRadius: '6px',
-                  paddingLeft: '34px',
-                  paddingRight: '12px',
-                  paddingTop: '8px',
-                  paddingBottom: '8px',
-                  fontSize: '12px',
-                  color: 'var(--win-text-primary)',
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                }}
-              />
+          {/* Unified Controls: Filter Pills (Left) + Search & Sorting (Right) */}
+          <div className="dbi-toolbar-row">
+            <div className="dbi-filter-bar">
+              {([
+                { key: 'all' as const, icon: <Layers size={12} />, label: t('dbInfo.kindAll'), count: allGridItems.length },
+                { key: 'table' as const, icon: <Table size={12} />, label: t('dbInfo.kindTable'), count: stats?.total_tables ?? 0 },
+                { key: 'view' as const, icon: <Eye size={12} />, label: t('dbInfo.kindView'), count: objectCounts.view },
+                { key: 'function' as const, icon: <Braces size={12} />, label: t('dbInfo.kindFunction'), count: objectCounts.function },
+                { key: 'procedure' as const, icon: <Cog size={12} />, label: t('dbInfo.kindProcedure'), count: objectCounts.procedure },
+              ]).map((k) => (
+                <button
+                  key={k.key}
+                  type="button"
+                  className={`dbi-pill-btn ${objKind === k.key ? 'is-active' : ''}`}
+                  onClick={() => { setObjKind(k.key); setExpandedObj(null); }}
+                >
+                  {k.icon}
+                  <span>{k.label}</span>
+                  <span className="dbi-pill-count">{k.count}</span>
+                </button>
+              ))}
             </div>
 
-            {/* Views, functions and procedures have neither size nor row count, so they always sort by name */}
-            {objKind === 'table' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
-                <ArrowUpDown size={14} style={{ color: 'var(--win-text-secondary)' }} />
+            <div className="dbi-toolbar-right">
+              <div className="dbi-search-box">
+                <Search size={13} className="dbi-search-icon" />
+                <input
+                  type="text"
+                  placeholder={objKind === 'function' || objKind === 'procedure' ? t('dbInfo.searchObjects') : t('dbInfo.searchTables')}
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="dbi-search-input"
+                />
+              </div>
+
+              {(objKind === 'all' || objKind === 'table' || objKind === 'view') && (
                 <select
                   value={sortBy}
                   onChange={(e: any) => setSortBy(e.target.value)}
-                  style={{
-                    background: 'var(--win-bg-window)',
-                    border: '1px solid var(--win-border)',
-                    color: 'var(--win-text-primary)',
-                    fontSize: '12px',
-                    borderRadius: '6px',
-                    padding: '8px 12px',
-                    outline: 'none',
-                    cursor: 'pointer',
-                  }}
+                  className="dbi-sort-select"
                 >
                   <option value="size_desc">{t('dbInfo.sortSizeDesc')}</option>
                   <option value="rows_desc">{t('dbInfo.sortRowsDesc')}</option>
                   <option value="name_asc">{t('dbInfo.sortNameAsc')}</option>
                 </select>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
-          {/* Table List Data Grid */}
-          <div style={{ flex: 1, border: '1px solid var(--win-border)', borderRadius: '8px', overflow: 'hidden', background: 'var(--win-bg-window)', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ overflowX: 'auto', flex: 1 }}>
-              {objKind === 'table' ? (
-              <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
+          {/* Table List Data Grid (Image 2 style) */}
+          <div className="dbi-grid-wrap">
+            {objKind === 'function' || objKind === 'procedure' ? (
+              /* Routines: only a name and a definition; click to toggle definition */
+              <table className="dbi-grid-table">
                 <thead>
-                  <tr style={{ background: 'var(--win-bg-tab-bar)', borderBottom: '1px solid var(--win-border)', color: 'var(--win-text-secondary)', fontWeight: 600, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                    <th style={{ padding: '12px 16px' }}>{t('dbInfo.colTableName')}</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'right' }}>{t('dbInfo.colRows')}</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'right' }}>Data Size</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'right' }}>Index Size</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'right' }}>{t('dbInfo.colTotalSize')}</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'center' }}>Engine</th>
-                    <th style={{ padding: '12px 16px', textAlign: 'center' }}>{t('dbInfo.colActions')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loading ? (
-                    <tr>
-                      <td colSpan={7} style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--win-text-secondary)' }}>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '10px', fontSize: '13px', fontWeight: 500 }}>
-                          <RefreshCw size={18} className="loading-spinner" style={{ color: 'var(--win-accent)' }} />
-                          <span>{t('dbInfo.loadingStats')}</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ) : filteredTables.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} style={{ textAlign: 'center', padding: '40px', color: 'var(--win-text-disabled)' }}>
-                        {t('dbInfo.noTableMatch')}
-                      </td>
-                    </tr>
-                  ) : (
-                    visibleTables.map((row) => {
-                      const isExact = exactCounts[row.table_name] !== undefined || row.is_exact;
-                      const rawRows = exactCounts[row.table_name] ?? row.rows;
-                      const displayRows = Math.max(0, rawRows);
-                      const isCounting = countingTable === row.table_name;
-
-                      return (
-                        <tr key={row.table_name} className="stat-row">
-                          <td style={{ padding: '10px 16px', fontFamily: 'var(--win-font-mono, monospace)', fontWeight: 600, color: 'var(--win-accent)' }}>
-                            {row.table_name}
-                          </td>
-                          <td style={{ padding: '10px 16px', textAlign: 'right', fontFamily: 'var(--win-font-mono, monospace)', color: 'var(--win-text-primary)' }}>
-                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                              {!isExact && <span style={{ color: 'var(--win-text-disabled)', fontFamily: 'sans-serif' }}>~</span>}
-                              <span>{displayRows.toLocaleString()}</span>
-                              {!isExact && (
-                                <button
-                                  onClick={() => handleFetchExactCount(row.table_name)}
-                                  disabled={isCounting}
-                                  title={t('dbInfo.exactCountTitle')}
-                                  style={{
-                                    background: 'var(--win-bg-hover)',
-                                    border: '1px solid var(--win-border)',
-                                    color: 'var(--win-text-secondary)',
-                                    cursor: isCounting ? 'default' : 'pointer',
-                                    padding: '2px 5px',
-                                    borderRadius: '4px',
-                                    display: 'inline-flex',
-                                  }}
-                                >
-                                  <RefreshCw size={12} className={isCounting ? 'loading-spinner' : ''} style={{ color: isCounting ? 'var(--win-accent)' : undefined }} />
-                                </button>
-                              )}
-                              {isExact && (
-                                <span title={t('dbInfo.exactRowsTitle')}>
-                                  <ShieldCheck size={14} style={{ color: 'var(--win-status-added-border, #10b981)', verticalAlign: 'middle' }} />
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td style={{ padding: '10px 16px', textAlign: 'right', fontFamily: 'var(--win-font-mono, monospace)', color: 'var(--win-text-secondary)' }}>
-                            {formatBytes(row.data_size_bytes)}
-                          </td>
-                          <td style={{ padding: '10px 16px', textAlign: 'right', fontFamily: 'var(--win-font-mono, monospace)', color: 'var(--win-text-secondary)' }}>
-                            {formatBytes(row.index_size_bytes)}
-                          </td>
-                          <td style={{ padding: '10px 16px', textAlign: 'right', fontFamily: 'var(--win-font-mono, monospace)', fontWeight: 600, color: 'var(--win-text-primary)' }}>
-                            {formatBytes(row.total_size_bytes)}
-                          </td>
-                          <td style={{ padding: '10px 16px', textAlign: 'center' }}>
-                            <span style={{ padding: '2px 8px', fontSize: '11px', fontWeight: 500, background: 'var(--win-bg-tab-bar)', borderRadius: '4px', border: '1px solid var(--win-border)', color: 'var(--win-text-secondary)' }}>
-                              {row.engine || '-'}
-                            </span>
-                          </td>
-                          <td style={{ padding: '10px 16px', textAlign: 'center' }}>
-                            <button
-                              onClick={() => {
-                                onSelectTable(row.table_name);
-                                onClose();
-                              }}
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                gap: '5px',
-                                fontSize: '11px',
-                                fontWeight: 500,
-                                color: '#ffffff',
-                                background: 'var(--win-accent)',
-                                border: 'none',
-                                padding: '5px 12px',
-                                borderRadius: '4px',
-                                cursor: 'pointer',
-                                whiteSpace: 'nowrap',
-                                flexShrink: 0,
-                              }}
-                            >
-                              <span>{t('dbInfo.viewData')}</span>
-                              <ExternalLink size={12} />
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                  {visibleTables.length < filteredTables.length && (
-                    <tr>
-                      <td colSpan={7} style={{ padding: '14px 16px', textAlign: 'center', color: 'var(--win-text-secondary)', background: 'var(--win-bg-tab-bar)' }}>
-                        <span>{t('dbInfo.rowCapNotice', { n: visibleTables.length, total: filteredTables.length })}</span>
-                        <button
-                          className="btn btn-secondary"
-                          onClick={() => setShowAllTables(true)}
-                          style={{ marginLeft: '10px', padding: '0 12px' }}
-                        >
-                          {t('dbInfo.showAllRows')}
-                        </button>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-              ) : (
-              /* Views / functions / procedures: only a name and a definition; click to see the SQL */
-              <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', textAlign: 'left', fontSize: '12px' }}>
-                <thead>
-                  <tr style={{ background: 'var(--win-bg-tab-bar)', borderBottom: '1px solid var(--win-border)', color: 'var(--win-text-secondary)', fontWeight: 600, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
-                    <th style={{ padding: '12px 16px' }}>
-                      {objKind === 'view' ? t('dbInfo.colViewName') : objKind === 'function' ? t('dbInfo.colFunctionName') : t('dbInfo.colProcedureName')}
+                  <tr className="dbi-grid-tr-head">
+                    <th className="dbi-grid-th">
+                      {objKind === 'function' ? t('dbInfo.colFunctionName') : t('dbInfo.colProcedureName')}
                     </th>
-                    <th style={{ padding: '12px 16px', width: '260px', textAlign: 'center' }}>{t('dbInfo.colActions')}</th>
+                    <th className="dbi-grid-th is-center dbi-actions-col">{t('dbInfo.colActions')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {loading ? (
                     <tr>
-                      <td colSpan={2} style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--win-text-secondary)' }}>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '10px', fontSize: '13px', fontWeight: 500 }}>
-                          <RefreshCw size={18} className="loading-spinner" style={{ color: 'var(--win-accent)' }} />
+                      <td colSpan={2} className="dbi-grid-empty">
+                        <div className="dbi-grid-loading">
+                          <RefreshCw size={16} className="loading-spinner" />
                           <span>{t('dbInfo.loadingObjects')}</span>
                         </div>
                       </td>
                     </tr>
                   ) : currentObjects.length === 0 ? (
                     <tr>
-                      <td colSpan={2} style={{ textAlign: 'center', padding: '40px', color: 'var(--win-text-disabled)' }}>
-                        {objKind === 'view' ? t('dbInfo.noViews') : objKind === 'function' ? t('dbInfo.noFunctions') : t('dbInfo.noProcedures')}
+                      <td colSpan={2} className="dbi-grid-empty">
+                        {objKind === 'function' ? t('dbInfo.noFunctions') : t('dbInfo.noProcedures')}
                       </td>
                     </tr>
                   ) : (
@@ -788,67 +648,28 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
 
                       return (
                         <React.Fragment key={key}>
-                          <tr className="stat-row">
-                            <td style={{ padding: '10px 16px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                                <span style={{ color: 'var(--win-text-disabled)', display: 'flex', flexShrink: 0 }}>
-                                  {objKind === 'view' ? <Eye size={13} /> : objKind === 'function' ? <Braces size={13} /> : <Cog size={13} />}
-                                </span>
-                                <span title={name} style={{ fontFamily: 'var(--win-font-mono, monospace)', fontWeight: 600, color: 'var(--win-accent)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                  {name}
-                                </span>
+                          <tr className="dbi-grid-tr">
+                            <td className="dbi-grid-td is-name">
+                              <div className="dbi-grid-name-cell">
+                                {objKind === 'function' ? <Braces size={13} /> : <Cog size={13} />}
+                                <span>{name}</span>
                               </div>
                             </td>
-                            <td style={{ padding: '10px 16px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                                <button
-                                  onClick={() => toggleObjectDef(name, objKind)}
-                                  style={{
-                                    display: 'inline-flex', alignItems: 'center', gap: '5px',
-                                    fontSize: '11px', fontWeight: 500,
-                                    color: 'var(--win-text-secondary)', background: 'var(--win-bg-hover)',
-                                    border: '1px solid var(--win-border)', padding: '5px 10px',
-                                    borderRadius: '4px', cursor: 'pointer',
-                                  }}
-                                >
-                                  {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                                  <span>{t('dbInfo.definition')}</span>
-                                </button>
-                                {objKind === 'view' && (
-                                  <button
-                                    onClick={() => { onSelectTable(name); onClose(); }}
-                                    style={{
-                                      display: 'inline-flex', alignItems: 'center', gap: '5px',
-                                      fontSize: '11px', fontWeight: 500, color: '#ffffff',
-                                      background: 'var(--win-accent)', border: 'none',
-                                      padding: '5px 12px', borderRadius: '4px', cursor: 'pointer',
-                                    }}
-                                  >
-                                    <span>{t('dbInfo.viewData')}</span>
-                                    <ExternalLink size={12} />
-                                  </button>
-                                )}
-                              </div>
+                            <td className="dbi-grid-td is-center">
+                              <button
+                                type="button"
+                                className="dbi-exact-btn"
+                                onClick={() => toggleObjectDef(name, objKind)}
+                              >
+                                {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                                <span>{t('dbInfo.definition')}</span>
+                              </button>
                             </td>
                           </tr>
                           {isExpanded && (
-                            <tr style={{ borderBottom: '1px solid var(--win-border)' }}>
-                              <td colSpan={2} style={{ padding: '0 16px 12px' }}>
-                                <pre style={{
-                                  margin: 0,
-                                  maxHeight: '260px',
-                                  overflow: 'auto',
-                                  padding: '12px 14px',
-                                  background: 'var(--win-bg-tab-bar)',
-                                  border: '1px solid var(--win-border)',
-                                  borderRadius: '6px',
-                                  fontFamily: 'var(--win-font-mono, monospace)',
-                                  fontSize: '11px',
-                                  lineHeight: 1.55,
-                                  color: 'var(--win-text-primary)',
-                                  whiteSpace: 'pre-wrap',
-                                  wordBreak: 'break-word',
-                                }}>
+                            <tr>
+                              <td colSpan={2} className="dbi-def-cell">
+                                <pre className="dbi-def-pre">
                                   {isLoadingDef ? t('dbInfo.loadingDefinition') : objDefs[key]}
                                 </pre>
                               </td>
@@ -860,8 +681,142 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
                   )}
                 </tbody>
               </table>
-              )}
-            </div>
+            ) : (
+              <table className="dbi-grid-table">
+                <thead>
+                  <tr className="dbi-grid-tr-head">
+                    <th className="dbi-grid-th dbi-grid-th-index">#</th>
+                    <th className="dbi-grid-th">{t('dbInfo.colName')}</th>
+                    <th className="dbi-grid-th">{t('dbInfo.colSchema')}</th>
+                    <th className="dbi-grid-th">{t('dbInfo.colKind')}</th>
+                    <th className="dbi-grid-th">{t('dbInfo.colCharset')}</th>
+                    <th className="dbi-grid-th">{t('dbInfo.colCollation')}</th>
+                    <th className="dbi-grid-th">{t('dbInfo.colEngine')}</th>
+                    <th className="dbi-grid-th is-right">{t('dbInfo.colEstimatedRow')}</th>
+                    <th className="dbi-grid-th is-right">{t('dbInfo.colTotalSize')}</th>
+                    <th className="dbi-grid-th is-right">{t('dbInfo.colDataSize')}</th>
+                    <th className="dbi-grid-th is-right">{t('dbInfo.colIndexSize')}</th>
+                    <th className="dbi-grid-th">{t('dbInfo.colComment')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr>
+                      <td colSpan={12} className="dbi-grid-empty">
+                        <div className="dbi-grid-loading">
+                          <RefreshCw size={16} className="loading-spinner" />
+                          <span>{t('dbInfo.loadingStats')}</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : filteredTables.length === 0 ? (
+                    <tr>
+                      <td colSpan={12} className="dbi-grid-empty">
+                        {t('dbInfo.noTableMatch')}
+                      </td>
+                    </tr>
+                  ) : (
+                    visibleTables.map((row, idx) => {
+                      const isExact = exactCounts[row.table_name] !== undefined || row.is_exact;
+                      const rawRows = exactCounts[row.table_name] ?? row.rows;
+                      const displayRows = Math.max(0, rawRows);
+                      const isCounting = countingTable === row.table_name;
+                      const isView = row.kind === 'VIEW';
+                      const schemaName = row.schema || stats?.db_name || '-';
+                      const kind = isView ? 'VIEW' : 'TABLE';
+                      const collation = row.collation || (isView ? '' : '-');
+                      const charset = row.charset || (row.collation ? row.collation.split('_')[0] : (isView ? '' : '-'));
+                      const engine = row.engine || (isView ? '' : '-');
+                      const isSelected = selectedTableName === row.table_name;
+                      const comment = row.comment || (isView ? 'VIEW' : '');
+
+                      return (
+                        <tr
+                          key={row.table_name}
+                          className={`dbi-grid-tr ${isSelected ? 'is-selected' : ''}`}
+                          onClick={() => setSelectedTableName(row.table_name)}
+                          onDoubleClick={() => {
+                            onSelectTable(row.table_name);
+                            onClose();
+                          }}
+                          title={t('sidebar.tableItemHint', { name: row.table_name })}
+                        >
+                          <td className="dbi-grid-td is-index">{idx + 1}</td>
+                          <td className="dbi-grid-td is-name">
+                            <div className="dbi-grid-name-cell">
+                              {isView ? (
+                                <Layers size={13} className="dbi-grid-icon-view" />
+                              ) : (
+                                <Columns3 size={13} className="dbi-grid-icon-table" />
+                              )}
+                              <span>{row.table_name}</span>
+                            </div>
+                          </td>
+                          <td className="dbi-grid-td">{schemaName}</td>
+                          <td className="dbi-grid-td">{kind}</td>
+                          <td className={`dbi-grid-td ${!charset ? 'is-muted' : ''}`}>{charset || ''}</td>
+                          <td className={`dbi-grid-td ${!collation ? 'is-muted' : ''}`}>{collation || ''}</td>
+                          <td className={`dbi-grid-td ${!engine ? 'is-muted' : ''}`}>{engine || ''}</td>
+                          <td className="dbi-grid-td is-right">
+                            <div className="dbi-grid-count-wrap">
+                              {!isView && !isExact && (
+                                <span className="dbi-grid-approx">~</span>
+                              )}
+                              <span>{displayRows.toLocaleString()}</span>
+                              {!isView && !isExact && (
+                                <button
+                                  type="button"
+                                  className="dbi-exact-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleFetchExactCount(row.table_name);
+                                  }}
+                                  disabled={isCounting}
+                                  title={t('dbInfo.exactCountTitle')}
+                                >
+                                  <RefreshCw size={10} className={isCounting ? 'loading-spinner' : ''} />
+                                </button>
+                              )}
+                              {!isView && isExact && (
+                                <span title={t('dbInfo.exactRowsTitle')} className="dbi-grid-name-cell">
+                                  <ShieldCheck size={12} className="dbi-exact-icon" />
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className={`dbi-grid-td is-right ${row.total_size_bytes === null ? 'is-muted' : ''}`}>
+                            {row.total_size_bytes !== null ? formatBytes(row.total_size_bytes) : '--'}
+                          </td>
+                          <td className={`dbi-grid-td is-right ${row.data_size_bytes === null ? 'is-muted' : ''}`}>
+                            {row.data_size_bytes !== null ? formatBytes(row.data_size_bytes) : '--'}
+                          </td>
+                          <td className={`dbi-grid-td is-right ${row.index_size_bytes === null ? 'is-muted' : ''}`}>
+                            {row.index_size_bytes !== null ? formatBytes(row.index_size_bytes) : '--'}
+                          </td>
+                          <td className={`dbi-grid-td ${!comment ? 'is-muted' : ''}`}>
+                            {comment || ''}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                  {visibleTables.length < filteredTables.length && (
+                    <tr>
+                      <td colSpan={12} className="dbi-grid-cap-notice">
+                        <span>{t('dbInfo.rowCapNotice', { n: visibleTables.length, total: filteredTables.length })}</span>
+                        <button
+                          type="button"
+                          className="btn btn-secondary dbi-grid-cap-btn"
+                          onClick={() => setShowAllTables(true)}
+                        >
+                          {t('dbInfo.showAllRows')}
+                        </button>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            )}
           </div>
           </>)}
 
@@ -872,63 +827,56 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
             </div>
           )}
 
-          {/* Server Summary Cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
-            <div style={{ padding: '16px 20px', borderRadius: '8px', background: 'var(--win-bg-window)', border: '1px solid var(--win-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: '12px', color: 'var(--win-text-secondary)', fontWeight: 500, marginBottom: '4px' }}>{t('dbInfo.cardServerSize')}</div>
-                <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--win-text-primary)' }}>
-                  {metricsLoading ? '…' : formatBytes(serverSummary.size)}
-                </div>
+          {/* Server Summary Cards (Compact single-line) */}
+          <div className="dbi-server-metrics-row">
+            <div className="dbi-metric-card">
+              <div className="dbi-metric-icon-wrap dbi-metric-icon-size">
+                <HardDrive size={13} />
               </div>
-              <div style={{ padding: '12px', borderRadius: '8px', background: 'var(--win-accent-glow)', color: 'var(--win-accent)', display: 'flex' }}>
-                <HardDrive size={22} />
+              <div className="dbi-metric-info">
+                <span className="dbi-metric-title">{t('dbInfo.cardServerSize')}:</span>
+                <span className="dbi-metric-val">{metricsLoading ? '…' : formatBytes(serverSummary.size)}</span>
               </div>
             </div>
 
-            <div style={{ padding: '16px 20px', borderRadius: '8px', background: 'var(--win-bg-window)', border: '1px solid var(--win-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: '12px', color: 'var(--win-text-secondary)', fontWeight: 500, marginBottom: '4px' }}>{t('dbInfo.cardDbCount')}</div>
-                <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--win-text-primary)' }}>{serverSummary.count}</div>
+            <div className="dbi-metric-card">
+              <div className="dbi-metric-icon-wrap dbi-metric-icon-tables">
+                <Server size={13} />
+              </div>
+              <div className="dbi-metric-info">
+                <span className="dbi-metric-title">{t('dbInfo.cardDbCount')}:</span>
+                <span className="dbi-metric-val">{serverSummary.count}</span>
                 {systemDbCount > 0 && (
-                  <div style={{ fontSize: '11px', color: 'var(--win-text-disabled)', marginTop: '2px' }}>
-                    {showSystemDbs
-                      ? t('dbInfo.includingSystemDbs', { n: systemDbCount })
-                      : t('dbInfo.hidingSystemDbs', { n: systemDbCount })}
-                  </div>
+                  <span className="dbi-metric-sub">
+                    ({showSystemDbs ? t('dbInfo.includingSystemDbs', { n: systemDbCount }) : t('dbInfo.hidingSystemDbs', { n: systemDbCount })})
+                  </span>
                 )}
               </div>
-              <div style={{ padding: '12px', borderRadius: '8px', background: 'rgba(168, 85, 247, 0.15)', color: '#a855f7', display: 'flex' }}>
-                <Server size={22} />
-              </div>
             </div>
 
-            <div style={{ padding: '16px 20px', borderRadius: '8px', background: 'var(--win-bg-window)', border: '1px solid var(--win-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: '12px', color: 'var(--win-text-secondary)', fontWeight: 500, marginBottom: '4px' }}>{t('dbInfo.cardTablesRows')}</div>
-                <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--win-text-primary)' }}>
+            <div className="dbi-metric-card">
+              <div className="dbi-metric-icon-wrap dbi-metric-icon-rows">
+                <Hash size={13} />
+              </div>
+              <div className="dbi-metric-info">
+                <span className="dbi-metric-title">{t('dbInfo.cardTablesRows')}:</span>
+                <span className="dbi-metric-val">
                   {serverSummary.tables.toLocaleString()}
-                  <span style={{ fontSize: '13px', fontWeight: 500, color: 'var(--win-text-secondary)' }}>
+                  <span style={{ fontSize: '11px', fontWeight: 500, color: 'var(--win-text-secondary)' }}>
                     {' / '}
                     {metricsLoading
                       ? '…'
                       : `${allStats?.rows_are_exact === false ? '~' : ''}${serverSummary.rows.toLocaleString()}`}
                   </span>
-                </div>
-                {serverSummary.hasUnknown && !metricsLoading && (
-                  <div style={{ fontSize: '11px', color: 'var(--win-text-disabled)', marginTop: '2px' }}>{t('dbInfo.incompleteScan')}</div>
-                )}
-              </div>
-              <div style={{ padding: '12px', borderRadius: '8px', background: 'var(--win-status-added)', color: 'var(--win-status-added-border)', display: 'flex' }}>
-                <Hash size={22} />
+                </span>
               </div>
             </div>
           </div>
 
           {/* Postgres: the table and row counts can only be read from the connected database itself */}
           {allStats?.metrics_manual && allStats.metrics_pending && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', background: 'var(--win-bg-window)', border: '1px dashed var(--win-border)', borderRadius: '8px', fontSize: '12px', color: 'var(--win-text-secondary)' }}>
-              <ScanSearch size={16} style={{ color: 'var(--win-accent)', flexShrink: 0 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: 'var(--win-bg-window)', border: '1px dashed var(--win-border)', borderRadius: '6px', fontSize: '11px', color: 'var(--win-text-secondary)' }}>
+              <ScanSearch size={14} style={{ color: 'var(--win-accent)', flexShrink: 0 }} />
               <span style={{ flex: 1 }}>
                 {t('dbInfo.pgScanNote')}
               </span>
@@ -936,71 +884,46 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
                 onClick={() => fetchMetrics(allReqRef.current, allStats, showSystemDbs)}
                 disabled={busy}
                 style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0,
-                  fontSize: '12px', fontWeight: 500, color: '#ffffff', background: 'var(--win-accent)',
-                  border: 'none', padding: '7px 14px', borderRadius: '6px',
+                  display: 'inline-flex', alignItems: 'center', gap: '5px', flexShrink: 0,
+                  fontSize: '11px', fontWeight: 500, color: '#ffffff', background: 'var(--win-accent)',
+                  border: 'none', padding: '4px 10px', borderRadius: '5px',
                   cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.5 : 1,
                 }}
               >
-                <ScanSearch size={13} />
+                <ScanSearch size={12} />
                 <span>{busy ? t('dbInfo.scanning') : t('dbInfo.deepScan')}</span>
               </button>
             </div>
           )}
 
           {/* Search & Sorting Bar */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap' }}>
-            <div style={{ position: 'relative', width: '300px' }}>
-              <Search size={14} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--win-text-disabled)' }} />
+          <div className="dbi-toolbar-row">
+            <div className="dbi-search-box">
+              <Search size={13} className="dbi-search-icon" />
               <input
                 type="text"
                 placeholder={t('dbInfo.searchDatabases')}
                 value={allSearch}
                 onChange={(e) => setAllSearch(e.target.value)}
-                style={{
-                  width: '100%',
-                  background: 'var(--win-bg-window)',
-                  border: '1px solid var(--win-border)',
-                  borderRadius: '6px',
-                  paddingLeft: '34px',
-                  paddingRight: '12px',
-                  paddingTop: '8px',
-                  paddingBottom: '8px',
-                  fontSize: '12px',
-                  color: 'var(--win-text-primary)',
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                }}
+                className="dbi-search-input"
               />
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginLeft: 'auto' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--win-text-secondary)', cursor: 'pointer' }}>
+            <div className="dbi-toolbar-right">
+              <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: 'var(--win-text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
                 <input type="checkbox" checked={showSystemDbs} onChange={(e) => handleToggleSystemDbs(e.target.checked)} />
                 <span>{t('dbInfo.showSystemDbs')}</span>
               </label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <ArrowUpDown size={14} style={{ color: 'var(--win-text-secondary)' }} />
-                <select
-                  value={allSortBy}
-                  onChange={(e: any) => setAllSortBy(e.target.value)}
-                  style={{
-                    background: 'var(--win-bg-window)',
-                    border: '1px solid var(--win-border)',
-                    color: 'var(--win-text-primary)',
-                    fontSize: '12px',
-                    borderRadius: '6px',
-                    padding: '8px 12px',
-                    outline: 'none',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <option value="size_desc">{t('dbInfo.sortSizeDesc')}</option>
-                  <option value="tables_desc">{t('dbInfo.sortTablesDesc')}</option>
-                  <option value="rows_desc">{t('dbInfo.sortRowsDesc')}</option>
-                  <option value="name_asc">{t('dbInfo.sortDbNameAsc')}</option>
-                </select>
-              </div>
+              <select
+                value={allSortBy}
+                onChange={(e: any) => setAllSortBy(e.target.value)}
+                className="dbi-sort-select"
+              >
+                <option value="size_desc">{t('dbInfo.sortSizeDesc')}</option>
+                <option value="tables_desc">{t('dbInfo.sortTablesDesc')}</option>
+                <option value="rows_desc">{t('dbInfo.sortRowsDesc')}</option>
+                <option value="name_asc">{t('dbInfo.sortDbNameAsc')}</option>
+              </select>
             </div>
           </div>
 

@@ -4,9 +4,11 @@
 //! `#[tool_router]` wants them in one impl block. The bodies live in `catalog.rs` (introspection)
 //! and `data.rs` (rows).
 //!
-//! Every tool is a read. There is no write tool in this build, and adding one is not a matter of
-//! writing another method: defence layer 5 (interactive approval) does not exist yet, and a write
-//! that reaches the database without it commits on a pooled connection the user cannot roll back.
+//! Six of the seven tools are reads. The seventh, `tablegrid_mutate`, is guarded by three things
+//! that are not interchangeable: a per-connection write tick the user sets (default off), a shape
+//! check that refuses batches, and an approval dialog showing the exact statement. It runs on a
+//! pooled connection, so what it writes is committed the moment it succeeds and the user's own
+//! Rollback button cannot reach it - which is why the dialog says so rather than implying an undo.
 //! See `docs/mcp-server-plan.md` §3.5.
 //!
 //! Parameter structs derive `JsonSchema`, so the schema an AI reads is generated from the very
@@ -15,6 +17,8 @@
 mod catalog;
 
 mod data;
+
+mod write;
 
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -114,6 +118,22 @@ pub struct QueryArgs {
     #[serde(default)]
     #[schemars(with = "usize")]
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MutateArgs {
+    /// From tablegrid_list_connections. OMIT this when the user has shared exactly one
+    /// connection - the tool then uses it. Required only when several are shared.
+    //
+    // `with = "String"` for the same reason as every other argument struct here: an
+    // `Option<String>` renders as a type ARRAY, which Gemini/Antigravity reject for the whole
+    // tools/list. See the long note on `ConnArgs`.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub connection_id: Option<String>,
+    /// Exactly ONE statement that changes data or schema. The user sees this text verbatim in the
+    /// approval dialog, so write it the way you want it read.
+    pub sql: String,
 }
 
 #[derive(Clone)]
@@ -265,6 +285,34 @@ impl TableGridMcp {
         )
         .await
     }
+
+    // Everything a model needs in order not to waste the user's attention is in this description,
+    // because the cost of a bad call here is not a wasted round trip - it is a human interrupted.
+    // Hence: one statement, no reads, no undo, and the fact that a refusal may mean the write tick
+    // is off rather than that the SQL was wrong.
+    #[tool(
+        description = "Run ONE statement that CHANGES data or schema (INSERT, UPDATE, DELETE, \
+                       DDL). The TableGrid user must approve the exact statement in a dialog \
+                       before it runs, so: one statement per call, no batches, and no reads (use \
+                       tablegrid_query for those). It is refused outright unless the user ticked \
+                       'allow writes' for that connection - such a refusal is not a reason to \
+                       rewrite the SQL, it is a reason to ask them. The statement runs OUTSIDE any \
+                       transaction the user has open and commits immediately; there is no undo, so \
+                       do not offer one. No affected-row count is returned - confirm with a \
+                       follow-up SELECT."
+    )]
+    async fn tablegrid_mutate(
+        &self,
+        Parameters(a): Parameters<MutateArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        audited(
+            "tablegrid_mutate",
+            a.connection_id.as_deref(),
+            Some(&a.sql),
+            write::mutate(a.connection_id.as_deref(), &a.sql),
+        )
+        .await
+    }
 }
 
 impl Default for TableGridMcp {
@@ -300,8 +348,10 @@ impl ServerHandler for TableGridMcp {
                  is a single tablegrid_list_tables with no arguments. Call \
                  tablegrid_list_connections only when a tool tells you several are shared, or when \
                  the user asks which are available.\n\
-                 Writes and DDL are refused by design; ask the user to make changes in TableGrid \
-                 itself."
+                 A write or DDL goes through tablegrid_mutate, and only when the user has ticked \
+                 \"allow writes\" for that connection. Every such call interrupts them with a \
+                 dialog showing your exact statement, so send one at a time and say what it is \
+                 for; the write commits immediately and cannot be undone from TableGrid."
                     .to_string(),
             )
     }

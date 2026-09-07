@@ -13,6 +13,7 @@ const TIERS: [string, string][] = [
   ['liệt kê cột của bảng', '00_starlist_f'],
   ['điều kiện JOIN theo FK', '0_0'],
   ['cột', rankSort('1', 'film_id')],
+  ['bảng nối được theo FK', rankSort('1z', 'address')],
   ['bảng', rankSort('2', 'film')],
   ['tên bảng trong scope', rankSort('3', 'f')],
   ['từ khoá hay dùng', rankSort('4', 'SELECT')],
@@ -30,6 +31,12 @@ describe('thứ tự gợi ý SQL', () => {
     // '0_...' always sorts below '1_...', so no column can push its way above.
     expect('0_0' < rankSort('1', 'a')).toBe(true);
     expect('0_9' < rankSort('1', 'zzz')).toBe(true);
+  });
+
+  it("tier '1z' nằm đúng giữa cột và bảng thường", () => {
+    // '15' would NOT work here: '5' sorts BEFORE '_', so a '15_' item would jump above the columns.
+    expect(rankSort('1', 'zzz') < rankSort('1z', 'aaa')).toBe(true);
+    expect(rankSort('1z', 'zzz') < rankSort('2', 'aaa')).toBe(true);
   });
 
   it("snippetSuggestions phải là 'inline'", () => {

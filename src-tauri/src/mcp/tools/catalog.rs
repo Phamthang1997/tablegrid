@@ -63,10 +63,13 @@ pub async fn describe_table(
     let (target, conn_id) = policy::resolve(&state, connection_id)?;
     let out = with_timeout(
         Some(target.timeout),
+        // `None` for the schema override: an MCP client names a table, never a `pg_temp_N` it
+        // could not see anyway — its reads go through a pooled connection by design.
         crate::database::introspect::get_table_schema_inner(
             &state,
             conn_id.clone(),
             table_name.to_string(),
+            None,
         ),
     )
     .await

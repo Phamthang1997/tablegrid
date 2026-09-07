@@ -21,6 +21,14 @@ pub fn init(app: &tauri::App) {
     crate::state::set_emitter(move |event, payload| {
         let _ = handle.emit(event, payload);
     });
+
+    // The encrypted MCP audit log. Its directory can only be asked of Tauri, and this file is the
+    // only one allowed to ask - see the module comment above. A failure to start is deliberately
+    // silent here and reported through `mcp_audit_file_status` instead: the app and the MCP server
+    // must not fail to start because a log file could not be opened.
+    if let Ok(dir) = app.path().app_data_dir() {
+        crate::mcp::audit_file::init(dir);
+    }
 }
 
 /// The window's glass material is applied ONLY here, never through windowEffects in

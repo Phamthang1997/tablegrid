@@ -125,9 +125,11 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   get_table_ddl_extras: 'internal',
   get_table_definition: 'internal',
   get_table_partitions: 'internal',
+  get_table_properties: 'internal',
   get_table_schema: 'internal',
   get_table_triggers: 'internal',
   get_tables: 'internal',
+  get_temporary_tables: 'internal',
   list_connections: 'internal',
   list_databases: 'internal',
   list_schemas: 'internal',
@@ -211,7 +213,12 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   mcp_regenerate_token: 'write',
   mcp_audit_log: 'internal',
   mcp_audit_clear: 'internal',
+  mcp_audit_file_read: 'internal',
   set_connection_mcp_exposed: 'internal',
+  set_connection_mcp_write: 'internal',
+  // Answering the MCP approval dialog. `internal` because it IS an approval: gating it behind a
+  // second dialog would ask the user to confirm that they confirmed.
+  mcp_approval_respond: 'internal',
 
   ai_chat: 'internal',
   open_url: 'internal',

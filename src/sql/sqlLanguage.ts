@@ -307,28 +307,87 @@ const completionService: CompletionService = async (model, position, _ctx, sugge
   const emitTables = async () => {
     // Automatically assigns alias when inserting tables in FROM/JOIN (excluding INTO/UPDATE/DROP...)
     const stripped = textBefore.replace(/[\w$."`]*$/, '').trimEnd();
-    const wantAlias = /\b(from|join)$/i.test(stripped) || (stripped.endsWith(',') && /\bfrom\b/i.test(textBefore));
+    const afterJoin = /\bjoin$/i.test(stripped);
+    const wantAlias = afterJoin || /\bfrom$/i.test(stripped) || (stripped.endsWith(',') && /\bfrom\b/i.test(textBefore));
     const taken = new Set<string>();
     aliasByTable.forEach(a => taken.add(a.toLowerCase()));
 
+    // A table the caret's statement can already join to is ranked above the rest of the catalog and,
+    // right after `JOIN`, carries its own `ON` clause. This reads the catalog cache ONLY
+    // (`getCachedSchema`), so the ranking costs no IPC: the cache is primed in the background by
+    // `getTables`, and until it lands every table reports no relation and the list simply falls
+    // back to the plain frequency order.
+    const cachedSchema = async (tbl: string) => catalog.getCachedSchema(editorConnId(), tbl);
+    // Appending `ON …` to a re-picked table would produce a second one, so look for an `ON`
+    // already sitting after the caret first — up to the end of the STATEMENT, not of the line,
+    // since a hand-formatted join puts its condition on the next one.
+    const after = fullText.slice(model.getOffsetAt(position));
+    const restOfStatement = after.slice(0, after.indexOf(';') < 0 ? after.length : after.indexOf(';'));
+    const canAppendOn = afterJoin && !/\bon\b/i.test(restOfStatement);
+
+    // The ranking below is worthless on a cold cache, and the very first `JOIN` of a session is
+    // exactly when it is cold — `getTables` only fires the prime and walks away. Awaited ONLY on
+    // this path (it is capped, and it is the one place whose answer depends on the cache rather
+    // than merely improving with it).
+    if (afterJoin && scopeTables.length) await catalog.ensureCatalogPrimed(editorConnId());
+
     const tables = await catalog.getTables(editorConnId());
+
+    // Aliases first, because a JOIN condition has to name the candidate by the alias it will be
+    // inserted with. `new Set(taken)` per item keeps each one isolated, so this stays independent
+    // of order - which is what makes resolving the conditions together below correct.
+    const aliasOf = new Map<string, string>();
+    if (wantAlias) {
+      for (const tb of tables) aliasOf.set(tb.name, genAlias(tb.name, new Set(taken)));
+    }
+
+    // Resolved TOGETHER rather than one per iteration. `Promise.all` is wrong at almost every other
+    // await-in-a-loop in this codebase - those are sequential DB reads, and firing N of them at once
+    // would hit the user's production database with a burst (see the triage note in CLAUDE.md). This
+    // one reads `getCachedSchema`, i.e. a Map already in memory, so there is nothing to burst.
+    const condsOf = new Map<string, string[]>();
+    if (afterJoin && scopeTables.length) {
+      const built = await Promise.all(
+        tables.map(tb => {
+          const aliasForCond = new Map(aliasByTable);
+          const alias = aliasOf.get(tb.name);
+          if (alias) aliasForCond.set(tb.name, alias);
+          // FK only: the same-name fallback would call every table joinable in a schema where each
+          // one has an `id`, and a ranking that promotes everything ranks nothing.
+          return buildJoinConditions([...scopeTables, tb.name], aliasForCond, cachedSchema, { fkOnly: true });
+        }),
+      );
+      tables.forEach((tb, i) => condsOf.set(tb.name, built[i]));
+    }
+
     for (const tb of tables) {
       let insertText = tb.name;
-      let alias: string | null = null;
-      if (wantAlias) {
-        alias = genAlias(tb.name, new Set(taken)); // isolated set per item to avoid alias collision
+      const alias = aliasOf.get(tb.name) ?? null;
+      if (alias) {
         // Inserts alias as plain text rather than snippet placeholder to prevent accidental overwrites.
-        
         insertText = `${tb.name} ${alias}`;
       }
+
+      const conds = condsOf.get(tb.name) ?? [];
+      if (conds.length && canAppendOn) insertText = `${insertText} ON ${conds[0]}`;
+
       items.push({
         label: tb.name,
         kind: tb.type === 'view'
           ? monaco.languages.CompletionItemKind.Interface
           : monaco.languages.CompletionItemKind.Class,
-        detail: tableKind(tb.type) + (alias ? ` · alias ${alias}` : ''),
+        detail: tableKind(tb.type)
+          + (alias ? ` · alias ${alias}` : '')
+          + (conds.length ? ` · ${i18n.t('sqlEditor.cmplJoinsOn', { cond: conds[0] })}` : ''),
+        // More than one FK to the tables in scope: the popup shows the first, the doc panel all of them.
+        documentation: conds.length > 1
+          ? { value: ['```sql', conds.map(c => `ON ${c}`).join('\n'), '```'].join('\n') }
+          : undefined,
         insertText,
-        sortText: rankSort('2', tb.name),
+        // '1z' sorts between the column tier ('1') and the plain table tier ('2'); '15' would NOT,
+        // since '5' < '_'. A column is never emitted at a JOIN caret, but the ladder stays honest
+        // either way (completionOrder.test.ts pins it).
+        sortText: conds.length ? rankSort('1z', tb.name) : rankSort('2', tb.name),
         command: bumpCommand(tb.name),
       });
     }

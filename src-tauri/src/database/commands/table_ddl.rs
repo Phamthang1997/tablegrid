@@ -238,13 +238,20 @@ pub async fn drop_table(
     is_view: Option<bool>,
     cascade: Option<bool>,
     ignore_fk: Option<bool>,
+    // See `get_table_data`: the sidebar's Temporary section names the `pg_temp_N` schema its rows
+    // came from, so the DROP names the relation the user is looking at and not a `public` one.
+    schema_override: Option<String>,
 ) -> Result<Value, String> {
     Box::pin(async move {
         let state = crate::state::require_state()?;
         let (conn_type, schema) = {
             let ctx = state.connections.acquire(&conn_id)?;
             let ct = ctx.conn().clone();
-            (ct, ctx.raw_schema().map(str::to_string))
+            let sch = match schema_override.as_deref() {
+                Some(s) if !s.is_empty() => Some(s.to_string()),
+                _ => ctx.raw_schema().map(str::to_string),
+            };
+            (ct, sch)
         };
         let is_view = is_view.unwrap_or(false);
         let cascade = cascade.unwrap_or(false);

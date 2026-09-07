@@ -20,7 +20,7 @@ use sqlx::Row;
 use super::conn::{DbConnection, DbKind};
 use super::exec::raw::execute_raw_sql_generic;
 use super::ident::{pg_schema_of, sql_str};
-use super::rows::all_string_values;
+use super::rows::{all_string_values, cell, rows_of};
 
 // The list of primary-key columns of a table, per dialect (composite primary keys included).
 //
@@ -173,15 +173,24 @@ pub(crate) async fn get_tables_inner(
 }
 
 /// The body, reachable without a `tauri::State` - see `list_databases_inner`.
+///
+/// `schema_override` replaces the connection's current schema when it is set — the Temporary
+/// section's only way to introspect a Postgres relation living in `pg_temp_N`. The MCP server
+/// passes `None`, which is byte-for-byte the behaviour this function had before it existed.
 pub(crate) async fn get_table_schema_inner(
     state: &crate::AppState,
     conn_id: String,
     name: String,
+    schema_override: Option<String>,
 ) -> Result<Value, String> {
     let (conn_type, schema) = {
         let ctx = state.connections.acquire(&conn_id)?;
         let ct = ctx.conn().clone();
-        (ct, ctx.raw_schema().map(str::to_string))
+        let sch = match schema_override.as_deref() {
+            Some(s) if !s.is_empty() => Some(s.to_string()),
+            _ => ctx.raw_schema().map(str::to_string),
+        };
+        (ct, sch)
     };
     let sch = sql_str(&pg_schema_of(&schema));
 
@@ -500,4 +509,96 @@ pub(crate) async fn get_table_schema_inner(
         "indexes": indexes,
         "foreignKeys": foreign_keys
     }))
+}
+
+/// The tables and views this SESSION owns temporarily, for the sidebar's Temporary section.
+///
+/// "This session" is doing the work in that sentence, and it is also the limit of the feature: a
+/// temporary table belongs to one server connection, while Postgres and MySQL are reached through a
+/// pool. The query therefore reports what the connection it happens to land on can see — which is
+/// what a following read of the same table sees too, and is guaranteed to be the user's own session
+/// only while a manual transaction is open (`tx/` pins one connection, and
+/// `execute_raw_sql_generic` routes there). SQLite has no such gap: one `DbKind::Sqlite` is one
+/// handle, so its temp tables are always visible.
+///
+/// Each row carries the `schema` it lives in, because on Postgres that is `pg_temp_N` rather than
+/// the connection's current schema — the caller passes it back so the grid, the structure view and
+/// the properties panel address the same relation the list came from.
+pub(crate) async fn get_temporary_tables_inner(
+    state: &crate::AppState,
+    conn_id: String,
+) -> Result<Value, String> {
+    let conn_type = {
+        let ctx = state.connections.acquire(&conn_id)?;
+        ctx.conn().clone()
+    };
+
+    let sql = match &conn_type.kind {
+        // `pg_my_temp_schema()` and not `nspname LIKE 'pg_temp%'`: the catalogue lists every
+        // session's temp relations, and offering another session's would open a tab whose every
+        // query fails with "does not exist".
+        DbKind::Postgres(_) => "SELECT c.relname::text AS name, \
+                    CASE WHEN c.relkind IN ('v','m') THEN 'view' ELSE 'table' END AS type, \
+                    n.nspname::text AS schema \
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.oid = pg_my_temp_schema() AND c.relkind IN ('r','v','m','p') \
+             ORDER BY c.relname ASC"
+            .to_string(),
+        // The only per-session list MySQL exposes. Its NAME is InnoDB's INTERNAL name (`#sql…`),
+        // not the one the user typed, so those rows are dropped rather than shown as gibberish —
+        // which usually leaves this empty, and that is the honest answer for a pooled connection.
+        DbKind::Mysql(_) => "SELECT NAME AS name, 'table' AS type, '' AS `schema` \
+             FROM INFORMATION_SCHEMA.INNODB_TEMP_TABLE_INFO"
+            .to_string(),
+        DbKind::Sqlite(_) => "SELECT name, type, 'temp' AS schema FROM sqlite_temp_master \
+             WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name ASC"
+            .to_string(),
+    };
+
+    // A server too old for the view, or one with the InnoDB table disabled, must not break the
+    // sidebar: "no temp tables" and "no way to ask" are the same answer to the user.
+    let results = match execute_raw_sql_generic(&conn_type, sql).await {
+        Ok(r) => r,
+        Err(_) => return Ok(json!({ "success": true, "tables": [] })),
+    };
+
+    let mut tables = Vec::new();
+    for row in rows_of(&results) {
+        let name = cell(&row, "name");
+        if name.is_empty() || is_internal_temp_name(name) {
+            continue;
+        }
+        let schema = cell(&row, "schema");
+        tables.push(json!({
+            "name": name,
+            "type": if cell(&row, "type") == "view" { "view" } else { "table" },
+            "schema": if schema.is_empty() { Value::Null } else { Value::String(schema.to_string()) },
+            "temporary": true,
+        }));
+    }
+
+    Ok(json!({ "success": true, "tables": tables }))
+}
+
+/// Whether a name is the server's own bookkeeping rather than something the user created.
+///
+/// MySQL's `INNODB_TEMP_TABLE_INFO` reports internal names (`#sql-ib123`, `tmp/#sql…`), and Postgres
+/// puts the TOAST side-table of a temp table in the same namespace under `pg_toast_*`.
+fn is_internal_temp_name(name: &str) -> bool {
+    name.starts_with('#') || name.contains('/') || name.starts_with("pg_toast")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_internal_temp_name;
+
+    #[test]
+    fn internal_temp_names_are_not_offered_to_the_user() {
+        assert!(is_internal_temp_name("#sql-ib7-1234"));
+        assert!(is_internal_temp_name("#sql7f9c_8_0"));
+        assert!(is_internal_temp_name("tmp/#sql1"));
+        assert!(is_internal_temp_name("pg_toast_12345"));
+        assert!(!is_internal_temp_name("temp_demo"));
+        assert!(!is_internal_temp_name("staging_orders"));
+    }
 }

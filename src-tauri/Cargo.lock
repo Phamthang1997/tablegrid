@@ -5523,6 +5523,7 @@ dependencies = [
 name = "tablegrid"
 version = "0.1.1"
 dependencies = [
+ "aes-gcm",
  "axum",
  "base64 0.23.1",
  "bigdecimal",

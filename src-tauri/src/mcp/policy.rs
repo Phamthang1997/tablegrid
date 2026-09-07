@@ -63,6 +63,12 @@ pub struct Target {
     /// The statement time limit this read runs under. **Never `None`** - unlike the UI's own paths,
     /// an MCP read always has a limit; see `mcp_timeout`.
     pub timeout: std::time::Duration,
+    /// Database name, for the approval dialog. Carried here rather than looked up again by the
+    /// write tool: the entry is already in hand at resolve time, and a second lookup could name a
+    /// different connection than the one this `Target` points at.
+    pub database: String,
+    /// `postgres` / `mysql` / `sqlite`, so the dialog can highlight the SQL it shows.
+    pub dialect: &'static str,
 }
 
 /// The connection behind a `connection_id` from the wire, if the user shared it.
@@ -72,9 +78,44 @@ pub struct Target {
 /// open, which is a name, a database and a dialect it was never meant to learn.
 /// Also returns the id it settled on, because the introspection bodies are keyed by it.
 pub fn resolve(state: &AppState, given: Option<&str>) -> Result<(Target, String), Refusal> {
+    resolve_inner(state, given, false)
+}
+
+/// The same, for a tool that intends to WRITE.
+///
+/// A separate entry point rather than a flag the caller may forget: `resolve` is the only door to a
+/// connection, and the write tick has to sit in that same door. A tool that called `resolve` and
+/// then checked the permission itself would be one missing `if` away from writing on a connection
+/// shared for reading only.
+///
+/// The refusal is DISTINCT from `unknown_connection()`, deliberately breaking §3.3's rule about
+/// never confirming what the caller may not see: to reach this line the caller already knows the
+/// connection exists (it can read it), so the only thing the message reveals is which permission is
+/// missing - and saying that is what lets the model ask the user for the right thing instead of
+/// retrying the write forever.
+pub fn resolve_write(state: &AppState, given: Option<&str>) -> Result<(Target, String), Refusal> {
+    resolve_inner(state, given, true)
+}
+
+fn resolve_inner(
+    state: &AppState,
+    given: Option<&str>,
+    need_write: bool,
+) -> Result<(Target, String), Refusal> {
     let connection_id = pick_connection(state, given)?;
     if !state.connections.is_mcp_exposed(&connection_id) {
         return Err(unknown_connection());
+    }
+    if need_write && !state.connections.is_mcp_write_allowed(&connection_id) {
+        return Err(Refusal::new(
+            Denial::WriteNotAllowed,
+            McpError::invalid_params(
+                "the user shared this connection for reading only. Ask them to tick \"allow \
+                 writes\" for it in TableGrid's MCP settings if they want you to change data."
+                    .to_string(),
+                None,
+            ),
+        ));
     }
     let ctx = state
         .connections
@@ -85,6 +126,8 @@ pub fn resolve(state: &AppState, given: Option<&str>) -> Result<(Target, String)
         conn: ctx.conn().clone(),
         schema: ctx.raw_schema().map(str::to_owned),
         timeout: mcp_timeout(crate::database::stmt_timeout(&ctx.server().config())),
+        database: ctx.db().to_string(),
+        dialect: ctx.dialect(),
     };
     Ok((target, connection_id))
 }
@@ -214,8 +257,54 @@ pub fn ensure_single_read(sql: &str) -> Result<(), Refusal> {
     }
 }
 
+/// Is this SQL a single statement that is NOT a read?
+///
+/// The mirror of `ensure_single_read`, and it refuses reads on purpose: a `SELECT` sent to the
+/// write tool would raise an approval dialog for something `tablegrid_query` answers without one,
+/// which trains the user to click through dialogs. One statement per call, for the same reason as
+/// the read side - the approval dialog shows what it is approving, and a batch would let a second
+/// statement ride along behind the one the user read.
+///
+/// Everything else passes, INCLUDING DDL. There is no allow-list of "safe" writes here on purpose:
+/// §0.3 already settled that keyword classification is the wrong mechanism, and a human reading the
+/// statement is a better filter than any list this file could carry. `DROP TABLE` is refusable by
+/// the person looking at it.
+pub fn ensure_single_write(sql: &str) -> Result<(), Refusal> {
+    let statements = split_sql_statements(sql);
+    match statements.len() {
+        0 => return Err(refuse_write("no SQL statement found".to_string())),
+        1 => {}
+        n => {
+            return Err(refuse_write(format!(
+                "expected exactly one statement, got {n}. Send them one call at a time so the user \
+                 approves each one."
+            )));
+        }
+    }
+
+    let head = statement_head(&statements[0]);
+    if READ_HEADS.contains(&head.as_str()) {
+        return Err(refuse_write(format!(
+            "`{head}` only reads, so use tablegrid_query for it. This tool is for statements that \
+             change data, and every call costs the user an approval dialog."
+        )));
+    }
+    if head.is_empty() {
+        return Err(refuse_write(
+            "could not read a statement keyword from this SQL".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Every layer-4 refusal, so the denial and the message are built in one place.
 fn refuse_read(message: String) -> Refusal {
+    Refusal::new(Denial::NotReadOnly, McpError::invalid_params(message, None))
+}
+
+/// Layer-4 refusals from the write side. Same denial kind: both answer "this statement is not the
+/// shape this tool accepts", and splitting them would only make the audit log harder to read.
+fn refuse_write(message: String) -> Refusal {
     Refusal::new(Denial::NotReadOnly, McpError::invalid_params(message, None))
 }
 
@@ -267,6 +356,38 @@ mod tests {
         ] {
             assert!(ensure_single_read(sql).is_err(), "should refuse: {sql}");
         }
+    }
+
+    #[test]
+    fn writes_pass_the_write_gate_and_reads_are_sent_back_to_the_read_tool() {
+        for sql in [
+            "UPDATE t SET a = 1",
+            "DELETE FROM t WHERE id = 1",
+            "INSERT INTO t VALUES (1)",
+            "DROP TABLE t",
+            "CREATE TABLE t (a int)",
+            // A CTE is unrecognised on the read side and refused there; on the write side that
+            // same lack of knowledge means it MIGHT write, and a human is about to read it.
+            "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x",
+        ] {
+            assert!(ensure_single_write(sql).is_ok(), "should allow: {sql}");
+        }
+
+        // A read here is not refused for being dangerous - it is refused for being pointless, and
+        // the message has to send the model to the tool that answers it without a dialog.
+        let read = ensure_single_write("SELECT 1").expect_err("a read is not a mutation");
+        assert!(
+            read.error.message.contains("tablegrid_query"),
+            "{}",
+            read.error.message
+        );
+
+        // One statement per call: the dialog shows what it is approving, and a second statement
+        // would ride along behind the one the user read.
+        assert!(ensure_single_write("UPDATE t SET a = 1; DROP TABLE t").is_err());
+        // ...but a semicolon inside a string is still one statement, as on the read side.
+        assert!(ensure_single_write("UPDATE t SET a = 'x;y'").is_ok());
+        assert!(ensure_single_write("   ").is_err());
     }
 
     #[test]

@@ -3,6 +3,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { TitleBar } from './components/TitleBar';
 import { SafeModeGate } from './components/SafeModeGate';
+import { McpApprovalGate } from './components/McpApprovalGate';
 import { ConnectionManager } from './components/ConnectionManager';
 import { Sidebar } from './components/Sidebar';
 import { DbRail } from './components/DbRail';
@@ -10,7 +11,7 @@ import { DatabaseInfoModal } from './components/DatabaseInfoModal';
 import { TabManager } from './components/TabManager';
 import type { TabInfo } from './components/TabManager';
 import { TAB_GROUP_COLORS, moveGroup, moveTabIntoGroup, reorderTabs, type TabGroup } from './utils/tabGroups';
-import { DataGrid } from './components/DataGrid';
+import { DataGrid, type GridViewMode } from './components/DataGrid';
 // Lazy: `SqlEditor` is the app's only static edge to `monaco-editor`, and pulling it into the
 // entry chunk made the webview parse ~4.5MB (Monaco + the SQL vendor bundle) and run the
 // completion/hover/theme registrations before the first frame — even for a session that never
@@ -1496,8 +1497,11 @@ export const App: React.FC = () => {
   // Open a specific table in a new or existing tab
   const handleSelectTable = (
     tableName: string,
-    initialViewMode: 'data' | 'structure' = 'data',
-    initialFilter?: { column: string; value: any }
+    initialViewMode: GridViewMode = 'data',
+    initialFilter?: { column: string; value: any },
+    // `TableItem.schema` — only the sidebar's Temporary section has one, and only on Postgres. It
+    // rides on the tab so a reopened `pg_temp_N` table keeps addressing the same relation.
+    tableSchema?: string
   ) => {
     const tabId = `table_${tableName}`;
     const open = () => {
@@ -1514,10 +1518,11 @@ export const App: React.FC = () => {
           label: tableName,
           initialViewMode,
           initialFilter,
+          tableSchema,
         } as any;
         setTabs([...tabs, { ...newTab, connId: activeConnIdState }]);
       } else {
-        setTabs(tabs.map(tab => tab.id === tabId ? { ...tab, initialViewMode, initialFilter } as any : tab));
+        setTabs(tabs.map(tab => tab.id === tabId ? { ...tab, initialViewMode, initialFilter, tableSchema } as any : tab));
       }
       setActiveTabId(tabId);
     };
@@ -2134,6 +2139,7 @@ export const App: React.FC = () => {
           React, so it holds a registered confirmer, and the dialog has to live outside every tab so
           the question still appears wherever the command came from. */}
       <SafeModeGate />
+      <McpApprovalGate />
 
       {/* Adding another connection while one is already open (the rail's `+` button). It reuses
           `ConnectionManager` whole rather than writing a second screen; `handleConnect` already does
@@ -2310,6 +2316,7 @@ export const App: React.FC = () => {
                         dbType={connection.dbType}
                         initialViewMode={(activeTab as any).initialViewMode || 'data'}
                         initialFilter={(activeTab as any).initialFilter}
+                        tableSchema={(activeTab as any).tableSchema}
                         readOnly={readOnly}
                         // The flag is only set for the mounted tab; DataGrid's cleanup always reports
                         // false, which clears the flag rather than leaving a mark on the wrong tab.

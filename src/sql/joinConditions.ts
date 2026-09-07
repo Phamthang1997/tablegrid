@@ -14,6 +14,19 @@ export interface JoinSchema {
 /** Key-like column candidates used for fallback when tables lack explicit FK definitions. */
 const KEY_LIKE = /(^id$|_id$|number$|code$)/i;
 
+/** Options for {@link buildJoinConditions}. */
+export interface JoinConditionOptions {
+  /**
+   * Report FOREIGN KEYS only, skipping the same-name fallback.
+   *
+   * Used where the answer decides RANKING rather than filling a caret the user already put after
+   * `ON`: in a schema where every table has an `id`, the fallback would mark every table as
+   * "joinable", which says nothing. At the caret itself the fallback is still wanted — a guess
+   * beats an empty popup once the user has committed to the join.
+   */
+  fkOnly?: boolean;
+}
+
 /**
  * JOIN conditions between the table joined **last** and each table before it.
  * Foreign keys win (in either direction); with no FK it falls back to same-named, key-looking columns.
@@ -24,7 +37,8 @@ const KEY_LIKE = /(^id$|_id$|number$|code$)/i;
 export async function buildJoinConditions(
   scopeTables: string[],
   aliasByTable: Map<string, string>,
-  getSchema: (table: string) => Promise<JoinSchema | null>
+  getSchema: (table: string) => Promise<JoinSchema | null>,
+  opts: JoinConditionOptions = {}
 ): Promise<string[]> {
   const uniq: string[] = [];
   for (const t of scopeTables) {
@@ -64,7 +78,7 @@ export async function buildJoinConditions(
 
     // Fallback by matching column names evaluated per table pair independently.
     
-    if (out.length === before) {
+    if (out.length === before && !opts.fkOnly) {
       const lastCols = lastSchema?.columns || [];
       const lastByLower = new Map(lastCols.map(c => [c.name.toLowerCase(), c.name]));
       for (const col of otherSchema?.columns || []) {

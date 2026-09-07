@@ -86,6 +86,7 @@ impl ConnRegistry {
                         "pending": crate::tx::pending_count(id),
                         "readOnly": e.read_only,
                         "mcpExposed": e.mcp_exposed,
+                        "mcpWrite": e.mcp_write,
                     }),
                 )
             })
@@ -207,8 +208,46 @@ impl ConnRegistry {
         let mut map = self.inner.lock().map_err(|e| e.to_string())?;
         if let Some(entry) = map.get_mut(id) {
             entry.mcp_exposed = on;
+            // Un-sharing takes the write permission with it. Leaving it set would mean re-ticking
+            // the read box silently restores write access the user granted in another context -
+            // a permission coming back on its own is the one behaviour a permission must never have.
+            if !on {
+                entry.mcp_write = false;
+            }
         }
         Ok(())
+    }
+
+    /// Allow an AI client to ask for writes on this connection, or stop allowing it.
+    ///
+    /// Refuses on a connection that is not shared at all: a write tick on a hidden connection is a
+    /// permission with nothing to apply to, and it would be a lie shown as a checked box.
+    pub fn set_mcp_write(&self, id: &str, on: bool) -> Result<(), String> {
+        let mut map = self.inner.lock().map_err(|e| e.to_string())?;
+        match map.get_mut(id) {
+            Some(entry) if entry.mcp_exposed || !on => {
+                entry.mcp_write = on;
+                Ok(())
+            }
+            Some(_) => {
+                Err("Kết nối này chưa được chia sẻ với MCP nên không thể bật quyền ghi".to_string())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// May an AI client write on this connection?
+    ///
+    /// Reads through a poisoned lock and defaults an unknown id to `false`, for the same reason as
+    /// `is_mcp_exposed`: every way of not knowing has to answer no.
+    pub fn is_mcp_write_allowed(&self, id: &str) -> bool {
+        let map = match self.inner.lock() {
+            Ok(m) => m,
+            Err(e) => e.into_inner(),
+        };
+        map.get(id)
+            .map(|e| e.mcp_exposed && e.mcp_write)
+            .unwrap_or(false)
     }
 
     /// Is this `conn_id` one the user shared with AI clients?
@@ -265,6 +304,7 @@ impl ConnRegistry {
                     // parameter convention so there is one casing on the MCP wire, not two.
                     serde_json::json!({
                         "connection_id": &**id,
+                        "write_allowed": e.mcp_write,
                         "database": e.db,
                         "dialect": e.conn.dialect(),
                         "schema": e.current_schema,

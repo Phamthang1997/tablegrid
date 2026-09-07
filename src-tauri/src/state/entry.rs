@@ -81,6 +81,18 @@ pub struct ConnEntry {
     /// half: whether to start the listener at all (`utils/mcpPrefs.ts`), since a running server with
     /// nothing ticked exposes nothing.
     pub mcp_exposed: bool,
+    /// May an AI client ask to WRITE on this connection?
+    ///
+    /// A second tick, not a consequence of the first, and default `false` like it. Sharing a
+    /// connection so a model can read the schema is an everyday act; letting that same model
+    /// propose an UPDATE is not, and folding the two together would mean every shared connection
+    /// can be made to raise an approval dialog. Fatigue is how a guard stops working: a user who
+    /// is asked constantly starts pressing Approve without reading, which is exactly the outcome
+    /// the dialog exists to prevent.
+    ///
+    /// Never persisted, and cleared whenever `mcp_exposed` goes off - see `set_mcp_exposed`. Both
+    /// properties are the same argument as the field above.
+    pub mcp_write: bool,
     pub server: Arc<ServerHandle>,
     /// Database name; the file path for SQLite; `db0`…`db15` for Redis.
     pub db: String,

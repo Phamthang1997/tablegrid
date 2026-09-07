@@ -61,6 +61,22 @@ pub async fn set_connection_mcp_exposed(conn_id: String, enabled: bool) -> Resul
     .await
 }
 
+/// Let an AI client ask to WRITE on one connection, or stop letting it.
+///
+/// A third tick rather than a mode of the two above, and the distinction is the whole point:
+/// `read_only` says what the CONNECTION may do, `mcp_exposed` says whether an AI may see it, and
+/// this says whether an AI may propose changing it. Sharing a connection so a model can read the
+/// schema must not carry write access with it - see `ConnEntry::mcp_write`.
+#[tauri::command]
+pub async fn set_connection_mcp_write(conn_id: String, enabled: bool) -> Result<Value, String> {
+    Box::pin(async move {
+        let state = crate::state::require_state()?;
+        state.connections.set_mcp_write(&conn_id, enabled)?;
+        Ok(json!({ "success": true, "mcpWrite": enabled }))
+    })
+    .await
+}
+
 /// Every connection currently open, for the left rail (§4.2c).
 ///
 /// Deliberately takes no `conn_id`: it is a question about the whole app, not about one connection —
@@ -183,6 +199,7 @@ pub async fn connect_db(app: tauri::AppHandle, config: Value) -> Result<Value, S
                     read_only: false,
                     // Never exposed to an AI client until the user says so, per connection.
                     mcp_exposed: false,
+                    mcp_write: false,
                     server,
                     db: db_name,
                     conn: crate::state::LiveConn::Sql(conn),

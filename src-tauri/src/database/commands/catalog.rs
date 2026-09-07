@@ -3,7 +3,9 @@
 
 use serde_json::{Value, json};
 
-use crate::database::introspect::{get_primary_key_columns, get_tables_inner};
+use crate::database::introspect::{
+    get_primary_key_columns, get_tables_inner, get_temporary_tables_inner,
+};
 use crate::database::{
     DbConnection, DbKind, cell, execute_raw_sql_generic, first_i64, pg_schema_of, rows_of, sql_str,
 };
@@ -169,4 +171,18 @@ pub(super) async fn detect_primary_key(
         .await
         .into_iter()
         .next()
+}
+
+/// The temp tables/views this session owns — the sidebar's Temporary section.
+///
+/// The body lives in `database/introspect.rs` (no `#[tauri::command]` may sit there; see that
+/// file's header) next to `get_tables_inner`, whose shape it mirrors so one sidebar row component
+/// renders both.
+#[tauri::command]
+pub async fn get_temporary_tables(conn_id: String) -> Result<Value, String> {
+    Box::pin(async move {
+        let state = crate::state::require_state()?;
+        get_temporary_tables_inner(&state, conn_id).await
+    })
+    .await
 }

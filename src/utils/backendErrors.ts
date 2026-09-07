@@ -25,6 +25,11 @@ export const EXACT: Record<string, string> = {
   'Kết nối đang ở chế độ chỉ đọc — tắt chế độ này trước khi ghi': 'backend.connReadOnly',
   // oauth.rs — the client id is baked in at compile time and may be empty
   'Chưa cấu hình Google OAuth client id cho bản dựng này': 'backend.oauthClientMissing',
+  // mcp/approval.rs — the only Vietnamese string in mcp/, because it answers the APPROVAL DIALOG
+  // rather than an AI client (everything the client reads stays English, see mcp/mod.rs).
+  'Yêu cầu này không còn chờ trả lời (đã hết hạn hoặc đã được trả lời).': 'backend.mcpApprovalGone',
+  // state/registry.rs — the write tick refuses on a connection that is not shared.
+  'Kết nối này chưa được chia sẻ với MCP nên không thể bật quyền ghi': 'backend.mcpWriteNeedsShare',
   // tx_session.rs — transaction manual
   'Không có transaction nào đang mở': 'backend.txNotOpen',
   'Transaction đã bị huỷ do lỗi trước đó, chỉ có thể rollback': 'backend.txAborted',
@@ -137,6 +142,12 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   { re: /^Lỗi yêu cầu PTY: ([\s\S]*)$/, key: 'backend.ptyRequestFailed' },
   { re: /^Lỗi đọc file private key '([^']*)': ([\s\S]*)$/, key: 'backend.readPrivateKeyFileFailed' },
   { re: /^Lỗi đọc nội dung private key: ([\s\S]*)$/, key: 'backend.readPrivateKeyFailed' },
+  // mcp/audit_file.rs — the encrypted audit log on disk. Only the WRITER's failures surface here;
+  // a line that fails to decrypt is counted rather than thrown, because that is the tamper signal.
+  { re: /^Không lấy được khoá mã hoá nhật ký MCP: ([\s\S]*)$/, key: 'backend.mcpAuditKeyFailed' },
+  { re: /^Khoá mã hoá nhật ký MCP không hợp lệ: ([\s\S]*)$/, key: 'backend.mcpAuditKeyInvalid' },
+  { re: /^Không ghi được nhật ký MCP: ([\s\S]*)$/, key: 'backend.mcpAuditWriteFailed' },
+  { re: /^Không sinh được khoá mã hoá: ([\s\S]*)$/, key: 'backend.mcpAuditKeyGenFailed' },
   { re: /^PING lỗi: ([\s\S]*)$/, key: 'backend.pingFailed' },
   { re: /^Không thể kết nối Redis: ([\s\S]*)$/, key: 'backend.redisConnectFailed' },
   // redis_db.rs — refused commands and pagination

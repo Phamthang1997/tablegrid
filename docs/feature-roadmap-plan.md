@@ -130,15 +130,18 @@ Tài liệu này tổng hợp phân tích kiến trúc, thiết kế UX/UI và g
 
 ## 6. 📅 Kế hoạch Triển khai theo Giai đoạn (Phases)
 
+> **Trạng thái soát ngày 2026-09-04.** 5/7 mục dưới đây đã có code thật nhưng ô tick vẫn để trống,
+> nên tài liệu này từng đọc như thể chưa làm gì. Chỉ còn Auto-Updater và DuckDB là chưa bắt đầu.
+
 ### Giai đoạn 1: Trải nghiệm & Phân phối (P0)
-- [ ] Cấu hình **Tauri Auto-Updater** (`tauri-plugin-updater`) & GitHub Actions workflow cho release tự động.
-- [ ] Bổ sung tính năng **Quick Copy** (Markdown, JSON, SQL INSERT) vào menu chuột phải DataGrid.
+- [ ] Cấu hình **Tauri Auto-Updater** (`tauri-plugin-updater`) & GitHub Actions workflow cho release tự động. — CHƯA có: không có chữ `updater` nào trong `package.json`, `Cargo.toml` hay `tauri.conf.json`.
+- [x] Bổ sung tính năng **Quick Copy** (Markdown, JSON, SQL INSERT) vào menu chuột phải DataGrid. — `DataGrid.tsx` (`copyRowAsCSV/SQL/Markdown/Json`, menu chuột phải).
 
 ### Giai đoạn 2: Trực quan & Giám sát (P1)
-- [ ] Xây dựng màn hình **Live Processlist & Kill Query** cho MySQL và PostgreSQL.
-- [ ] Phát triển module **Interactive ER Diagram** trực quan hóa quan hệ bảng.
+- [x] Xây dựng màn hình **Live Processlist & Kill Query** cho MySQL và PostgreSQL. — `LiveProcessListModal.tsx` + `LiveProcessListPanel.tsx`.
+- [x] Phát triển module **Interactive ER Diagram** trực quan hóa quan hệ bảng. — `src/components/er/` (layout engine, minimap, xuất ảnh, lưu vị trí node).
 
 ### Giai đoạn 3: Phân tích & Tiện ích mở rộng (P2 - P3)
-- [ ] Tích hợp **Query Result Charts** vào SQL Editor.
-- [ ] Hỗ trợ xuất file **Excel (.xlsx)**.
+- [x] Tích hợp **Query Result Charts** vào SQL Editor. — `src/components/chart/`, chuyển Grid ⇄ Chart theo TỪNG result tab trong `SqlEditor.tsx`.
+- [x] Hỗ trợ xuất file **Excel (.xlsx)**. — `utils/xlsxWriter.ts` (tự viết, không thêm dependency), nối vào `exportHelper.ts`.
 - [ ] Nghiên cứu tích hợp **DuckDB / Parquet** cho phân tích file dữ liệu cục bộ.

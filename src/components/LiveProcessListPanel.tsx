@@ -25,7 +25,6 @@ import {
   getDurationSeverity,
   isQueryActive,
 } from '../utils/processMonitorTypes';
-import './process_monitor.css';
 
 export interface LiveProcessListPanelProps {
   connId: string;

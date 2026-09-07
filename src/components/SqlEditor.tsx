@@ -1403,7 +1403,16 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     // The statement just run changed the structure (DDL) or the database (USE / search_path) -> clear
     // the catalog cache so completion and hover see the new tables and columns at once, without
     // waiting for the TTL.
-    if (isSchemaChangingSql(textToRun)) catalog.invalidateCatalog();
+    //
+    // The event carries the same news to the Sidebar, which otherwise only refetches on a rename or
+    // a restore: a `CREATE TEMP TABLE` run here has to make the Temporary section appear, and the
+    // matching `DROP` has to make it disappear, without the user reaching for Refresh. `connId` is
+    // on the detail because every listener filters on it — a DDL statement on one connection must
+    // not make every other sidebar refetch.
+    if (isSchemaChangingSql(textToRun)) {
+      catalog.invalidateCatalog();
+      window.dispatchEvent(new CustomEvent('schema-changed', { detail: { connId } }));
+    }
   };
 
   const handleExplain = async (paneId: 1 | 2 = focusedEditor, variant: 'explain' | 'analyze' | 'json' = 'explain', skipUnsafeCheck = false) => {

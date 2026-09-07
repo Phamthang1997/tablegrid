@@ -6,6 +6,8 @@
 //! client instead, so those are English and never go through that table. Registering these strings
 //! in `backendErrors.ts` happens together with the Settings UI (Bước 3 of the plan).
 
+use super::approval;
+use super::audit_file;
 use super::auth;
 use super::server::{DEFAULT_PORT, McpStatus};
 
@@ -81,6 +83,35 @@ pub async fn mcp_audit_clear() -> Result<(), String> {
         let state = crate::state::require_state()?;
         state.mcp.audit.clear();
         Ok(())
+    })
+    .await
+}
+
+/// The answer to one parked write request, from `McpApprovalGate.tsx`.
+///
+/// Deliberately NOT idempotent: replying to an id that is no longer pending is an error, because
+/// the only way to get there is a request that already timed out - and a dialog that silently
+/// succeeded would tell the user their approval went through when nothing ran.
+#[tauri::command]
+pub async fn mcp_approval_respond(request_id: String, approved: bool) -> Result<(), String> {
+    Box::pin(async move { approval::respond(&request_id, approved) }).await
+}
+
+/// The audit log kept on DISK: every run, not just this one.
+///
+/// Returns `{ entries, unreadable, error }`. `unreadable` counts lines that failed to decrypt,
+/// which is the tamper signal rather than a bug - each line is bound to the one before it, so a
+/// removed or reordered line makes the rest fail. It is reported next to the entries instead of
+/// swallowed, because a log that quietly shows fewer rows is worse than no log.
+#[tauri::command]
+pub async fn mcp_audit_file_read() -> Result<serde_json::Value, String> {
+    Box::pin(async move {
+        let (entries, unreadable) = audit_file::read_all()?;
+        Ok(serde_json::json!({
+            "entries": entries,
+            "unreadable": unreadable,
+            "error": audit_file::last_error(),
+        }))
     })
     .await
 }

@@ -42,6 +42,10 @@ pub enum Denial {
     NotReadOnly,
     /// The connection is mid-transaction in TableGrid.
     ManualTransaction,
+    /// Layer 4: the connection is shared for reading, but the user has not allowed writes on it.
+    WriteNotAllowed,
+    /// Layer 5: the user declined, did not answer in time, or the dialog went away.
+    NotApproved,
     /// The database itself refused, or the query failed.
     Failed,
 }
@@ -54,6 +58,8 @@ impl Denial {
             Denial::NotShared => 3,
             Denial::NotReadOnly => 4,
             Denial::ManualTransaction => 4,
+            Denial::WriteNotAllowed => 4,
+            Denial::NotApproved => 5,
             Denial::Failed => 0,
         }
     }
@@ -98,8 +104,10 @@ impl Audit {
             }
             q.push_back(entry.clone());
         }
-        // Outside the lock: the UI listener runs on the caller's thread in Tauri, and holding this
-        // mutex across it would serialise every MCP request behind the slowest window.
+        // Outside the lock, and before the event for the same reason: the UI listener runs on the
+        // caller's thread in Tauri, so holding this mutex across it would serialise every MCP
+        // request behind the slowest window. The file write only queues, it does not block.
+        super::audit_file::append(&entry);
         crate::state::emit("mcp-request", json!(entry));
     }
 

@@ -71,6 +71,18 @@ describe('buildJoinConditions', () => {
     expect(out.some(c => c.includes('last_update'))).toBe(false);
   });
 
+  it('fkOnly bỏ hẳn fallback trùng tên (dùng để xếp hạng bảng sau JOIN)', async () => {
+    const noFk: Record<string, JoinSchema> = {
+      city: { columns: SAKILA.city.columns },
+      address: { columns: SAKILA.address.columns },
+    };
+    const opts = { fkOnly: true };
+    expect(await buildJoinConditions(['city', 'address'], new Map(), get(noFk), opts)).toEqual([]);
+    // A real FK still comes through.
+    const out = await buildJoinConditions(['city', 'address'], new Map(), get(SAKILA), opts);
+    expect(out).toContain('address.city_id = city.city_id');
+  });
+
   it('chưa đủ hai bảng thì không gợi ý gì', async () => {
     expect(await buildJoinConditions(['city'], new Map(), get(SAKILA))).toEqual([]);
     expect(await buildJoinConditions([], new Map(), get(SAKILA))).toEqual([]);

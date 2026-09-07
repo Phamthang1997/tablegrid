@@ -2,7 +2,6 @@ import React from 'react';
 import { Activity, Database } from 'lucide-react';
 import { Modal } from './Modal';
 import { LiveProcessListPanel, type LiveProcessListPanelProps } from './LiveProcessListPanel';
-import './process_monitor.css';
 
 export interface LiveProcessListModalProps extends LiveProcessListPanelProps {
   onClose: () => void;

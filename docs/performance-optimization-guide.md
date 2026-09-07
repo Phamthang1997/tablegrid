@@ -164,7 +164,9 @@ export default defineConfig({
 
 ## 4. KẾ HOẠCH TRIỂN KHAI NHANH (ACTION PLAN)
 
-- [ ] **Bước 1**: Thêm `[profile.release]` và `mimalloc` vào `src-tauri/Cargo.toml`.
-- [ ] **Bước 2**: Tinh chỉnh `build`, `manualChunks`, `target: 'es2022'` và `drop: ['console', 'debugger']` trong `vite.config.mts`.
-- [ ] **Bước 3**: Áp dụng `React.lazy` cho các Modal/Terminal nặng trong `src/App.tsx`.
-- [ ] **Bước 4**: Thêm script build chuyên biệt cho macOS ARM / Intel / Universal trong `package.json`.
+> **Trạng thái soát ngày 2026-09-04.** Bước 1-3 đã làm xong từ lâu, chỉ ô tick là chưa cập nhật.
+
+- [x] **Bước 1**: Thêm `[profile.release]` và `mimalloc` vào `src-tauri/Cargo.toml`. — `lto = "fat"`, `codegen-units = 1`, `strip`, và `mimalloc 0.1.52` thay allocator hệ thống ở `main.rs`.
+- [x] **Bước 2**: Tinh chỉnh `build`, `target: 'es2022'` và tách chunk trong `vite.config.mts`. — Hai chi tiết trong lời khuyên gốc **không còn đúng**: Vite 8 bundle bằng rolldown, ở đó `manualChunks` dạng object bị bỏ qua **im lặng** (phải dùng `codeSplitting.groups`, và thứ tự nhóm là load-bearing — xem CLAUDE.md), còn `drop: ['console']` là config chết vì không có esbuild.
+- [x] **Bước 3**: Áp dụng `React.lazy` cho các Modal/Terminal nặng. — Ba cạnh chạm `monaco-editor` (`SqlEditor`, Redis `Console`, `RowDocumentModal`) đều lazy; một static import ở BẤT KỲ cạnh nào cũng phá cả ba, nên kiểm bằng `dist/index.html` sau khi build.
+- [ ] **Bước 4**: Thêm script build cho macOS Intel / Universal. — Mới có `build:mac` (chỉ `aarch64-apple-darwin`) và `build:win`; chưa có bản Intel lẫn Universal.

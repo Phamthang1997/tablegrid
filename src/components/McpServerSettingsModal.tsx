@@ -112,6 +112,13 @@ export function McpServerSettingsModal({ onClose, asTab = false }: Props) {
   const [revealed, setRevealed] = useState(false);
   const [connections, setConnections] = useState<OpenConnection[]>([]);
   const [log, setLog] = useState<McpAuditEntry[]>([]);
+  /**
+   * Which log is on screen. The two are genuinely different records, not one filtered two ways:
+   * memory holds this run and is cleared by the button, the file holds every run and is not.
+   */
+  const [logSource, setLogSource] = useState<'memory' | 'file'>('memory');
+  const [fileLog, setFileLog] = useState<McpAuditEntry[]>([]);
+  const [fileInfo, setFileInfo] = useState<{ unreadable: number; error: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState<'token' | 'config' | null>(null);
@@ -143,6 +150,15 @@ export function McpServerSettingsModal({ onClose, asTab = false }: Props) {
     void refresh();
     void dbHelper.mcpGetToken().then(setToken).catch(() => {});
     void dbHelper.mcpAuditLog().then(setLog).catch(() => {});
+    // The disk log is read once on open too: it is what answers "what happened before today",
+    // and finding out only after clicking a tab makes the tab look empty.
+    void dbHelper
+      .mcpAuditFileRead()
+      .then((r) => {
+        setFileLog(r.entries);
+        setFileInfo({ unreadable: r.unreadable, error: r.error });
+      })
+      .catch(() => {});
   }, [refresh]);
 
   // Probe what each ticked connection reaches. One query per newly ticked connection, never for an
@@ -215,6 +231,7 @@ export function McpServerSettingsModal({ onClose, asTab = false }: Props) {
   };
 
   const running = !!status?.running;
+  const shownLog = logSource === 'file' ? fileLog : log;
   const sharedCount = connections.filter((c) => c.mcpExposed).length;
 
   const pickClient = (id: McpClientId) => {
@@ -296,6 +313,10 @@ export function McpServerSettingsModal({ onClose, asTab = false }: Props) {
         return t('mcp.denialNotReadOnly');
       case 'manualTransaction':
         return t('mcp.denialManualTransaction');
+      case 'writeNotAllowed':
+        return t('mcp.denialWriteNotAllowed');
+      case 'notApproved':
+        return t('mcp.denialNotApproved');
       case 'failed':
         return t('mcp.denialFailed');
       default:
@@ -546,6 +567,27 @@ export function McpServerSettingsModal({ onClose, asTab = false }: Props) {
                           <span className="mcp-dialect-badge">{c.dialect}</span>
                         </label>
                         {c.mcpExposed && reachLine(c)}
+                        {/* Nested under the share tick and only rendered while it is on, because
+                            that is the actual relationship: the backend refuses a write tick on a
+                            connection nobody shared, and un-sharing clears it. A second top-level
+                            checkbox would read as two independent settings and invite the question
+                            "is it shared if only the write box is ticked?". */}
+                        {c.mcpExposed && (
+                          <label className="mcp-conn-write">
+                            <input
+                              type="checkbox"
+                              checked={c.mcpWrite}
+                              disabled={busy || c.readOnly}
+                              onChange={(e) =>
+                                run(() => dbHelper.setConnectionMcpWrite(c.connId, e.target.checked))
+                              }
+                            />
+                            <span>{t('mcp.writeTick')}</span>
+                          </label>
+                        )}
+                        {c.mcpExposed && c.mcpWrite && (
+                          <p className="mcp-conn-write-hint">{t('mcp.writeTickHint')}</p>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -593,12 +635,21 @@ export function McpServerSettingsModal({ onClose, asTab = false }: Props) {
                 <div className="mcp-card-header">
                   <span className="mcp-card-title">
                     <Activity size={13} />
-                    <span>{t('mcp.log')} ({log.length})</span>
+                    <span>{t('mcp.log')} ({shownLog.length})</span>
                   </span>
                   <button
                     type="button"
                     className="btn btn-secondary"
-                    disabled={log.length === 0}
+                    onClick={() => setLogSource(logSource === 'memory' ? 'file' : 'memory')}
+                  >
+                    <span>{logSource === 'memory' ? t('mcp.logSourceFile') : t('mcp.logSourceSession')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    // Clearing empties the in-memory log only. Offering it over the disk view would
+                    // promise to erase an audit trail that this button does not touch.
+                    disabled={logSource === 'file' || log.length === 0}
                     onClick={() =>
                       run(async () => {
                         await dbHelper.mcpAuditClear();
@@ -610,16 +661,26 @@ export function McpServerSettingsModal({ onClose, asTab = false }: Props) {
                     <span>{t('mcp.logClear')}</span>
                   </button>
                 </div>
-                <p className="mcp-hint">{t('mcp.logMemoryOnly')}</p>
+                <p className="mcp-hint">
+                  {logSource === 'memory' ? t('mcp.logMemoryOnly') : t('mcp.logFileHint')}
+                </p>
+                {logSource === 'file' && !!fileInfo?.unreadable && (
+                  <p className="mcp-reach">{t('mcp.logUnreadable', { n: fileInfo.unreadable })}</p>
+                )}
+                {logSource === 'file' && !!fileInfo?.error && (
+                  <p className="mcp-reach">{fileInfo.error}</p>
+                )}
 
                 <div className="mcp-log-container">
-                  {log.length === 0 ? (
+                  {shownLog.length === 0 ? (
                     <p className="mcp-empty">{t('mcp.logEmpty')}</p>
                   ) : (
                     <ul className="mcp-log">
-                      {log.map((e) => (
+                      {shownLog.map((e) => (
                         <li
-                          key={e.id}
+                          // `id` restarts at 1 every run, so it is unique only within one. The
+                          // disk log spans runs and needs the timestamp beside it.
+                          key={logSource === 'file' ? `${e.at}#${e.id}` : e.id}
                           className={`mcp-log-item ${e.ok ? 'ok' : 'denied'}`}
                         >
                           <span className="mcp-log-time">

@@ -190,6 +190,7 @@ pub async fn open_database(conn_id: String, name: String) -> Result<Value, Strin
                 read_only: inherit_read_only,
                 // Deliberately NOT inherited - see `ConnEntry::mcp_exposed`.
                 mcp_exposed: false,
+                mcp_write: false,
                 server,
                 db: name.clone(),
                 conn: crate::state::LiveConn::Sql(conn),

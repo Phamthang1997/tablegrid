@@ -507,6 +507,7 @@ mod handshake_tests {
             "tablegrid_describe_table",
             "tablegrid_preview_table",
             "tablegrid_query",
+            "tablegrid_mutate",
         ] {
             assert!(
                 listed.contains(tool),

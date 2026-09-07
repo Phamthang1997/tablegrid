@@ -87,9 +87,9 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
   // earlier click must not quietly shrink the file the user asked for.
   const [onlySelected, setOnlySelected] = useState(false);
   const [schemaCols, setSchemaCols] = useState<string[]>([]);
-  const [rows, setRows] = useState<any[]>([]); // sample rows, for the preview only
-  const [totalRows, setTotalRows] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [fetchedRows, setFetchedRows] = useState<any[]>([]); // sample rows, for the preview only
+  const [fetchedTotal, setFetchedTotal] = useState(0);
+  const [fetching, setFetching] = useState(false);
   const [dir, setDir] = useState(getLastExportDir());
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const [done, setDone] = useState<
@@ -102,7 +102,7 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
     queueMicrotask(() => {
       setStep('options');
       setFileName(tableName);
-      setRows([]);
+      setFetchedRows([]);
     });
   }, [open, tableName]);
 
@@ -117,6 +117,24 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
     return () => { cancelled = true; };
   }, [connId, open, grid, tableName]);
 
+  /**
+   * The preview of a SELECTION is derived, not fetched and not stored.
+   *
+   * Those rows are already in memory, so an effect writing them into state would only be React
+   * synchronising with itself — and it had a real cost: the write ran synchronously while the
+   * fetch path queues its `setFetching(true)` in a microtask, so the two orders had to be reasoned
+   * about together to keep the preview from sticking on "loading" forever. Deriving removes the
+   * ordering question instead of documenting it (and clears oxlint's `set-state-in-effect`).
+   */
+  const pickedRows = onlySelected && grid?.selectedRows?.length ? grid.selectedRows : null;
+  const pickedPreview = React.useMemo(
+    () => (pickedRows ? pickedRows.slice(0, PREVIEW_ROWS) : null),
+    [pickedRows],
+  );
+  const rows = pickedPreview ?? fetchedRows;
+  const totalRows = pickedRows ? pickedRows.length : fetchedTotal;
+  const loading = pickedRows ? false : fetching;
+
   const colNames = React.useMemo(() => {
     const all = grid ? grid.columns : schemaCols;
     if (!grid || !visibleOnly || grid.visibleColumns.length === 0) return all;
@@ -128,20 +146,11 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
   useEffect(() => {
     if (!open || step !== 'preview') return;
     // A selection needs no read, and must not do one: the picked rows are not page 1 of anything.
-    //
-    // Handled HERE, before the loading flag is scheduled, precisely because this path has no `await`:
-    // inside the async block below, its `setLoading(false)` would run synchronously and therefore
-    // BEFORE the queued `setLoading(true)`, leaving the preview stuck on "loading" forever.
-    const picked = onlySelected ? grid?.selectedRows : undefined;
-    if (picked && picked.length > 0) {
-      setRows(picked.slice(0, PREVIEW_ROWS));
-      setTotalRows(picked.length);
-      setLoading(false);
-      return;
-    }
+    // `pickedPreview` above already IS that preview, so this effect has nothing left to do.
+    if (pickedRows) return;
     let cancelled = false;
     queueMicrotask(() => {
-      setLoading(true);
+      setFetching(true);
     });
     (async () => {
       const useView = !!grid && applyView;
@@ -154,12 +163,12 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
         useView ? grid?.filter : undefined
       );
       if (cancelled) return;
-      setRows(data.rows || []);
-      setTotalRows(grid?.totalCount || data.totalCount || 0);
-      setLoading(false);
+      setFetchedRows(data.rows || []);
+      setFetchedTotal(grid?.totalCount || data.totalCount || 0);
+      setFetching(false);
     })();
     return () => { cancelled = true; };
-  }, [connId, open, step, tableName, grid, applyView, onlySelected]);
+  }, [connId, open, step, tableName, grid, applyView, pickedRows]);
 
   /** Loads EVERY row page by page, reporting real progress from the rows fetched so far. */
   const fetchAllRows = async (): Promise<any[]> => {

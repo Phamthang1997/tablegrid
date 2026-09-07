@@ -64,6 +64,12 @@ redis = { version = "1.5.0", features = [
 # text. Bản 0.22 đã có trong Cargo.lock từ trước (dependency gián tiếp) nên không thêm gì mới vào
 # cây phụ thuộc.
 base64 = "0.23.1"
+# Nhật ký MCP ghi ra tệp được mã hoá (`mcp/audit_file.rs`): mục ghi mang nguyên văn câu SQL, mà SQL
+# mang dữ liệu — một INSERT gọi tên giá trị, một WHERE gọi tên con người. Để plaintext trên đĩa là
+# biến vết kiểm toán thành bản sao thứ hai của dữ liệu, đọc được bởi mọi trình sao lưu / đồng bộ /
+# lập chỉ mục trên máy. Chọn aes-gcm vì nó ĐÃ có sẵn trong Cargo.lock (qua `pkcs5`), nên khai báo
+# trực tiếp không kéo thêm crate nào vào cây — cùng lý lẽ với `base64` ở trên.
+aes-gcm = "0.11"
 # Kho bí mật của HĐH (Windows Credential Manager / Keychain / Secret Service).
 # Tắt default-features rồi bật đúng backend theo từng nền tảng bên dưới, tránh kéo
 # zbus + secret-service vào bản build Windows.

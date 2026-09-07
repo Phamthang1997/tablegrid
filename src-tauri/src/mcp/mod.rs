@@ -18,15 +18,19 @@
 //!    page in the user's own browser can reach a loopback port, and DNS rebinding forges `Host`.
 //!    The header check is what stops both.
 //! 2. **Bearer token** from the OS keyring (`auth.rs`).
-//! 3. **Per-connection exposure, default OFF** — `policy.rs`, not built yet (Bước 2).
-//! 4. **`read_only` + a read-only statement filter** — `policy.rs`, not built yet (Bước 2).
-//! 5. **Interactive approval** — V2, not built.
+//! 3. **Per-connection exposure, default OFF** (`policy.rs`). Two ticks per connection, both off
+//!    by default: one to let an AI see it at all, a second to let one ask for a write.
+//! 4. **Statement classification** (`policy.rs`). A whitelist of read heads for the read tools, its
+//!    mirror for the write tool, and one statement per call on both sides.
+//! 5. **Interactive approval** (`approval.rs`). Every write is parked until the user answers a
+//!    dialog showing the exact statement, or 60 seconds pass and it is refused.
 //!
-//! Layers 3-5 do not exist yet, and that is precisely why `tools/` exposes nothing that touches a
-//! database. The transport is real; the surface is empty on purpose until the layers guarding it are
-//! in place.
+//! All five exist. Layers 3-5 are what `tools/` is allowed to assume, so a new tool that skips
+//! `policy::resolve` skips all three at once - it is the only door to a connection for that reason.
 
+mod approval;
 mod audit;
+pub mod audit_file;
 mod auth;
 pub(crate) mod http;
 mod policy;

@@ -24,30 +24,46 @@ pub async fn get_database_stats(conn_id: String) -> Result<Value, String> {
             let total_size_bytes = page_size * page_count;
 
             let mut stmt = conn.prepare(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC;"
+                "SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type ASC, name ASC;"
             ).map_err(|e| e.to_string())?;
 
-            let table_names: Vec<String> = stmt.query_map([], |r| r.get(0))
+            let items: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect();
 
             let mut tables = Vec::new();
             let mut total_rows: i64 = 0;
+            let mut total_tables_count: usize = 0;
 
-            for name in table_names {
-                let sql = format!("SELECT COUNT(*) FROM \"{}\"", name.replace('"', "\"\""));
-                let count: i64 = conn.query_row(&sql, [], |r| r.get(0)).unwrap_or(0).max(0);
-                total_rows += count;
+            for (name, obj_type) in items {
+                let is_view = obj_type == "view";
+                let kind = if is_view { "VIEW" } else { "TABLE" };
+                let count = if is_view {
+                    0
+                } else {
+                    let sql = format!("SELECT COUNT(*) FROM \"{}\"", name.replace('"', "\"\""));
+                    conn.query_row(&sql, [], |r| r.get(0)).unwrap_or(0).max(0)
+                };
+
+                if !is_view {
+                    total_tables_count += 1;
+                    total_rows += count;
+                }
+
                 tables.push(json!({
                     "table_name": name,
+                    "schema": "main",
+                    "kind": kind,
+                    "charset": "UTF-8",
                     "rows": count,
-                    "is_exact": true,
+                    "is_exact": !is_view,
                     "data_size_bytes": Value::Null,
                     "index_size_bytes": Value::Null,
                     "total_size_bytes": Value::Null,
-                    "engine": "SQLite",
-                    "collation": Value::Null
+                    "engine": if is_view { "" } else { "SQLite" },
+                    "collation": Value::Null,
+                    "comment": if is_view { "VIEW" } else { "" }
                 }));
             }
 
@@ -55,7 +71,7 @@ pub async fn get_database_stats(conn_id: String) -> Result<Value, String> {
                 "db_name": "SQLite Database",
                 "db_type": "sqlite",
                 "total_size_bytes": total_size_bytes,
-                "total_tables": tables.len(),
+                "total_tables": total_tables_count,
                 "total_rows": total_rows,
                 "tables": tables
             }))
@@ -74,16 +90,19 @@ pub async fn get_database_stats(conn_id: String) -> Result<Value, String> {
             let rows = sqlx::query(
                 r#"
                 SELECT
-                    t.relname AS table_name,
+                    n.nspname AS schema_name,
+                    c.relname AS table_name,
+                    CASE WHEN c.relkind = 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind,
                     GREATEST(COALESCE(c.reltuples::bigint, 0), 0) AS estimated_rows,
                     pg_total_relation_size(c.oid) AS total_size_bytes,
                     pg_relation_size(c.oid) AS data_size_bytes,
-                    pg_indexes_size(c.oid) AS index_size_bytes
-                FROM pg_stat_user_tables t
-                JOIN pg_class c ON c.relname = t.relname
-                JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = t.schemaname
-                WHERE t.schemaname IN ('public', current_schema())
-                ORDER BY pg_total_relation_size(c.oid) DESC;
+                    pg_indexes_size(c.oid) AS index_size_bytes,
+                    COALESCE(obj_description(c.oid, 'pg_class'), '') AS comment
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname IN ('public', current_schema())
+                  AND c.relkind IN ('r', 'p', 'v')
+                ORDER BY pg_total_relation_size(c.oid) DESC, c.relname ASC;
                 "#
             )
             .fetch_all(pool)
@@ -93,24 +112,37 @@ pub async fn get_database_stats(conn_id: String) -> Result<Value, String> {
             use sqlx::Row;
             let mut tables = Vec::new();
             let mut total_rows: i64 = 0;
+            let mut total_tables_count: usize = 0;
 
             for r in &rows {
+                let schema_name: String = r.get("schema_name");
                 let name: String = r.get("table_name");
+                let kind: String = r.get("kind");
+                let is_view = kind == "VIEW";
                 let count = get_pg_i64_cell(r, "estimated_rows").max(0);
                 let total_sz = get_pg_i64_cell(r, "total_size_bytes").max(0);
                 let data_sz = get_pg_i64_cell(r, "data_size_bytes").max(0);
                 let idx_sz = get_pg_i64_cell(r, "index_size_bytes").max(0);
-                total_rows += count;
+                let comment: String = r.get("comment");
+
+                if !is_view {
+                    total_tables_count += 1;
+                    total_rows += count;
+                }
 
                 tables.push(json!({
                     "table_name": name,
+                    "schema": schema_name,
+                    "kind": kind,
+                    "charset": Value::Null,
                     "rows": count,
                     "is_exact": false,
-                    "data_size_bytes": data_sz,
-                    "index_size_bytes": idx_sz,
-                    "total_size_bytes": total_sz,
-                    "engine": "PostgreSQL",
-                    "collation": Value::Null
+                    "data_size_bytes": if is_view { Value::Null } else { json!(data_sz) },
+                    "index_size_bytes": if is_view { Value::Null } else { json!(idx_sz) },
+                    "total_size_bytes": if is_view { Value::Null } else { json!(total_sz) },
+                    "engine": if is_view { "" } else { "PostgreSQL" },
+                    "collation": Value::Null,
+                    "comment": comment
                 }));
             }
 
@@ -118,7 +150,7 @@ pub async fn get_database_stats(conn_id: String) -> Result<Value, String> {
                 "db_name": db_name,
                 "db_type": "postgres",
                 "total_size_bytes": total_size_bytes,
-                "total_tables": tables.len(),
+                "total_tables": total_tables_count,
                 "total_rows": total_rows,
                 "tables": tables
             }))
@@ -133,16 +165,18 @@ pub async fn get_database_stats(conn_id: String) -> Result<Value, String> {
                 r#"
                 SELECT
                     TABLE_NAME AS table_name,
+                    TABLE_SCHEMA AS schema_name,
+                    CASE WHEN TABLE_TYPE = 'VIEW' THEN 'VIEW' ELSE 'TABLE' END AS kind,
                     COALESCE(TABLE_ROWS, 0) AS estimated_rows,
                     COALESCE(DATA_LENGTH, 0) AS data_size_bytes,
                     COALESCE(INDEX_LENGTH, 0) AS index_size_bytes,
                     COALESCE(DATA_LENGTH + INDEX_LENGTH, 0) AS total_size_bytes,
-                    COALESCE(ENGINE, 'MySQL') AS engine,
-                    TABLE_COLLATION AS collation
+                    COALESCE(ENGINE, '') AS engine,
+                    TABLE_COLLATION AS collation,
+                    COALESCE(TABLE_COMMENT, '') AS comment
                 FROM information_schema.TABLES
                 WHERE TABLE_SCHEMA = DATABASE()
-                  AND TABLE_TYPE = 'BASE TABLE'
-                ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC;
+                ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC, TABLE_NAME ASC;
                 "#
             )
             .fetch_all(pool)
@@ -153,28 +187,41 @@ pub async fn get_database_stats(conn_id: String) -> Result<Value, String> {
             let mut tables = Vec::new();
             let mut total_rows: i64 = 0;
             let mut total_size_bytes: i64 = 0;
+            let mut total_tables_count: usize = 0;
 
             for r in &rows {
                 let name: String = r.get("table_name");
+                let schema_name: String = r.get("schema_name");
+                let kind: String = r.get("kind");
+                let is_view = kind == "VIEW";
                 let count = get_mysql_i64_cell(r, "estimated_rows").max(0);
                 let data_sz = get_mysql_i64_cell(r, "data_size_bytes").max(0);
                 let idx_sz = get_mysql_i64_cell(r, "index_size_bytes").max(0);
                 let total_sz = get_mysql_i64_cell(r, "total_size_bytes").max(0);
                 let engine: String = r.get("engine");
                 let collation: Option<String> = r.get("collation");
+                let comment: String = r.get("comment");
+                let charset = collation.as_deref().and_then(|c| c.split('_').next()).map(|s| s.to_string());
 
-                total_rows += count;
-                total_size_bytes += total_sz;
+                if !is_view {
+                    total_tables_count += 1;
+                    total_rows += count;
+                    total_size_bytes += total_sz;
+                }
 
                 tables.push(json!({
                     "table_name": name,
+                    "schema": schema_name,
+                    "kind": kind,
+                    "charset": charset,
                     "rows": count,
                     "is_exact": false,
-                    "data_size_bytes": data_sz,
-                    "index_size_bytes": idx_sz,
-                    "total_size_bytes": total_sz,
+                    "data_size_bytes": if is_view { Value::Null } else { json!(data_sz) },
+                    "index_size_bytes": if is_view { Value::Null } else { json!(idx_sz) },
+                    "total_size_bytes": if is_view { Value::Null } else { json!(total_sz) },
                     "engine": engine,
-                    "collation": collation
+                    "collation": collation,
+                    "comment": comment
                 }));
             }
 
@@ -182,7 +229,7 @@ pub async fn get_database_stats(conn_id: String) -> Result<Value, String> {
                 "db_name": db_name,
                 "db_type": "mysql",
                 "total_size_bytes": total_size_bytes,
-                "total_tables": tables.len(),
+                "total_tables": total_tables_count,
                 "total_rows": total_rows,
                 "tables": tables
             }))

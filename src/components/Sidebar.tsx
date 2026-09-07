@@ -4,7 +4,7 @@ import { clampMenu, type MenuRect } from '../utils/menuPosition';
 import { dbHelper } from '../utils/dbHelper';
 import { isMariaDbVersion } from '../utils/serverFlavor';
 import type { TableItem, SchemaInfo, TriggerInfo, CheckConstraintInfo } from '../utils/dbHelper';
-import { Search, Table, TerminalSquare, RefreshCw, Layers, Plus, ChevronDown, ChevronRight, Braces, Cog, Key, Sliders, FileCode, Trash2, CheckCircle2, Copy, AlertTriangle, History, Bookmark, Columns3, ArrowDownAZ, Link2, Zap, Code2, Database, Sparkles, GitCompare, ArrowLeftRight, HardDriveDownload, HardDriveUpload, Plug, Network, Activity } from 'lucide-react';
+import { Search, Table, TerminalSquare, RefreshCw, Layers, Plus, ChevronDown, ChevronRight, Braces, Cog, Key, Sliders, FileCode, Trash2, CheckCircle2, Copy, AlertTriangle, History, Bookmark, Columns3, ArrowDownAZ, Link2, Zap, Code2, Database, Sparkles, GitCompare, ArrowLeftRight, HardDriveDownload, HardDriveUpload, Plug, Network, Activity, Timer } from 'lucide-react';
 import { CreateTableModal } from './CreateTableModal';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -438,8 +438,14 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
   );
 };
 
-/** The block a row lives in — also the scope of a selection (see `selection` in Sidebar). */
-type ObjectSection = 'tables' | 'views';
+/**
+ * The block a row lives in — also the scope of a selection (see `selection` in Sidebar).
+ *
+ * `temporary` is the session's own temp tables. It is a third block rather than a flag on the rows
+ * of `tables`, because it is a different LIST from a different backend call with its own lifetime:
+ * it appears when the session creates a temp table and disappears the moment it owns none.
+ */
+type ObjectSection = 'tables' | 'views' | 'temporary';
 
 interface ObjectItemProps {
   /** The connection this row belongs to — `TableDetailTree` needs it to read checks and triggers. */
@@ -460,7 +466,9 @@ interface ObjectItemProps {
   /** Takes the mouse event too: Ctrl/Cmd and Shift decide toggle-one vs take-the-range. */
   onSelect: (name: string, section: ObjectSection, index: number, e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent, name: string, section: ObjectSection, index: number) => void;
-  onToggleExpand: (name: string, isExpanded: boolean, e: React.MouseEvent) => void;
+  /** `schema` is `TableItem.schema` — the detail tree has to introspect the same relation the row
+   *  came from, which for a Postgres temp row is `pg_temp_N` rather than the current schema. */
+  onToggleExpand: (name: string, isExpanded: boolean, e: React.MouseEvent, schema?: string) => void;
   onRequestDrop: (item: TableItem) => void;
 }
 
@@ -515,7 +523,7 @@ const ObjectItem = memo(function ObjectItem({
         style={isActive || isSelected ? ROW_STYLE_ACTIVE : ROW_STYLE}
       >
         {!isView && (
-          <span onClick={(e) => onToggleExpand(item.name, isExpanded, e)} style={CHEVRON_STYLE}>
+          <span onClick={(e) => onToggleExpand(item.name, isExpanded, e, item.schema)} style={CHEVRON_STYLE}>
             {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
           </span>
         )}
@@ -555,7 +563,17 @@ interface SidebarProps {
   dbType: 'sqlite' | 'postgres' | 'mysql';
   /** Read-only mode: refuses every write the sidebar can issue (drop/truncate/rename/create). */
   readOnly?: boolean;
-  onSelectTable: (name: string, viewMode?: 'data' | 'structure') => void;
+  /**
+   * `schema` is `TableItem.schema` — passed only for a row from the Temporary block on Postgres,
+   * where the relation lives in `pg_temp_N` and every read has to name it. `filter` is unused here
+   * but sits between the two because it is `handleSelectTable`'s third parameter in `App.tsx`.
+   */
+  onSelectTable: (
+    name: string,
+    viewMode?: 'data' | 'structure' | 'chart' | 'properties',
+    filter?: { column: string; value: any },
+    schema?: string
+  ) => void;
   onNewQuery: () => void;
   onOpenTerminal: () => void;
   terminalConfig?: import('../utils/dbHelper').DbConnectionConfig;
@@ -641,6 +659,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [readOnly, t]);
 
   const [tables, setTables] = useState<TableItem[]>([]);
+  /**
+   * The temp tables/views this session owns. Reloaded by `fetchTables`, and emptied by the same call
+   * when the session owns none — which is what makes the section disappear rather than go stale.
+   */
+  const [tempTables, setTempTables] = useState<TableItem[]>([]);
   const [schemas, setSchemas] = useState<string[]>([]);
   const [isMariaDb, setIsMariaDb] = useState(false);
   const [switchingSchema, setSwitchingSchema] = useState(false);
@@ -697,7 +720,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Views, functions and procedures are COLLAPSED by default: most of the time the user is working
   // with the table list, and these three groups only open when needed (they still open on their own
   // while a search is being typed — see isOpen()).
-  const [collapsed, setCollapsed] = useState<{ tables: boolean; views: boolean; functions: boolean; procedures: boolean }>({ tables: false, views: true, functions: true, procedures: true });
+  const [collapsed, setCollapsed] = useState<{ tables: boolean; views: boolean; temporary: boolean; functions: boolean; procedures: boolean }>({ tables: false, views: true, temporary: false, functions: true, procedures: true });
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Table detail tree state (expand/collapse table to see fields/indexes/FKs/checks/triggers)
@@ -716,7 +739,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [tableSchemaMap, loadingColumns]);
 
   // isExpanded is passed in by the row itself, so expandedTables need not be read here.
-  const toggleTableExpanded = useCallback(async (tableName: string, isExpanded: boolean, e: React.MouseEvent) => {
+  const toggleTableExpanded = useCallback(async (tableName: string, isExpanded: boolean, e: React.MouseEvent, schemaOverride?: string) => {
     e.stopPropagation();
     const willExpand = !isExpanded;
     setExpandedTables(prev => ({ ...prev, [tableName]: willExpand }));
@@ -724,7 +747,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (willExpand && !columnsMapRef.current[tableName] && !loadingColumnsRef.current[tableName]) {
       setLoadingColumns(prev => ({ ...prev, [tableName]: true }));
       try {
-        const tableSchema = await dbHelper.getTableSchema(connId, tableName);
+        const tableSchema = await dbHelper.getTableSchema(connId, tableName, schemaOverride);
         setTableSchemaMap(prev => ({ ...prev, [tableName]: tableSchema }));
       } catch (err) {
         console.error(`Failed to fetch schema for ${tableName}:`, err);
@@ -774,6 +797,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     tableName: string;
     /** What the menu acts on. 1 entry = the normal menu, more = the bulk menu. */
     names: string[];
+    /** `TableItem.schema` of the right-clicked row — only a Temporary row on Postgres has one. */
+    schema?: string;
+    /** Which block the row came from, so the menu can drop the items a temp table has no use for. */
+    section: ObjectSection;
   } | null>(null);
 
   /**
@@ -795,7 +822,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const anchorRef = useRef(-1);
   /** The VISIBLE list of each block — reassigned every render and read from stable
    *  callbacks (see handleRowSelect), which is why it cannot live in their deps. */
-  const sectionListsRef = useRef<Record<ObjectSection, TableItem[]>>({ tables: [], views: [] });
+  const sectionListsRef = useRef<Record<ObjectSection, TableItem[]>>({ tables: [], views: [], temporary: [] });
 
   // The context menu's position after its real size has been measured (so it cannot overflow the window)
   const menuRef = useRef<HTMLDivElement>(null);
@@ -811,6 +838,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const r = el.getBoundingClientRect();
     queueMicrotask(() => setMenuPos(clampMenu(contextMenu.x, contextMenu.y, r.width, r.height, window.innerWidth, window.innerHeight)));
   }, [contextMenu]);
+
+  // Context menu for right-clicking the "Tables" section header (Item overview, Show diagram)
+  const [tablesHeaderMenu, setTablesHeaderMenu] = useState<{ x: number; y: number } | null>(null);
+  const [tablesHeaderMenuPos, setTablesHeaderMenuPos] = useState<MenuRect | null>(null);
+  const tablesHeaderMenuRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!tablesHeaderMenu) {
+      queueMicrotask(() => setTablesHeaderMenuPos(null));
+      return;
+    }
+    const el = tablesHeaderMenuRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    queueMicrotask(() =>
+      setTablesHeaderMenuPos(
+        clampMenu(tablesHeaderMenu.x, tablesHeaderMenu.y, r.width, r.height, window.innerWidth, window.innerHeight)
+      )
+    );
+  }, [tablesHeaderMenu]);
 
   const [renameState, setRenameState] = useState<{ tableName: string; value: string } | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -836,6 +883,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     isView: boolean;
     ignoreFkCheck: boolean;
     cascade: boolean;
+    /** `TableItem.schema` of the rows being dropped. A selection never spans two blocks, so one
+     *  value covers the whole list. Only a Postgres temp row has one. */
+    schema?: string;
   } | null>(null);
 
   // Database state
@@ -888,6 +938,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setRefreshing(true);
     const list = await dbHelper.getTables(connId);
     setTables(list);
+    // The session's temp tables. Always assigned, never merged: an empty answer is the signal that
+    // the section must vanish (the user dropped the last one, or the session ended), and skipping
+    // the write on `[]` would leave rows behind that no longer exist.
+    setTempTables(await dbHelper.getTemporaryTables(connId));
     // Also loads functions and procedures (the database objects)
     const objs = await dbHelper.getDatabaseObjects(connId);
     setFunctions(objs.functions || []);
@@ -991,6 +1045,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
     queueMicrotask(() => {
       setSelection({ section: 'tables', names: [] });
       anchorRef.current = -1;
+      // Dropped straight away rather than left until `fetchTables` answers: a temp table belongs to
+      // one session, so the previous connection's list is wrong the instant the id changes — and
+      // showing it for one round trip is showing rows whose every query would fail.
+      setTempTables([]);
     });
     // `connId` is in the deps: two connections can point at the SAME database name (`sakila` on two
     // servers), where `dbName` does not change and the sidebar would show the old connection's tables.
@@ -1011,9 +1069,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
     };
     window.addEventListener('table-renamed', onChanged);
     window.addEventListener('database-restored', onChanged);
+    // DDL run from the SQL editor. Without this the object list only caught renames and restores, so
+    // a `CREATE TEMP TABLE` typed into a query tab left the Temporary section invisible until the
+    // user pressed Refresh — and a `CREATE TABLE` left the new table missing from the list entirely.
+    window.addEventListener('schema-changed', onChanged);
     return () => {
       window.removeEventListener('table-renamed', onChanged);
       window.removeEventListener('database-restored', onChanged);
+      window.removeEventListener('schema-changed', onChanged);
     };
   }, []);
 
@@ -1037,7 +1100,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, []);
 
   useEffect(() => {
-    const closeMenu = () => setContextMenu(null);
+    const closeMenu = () => {
+      setContextMenu(null);
+      setTablesHeaderMenu(null);
+    };
     window.addEventListener('click', closeMenu);
     return () => window.removeEventListener('click', closeMenu);
   }, []);
@@ -1058,6 +1124,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       y: e.clientY,
       tableName,
       names: inSelection ? sel.names : [tableName],
+      schema: sectionListsRef.current[section][index]?.schema,
+      section,
     });
   }, []);
 
@@ -1095,7 +1163,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
     anchorRef.current = index;
     setSelection({ section, names: [name] });
-    onSelectTableRef.current(name);
+    // The row, not just its name: a Temporary row carries the `pg_temp_N` schema every read of it
+    // has to name (see `TableItem.schema`), and the tab is where that has to arrive.
+    onSelectTableRef.current(name, 'data', undefined, list[index]?.schema);
   }, []);
 
   // blockedByReadOnly reads the readOnly prop and t, so its identity changes every render too.
@@ -1106,10 +1176,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const handleRowRequestDrop = useCallback((item: TableItem) => {
     if (blockedByReadOnlyRef.current()) return;
     // Delete on a row inside the selection drops the whole selection — what is highlighted.
+    // `item.temporary` decides the block, not `item.type`: a temp table is also `type: 'table'`, and
+    // measuring the selection against the wrong block would drop the permanent tables instead.
     const sel = selectionRef.current;
-    const section: ObjectSection = item.type === 'view' ? 'views' : 'tables';
+    const section: ObjectSection = item.temporary ? 'temporary' : item.type === 'view' ? 'views' : 'tables';
     const names = sel.section === section && sel.names.includes(item.name) ? sel.names : [item.name];
-    setDropModal({ names, isView: item.type === 'view', ignoreFkCheck: false, cascade: false });
+    setDropModal({ names, isView: item.type === 'view', ignoreFkCheck: false, cascade: false, schema: item.schema });
   }, []);
 
   /**
@@ -1246,7 +1318,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const handleConfirmDrop = async () => {
     if (!dropModal) return;
     if (blockedByReadOnly()) return;
-    const { names, isView, ignoreFkCheck, cascade } = dropModal;
+    const { names, isView, ignoreFkCheck, cascade, schema: dropSchema } = dropModal;
     setDropModal(null);
 
     const object = isView ? t('sidebar.objectView') : t('sidebar.objectTable');
@@ -1256,7 +1328,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       // the rest. onTableDropped fires per dropped object so App closes exactly those tabs.
       const failed: string[] = [];
       for (const name of names) {
-        const res = await dbHelper.dropTable(connId, name, { isView, cascade, ignoreFk: ignoreFkCheck });
+        const res = await dbHelper.dropTable(connId, name, { isView, cascade, ignoreFk: ignoreFkCheck, schema: dropSchema });
         if (res.success) onTableDropped?.(name);
         else failed.push(`${name}: ${res.error || ''}`);
       }
@@ -1295,13 +1367,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
     () => tables.filter((item) => item.type === 'view' && matchesSearch(item.name)),
     [tables, matchesSearch]
   );
+  const filteredTempTables = useMemo(
+    () => tempTables.filter((item) => matchesSearch(item.name)),
+    [tempTables, matchesSearch]
+  );
   const filteredFunctions = useMemo(() => functions.filter((f) => matchesSearch(f)), [functions, matchesSearch]);
   const filteredProcedures = useMemo(() => procedures.filter((p) => matchesSearch(p)), [procedures, matchesSearch]);
 
   // While a search is being typed, groups count as open so results are visible (the collapsed state is ignored)
   const isSearching = searchTerm.trim() !== '';
-  const isOpen = (key: 'tables' | 'views' | 'functions' | 'procedures') => isSearching || !collapsed[key];
-  const toggleSection = (key: 'tables' | 'views' | 'functions' | 'procedures') => setCollapsed((c) => ({ ...c, [key]: !c[key] }));
+  type SectionKey = 'tables' | 'views' | 'temporary' | 'functions' | 'procedures';
+  const isOpen = (key: SectionKey) => isSearching || !collapsed[key];
+  const toggleSection = (key: SectionKey) => setCollapsed((c) => ({ ...c, [key]: !c[key] }));
 
   // ↑/↓ navigation from inside the search box (which already takes Ctrl+P/Ctrl+K, so quick-open
   // behaviour is what the user expects). Only the items CURRENTLY visible count; otherwise the arrows
@@ -1309,8 +1386,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const navItems = [
     ...(isOpen('tables') ? filteredTables : []),
     ...(isOpen('views') ? filteredViews : []),
+    ...(isOpen('temporary') ? filteredTempTables : []),
   ];
   const viewNavOffset = isOpen('tables') ? filteredTables.length : 0;
+  const tempNavOffset = viewNavOffset + (isOpen('views') ? filteredViews.length : 0);
 
   // The single source for Shift+click and Ctrl+A. A collapsed block is left empty: Ctrl+A
   // must not select rows nobody can see, and Shift+click indices must match what was drawn.
@@ -1318,6 +1397,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     sectionListsRef.current = {
       tables: isOpen('tables') ? filteredTables : [],
       views: isOpen('views') ? filteredViews : [],
+      temporary: isOpen('temporary') ? filteredTempTables : [],
     };
   });
 
@@ -1603,6 +1683,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div
                 className="sidebar-section-title"
                 onClick={() => toggleSection('tables')}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setContextMenu(null);
+                  setTablesHeaderMenu({ x: e.clientX, y: e.clientY });
+                }}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -1737,7 +1823,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
             )}
 
-            {/* 3. Functions Section */}
+            {/* 3. Temporary Tables Section.
+                Rendered ONLY while the session owns at least one: a temp table exists for the life
+                of a connection, so an empty heading would be a permanent reminder of a feature the
+                user is not using. `fetchTables` writes `[]` when the last one is dropped, which is
+                what makes the block vanish on its own. */}
+            {filteredTempTables.length > 0 && (
+              <div className="sidebar-group">
+                <div className="sidebar-group-head" onClick={() => toggleSection('temporary')}>
+                  {isOpen('temporary') ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <Timer size={13} className="sidebar-group-icon-temp" />
+                  <span>{t('sidebar.temporarySection')}</span>
+                  <span className="sidebar-group-count">{filteredTempTables.length}</span>
+                </div>
+                {isOpen('temporary') && (
+                  <div className="sidebar-list">
+                    {filteredTempTables.map((item, i) =>
+                      renderObjectItem(item, tempNavOffset + i, 'temporary', i)
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 4. Functions Section */}
             {filteredFunctions.length > 0 && (
               <div style={{ marginBottom: '6px' }}>
                 <div
@@ -2243,7 +2352,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* The floating context menu — repositioned to its real size so it cannot overflow */}
       {contextMenu && (() => {
-        const isView = tables.find(item => item.name === contextMenu.tableName)?.type === 'view';
+        const isTempRow = contextMenu.section === 'temporary';
+        // The row's kind comes from the list it was right-clicked in. A temp table never appears in
+        // `tables`, so looking it up there would report `isView === false` by accident rather than
+        // on purpose — and would find a PERMANENT table of the same name if one exists.
+        const isView = isTempRow
+          ? tempTables.find(item => item.name === contextMenu.tableName)?.type === 'view'
+          : tables.find(item => item.name === contextMenu.tableName)?.type === 'view';
         const object = isView ? t('sidebar.objectView') : t('sidebar.objectTable');
         const names = contextMenu.names;
         const menuStyle: React.CSSProperties = {
@@ -2305,7 +2420,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   e.stopPropagation();
                   setContextMenu(null);
                   if (blockedByReadOnly()) return;
-                  setDropModal({ names, isView, ignoreFkCheck: false, cascade: false });
+                  setDropModal({ names, isView, ignoreFkCheck: false, cascade: false, schema: contextMenu.schema });
                 }}
                 style={{ ...itemStyle, color: 'var(--win-accent)' }}
                 className="sidebar-context-item"
@@ -2345,7 +2460,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               onClick={(e) => {
                 e.stopPropagation();
                 setContextMenu(null);
-                onSelectTable(contextMenu.tableName, 'data');
+                onSelectTable(contextMenu.tableName, 'data', undefined, contextMenu.schema);
               }}
               style={{ padding: '6px 12px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
               className="sidebar-context-item"
@@ -2356,13 +2471,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
               onClick={(e) => {
                 e.stopPropagation();
                 setContextMenu(null);
-                onSelectTable(contextMenu.tableName, 'structure');
+                onSelectTable(contextMenu.tableName, 'structure', undefined, contextMenu.schema);
               }}
               style={{ padding: '6px 12px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
               className="sidebar-context-item"
             >
               {t('sidebar.ctxOpenStructure', { object })}
             </div>
+            {/* Opens the table's own tab on the Properties pane rather than a modal, so two tables'
+                properties can be compared side by side instead of one covering the screen. */}
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                setContextMenu(null);
+                onSelectTable(contextMenu.tableName, 'properties', undefined, contextMenu.schema);
+              }}
+              style={{ padding: '6px 12px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+              className="sidebar-context-item"
+            >
+              {t('sidebar.ctxProperties')}
+            </div>
+            {/* Everything below is dropped for a Temporary row. Import/Export/Generate/Rename/
+                Truncate all build their SQL in Rust from the CONNECTION's schema, so on Postgres
+                they would address `public.<name>` — a different relation, or none. Offering a menu
+                item that cannot work is worse than not offering it. Drop is kept, and is the one
+                item that carries the row's own schema. */}
+            {!isTempRow && (
+              <>
             <div style={{ height: '1px', background: 'var(--win-border)', margin: '4px 0' }} />
             <div
               onClick={(e) => {
@@ -2435,6 +2570,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 {t('sidebar.ctxTruncate')}
               </div>
             )}
+              </>
+            )}
+            {isTempRow && <div style={{ height: '1px', background: 'var(--win-border)', margin: '4px 0' }} />}
             <div
               onClick={(e) => {
                 e.stopPropagation();
@@ -2445,6 +2583,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   isView,
                   ignoreFkCheck: false,
                   cascade: false,
+                  schema: contextMenu.schema,
                 });
               }}
               style={{ padding: '6px 12px', fontSize: '11px', color: 'var(--win-accent)', cursor: 'pointer' }}
@@ -2455,6 +2594,45 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         );
       })()}
+
+      {tablesHeaderMenu && (
+        <div
+          ref={tablesHeaderMenuRef}
+          className="ws-menu"
+          style={{
+            position: 'fixed',
+            top: tablesHeaderMenuPos ? tablesHeaderMenuPos.top : tablesHeaderMenu.y,
+            left: tablesHeaderMenuPos ? tablesHeaderMenuPos.left : tablesHeaderMenu.x,
+            visibility: tablesHeaderMenuPos ? 'visible' : 'hidden',
+            zIndex: 99999,
+            minWidth: '170px',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className="sidebar-context-item sidebar-context-item-icon"
+            style={{ padding: '6px 12px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer' }}
+            onClick={() => {
+              setTablesHeaderMenu(null);
+              onOpenDbInfo?.();
+            }}
+          >
+            <Table size={13} className="sidebar-context-icon" />
+            <span>{t('sidebar.tablesItemOverview')}</span>
+          </div>
+          <div
+            className="sidebar-context-item sidebar-context-item-icon"
+            style={{ padding: '6px 12px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer' }}
+            onClick={() => {
+              setTablesHeaderMenu(null);
+              onOpenErDiagram?.();
+            }}
+          >
+            <Network size={13} className="sidebar-context-icon" />
+            <span>{t('sidebar.tablesShowDiagram')}</span>
+          </div>
+        </div>
+      )}
 
 
 

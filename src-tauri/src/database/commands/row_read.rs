@@ -47,13 +47,22 @@ pub async fn get_table_data(
     count_mode: Option<String>,
     seek_column: Option<String>,
     cursor: Option<String>,
+    // The schema to read from, overriding the connection's current one. Only the sidebar's
+    // Temporary section sends it, and only on Postgres, where a session-temporary table lives in
+    // `pg_temp_N` — qualifying it with the connection's schema would look for it in `public` and
+    // report a table the user is looking at as non-existent.
+    schema_override: Option<String>,
 ) -> Result<Value, String> {
     Box::pin(async move {
     let state = crate::state::require_state()?;
     let (conn_type, schema, limit_dur) = {
         let ctx = state.connections.acquire(&conn_id)?;
         let ct = ctx.conn().clone();
-        (ct, ctx.raw_schema().map(str::to_string), stmt_timeout(&ctx.server().config()))
+        let sch = match schema_override.as_deref() {
+            Some(s) if !s.is_empty() => Some(s.to_string()),
+            _ => ctx.raw_schema().map(str::to_string),
+        };
+        (ct, sch, stmt_timeout(&ctx.server().config()))
     };
 
     let is_mysql = matches!(&conn_type.kind, DbKind::Mysql(_));

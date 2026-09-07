@@ -9,7 +9,7 @@ import type { SchemaInfo, ColumnInfo, GridChange } from '../utils/dbHelper';
 import {
   Save, RotateCcw, Plus, ChevronLeft, ChevronRight,
   CheckCircle2, AlertTriangle, Minus, Copy, Calendar, ArrowUpRight,
-  Search, X, ChevronDown, FileUp, FileDown, BarChart2
+  Search, X, ChevronDown, FileUp, FileDown, BarChart2, Sliders
 } from 'lucide-react';
 import { StructureViewer } from './StructureViewer';
 import { parseXlsx } from '../utils/xlsxReader';
@@ -22,6 +22,7 @@ import { Modal, ModalBody, ModalFooter } from './Modal';
 import { LazyModalFallback } from './LazyEditorFallback';
 import { MediaCellPreview, MediaViewerModal, detectMedia, type MediaInfo } from './media';
 import { DataVisualizer } from './chart';
+import { TablePropertiesView } from './TablePropertiesView';
 
 // Lazy because `RowDocumentModal` has a JSON tab built on `@monaco-editor/react`: a static import
 // here is a static path from the entry to Monaco, and it undoes the `React.lazy` of `SqlEditor` and
@@ -109,14 +110,23 @@ const formatForPicker = (val: string): string => {
   return '';
 };
 
+/** The panes the bottom bar switches between. `properties` is read-only, like `chart`. */
+export type GridViewMode = 'data' | 'structure' | 'chart' | 'properties';
+
 interface DataGridProps {
   /** The connection this component acts on. Passed explicitly, never read from the ambient id (§4.1). */
   connId: string;
   tableName: string;
   dbType: 'sqlite' | 'postgres' | 'mysql';
-  initialViewMode?: 'data' | 'structure';
+  initialViewMode?: GridViewMode;
   initialFilter?: { column: string; value: any };
   readOnly?: boolean;
+  /**
+   * `TableItem.schema` — set only when the tab was opened from the sidebar's Temporary section on
+   * Postgres, where the relation lives in `pg_temp_N`. Every read below has to name it or the
+   * backend qualifies with the connection's schema and cannot find the table the tab is showing.
+   */
+  tableSchema?: string;
   /**
    * Whether there are uncommitted edits. App uses it to put the "unsaved" dot on the tab and to ask
    * for confirmation before leaving — replacing the old global `window.__gridDirty`, which triggered
@@ -184,7 +194,7 @@ function parseCSV(text: string): string[][] {
   return result;
 }
 
-export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, initialViewMode = 'data', initialFilter, readOnly = false, onDirtyChange }) => {
+export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, initialViewMode = 'data', initialFilter, readOnly = false, onDirtyChange, tableSchema }) => {
   const { t, i18n } = useTranslation();
   // Thousands separators follow the active UI language instead of a hardcoded locale.
   const fmtNum = (n: number) => n.toLocaleString(i18n.language);
@@ -380,7 +390,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   const [mediaViewerTarget, setMediaViewerTarget] = useState<{ media: MediaInfo; colName: string; tableName: string } | null>(null);
 
   // Schema View Toggle
-  const [viewMode, setViewMode] = useState<'data' | 'structure' | 'chart'>(initialViewMode);
+  const [viewMode, setViewMode] = useState<GridViewMode>(initialViewMode);
   const [structSection, setStructSection] = useState<'columns' | 'indexes' | 'fks' | 'check_constraints' | 'triggers' | 'partitions' | 'ddl'>('columns');
   const [showFilterBar, setShowFilterBar] = useState<boolean>(() =>
     !!(initialFilter && initialFilter.column)
@@ -584,7 +594,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   // Fetch Table Schema (Metadata)
   const fetchSchema = useCallback(async () => {
     try {
-      const s = await dbHelper.getTableSchema(connId, tableName);
+      const s = await dbHelper.getTableSchema(connId, tableName, tableSchema);
       if (s && Array.isArray(s.columns)) {
         setSchema(s);
         setColumns(s.columns);
@@ -609,7 +619,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
       setVisibleColumns([]);
       setPendingVisibleColumns([]);
     }
-  }, [connId, tableName]);
+  }, [connId, tableName, tableSchema]);
 
   // Sync columns with filter builder
   useEffect(() => {
@@ -808,7 +818,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
 
     const data = await dbHelper.getTableData(
       connId, tableName, page, pageSize, sortBy, sortDir, activeFilter,
-      { countMode: mode, seekColumn: seekCol, cursor }
+      { countMode: mode, seekColumn: seekCol, cursor, schema: tableSchema }
     );
     setRows(data.rows);
     setHasMore(data.hasMore);
@@ -831,7 +841,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     }
     if (data.primaryKey) setPrimaryKey(data.primaryKey);
     setLoading(false);
-  }, [connId, tableName, page, pageSize, sortBy, sortDir, activeFilter, dataVersion, columns]);
+  }, [connId, tableName, tableSchema, page, pageSize, sortBy, sortDir, activeFilter, dataVersion, columns]);
 
   /** Re-reads the current page and counts EXACTLY, after the user clicks the estimated number. */
   const recountExact = useCallback(() => {
@@ -1872,6 +1882,8 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
           columnNames={columns.map(c => c.name)}
           tableName={tableName}
         />
+      ) : viewMode === 'properties' ? (
+        <TablePropertiesView connId={connId} tableName={tableName} tableSchema={tableSchema} />
       ) : (
         <div className="grid-table-container">
           {loading && rows.length === 0 ? (
@@ -2206,6 +2218,15 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
           >
             <BarChart2 size={12} />
             <span>{t('dataGrid.chartTab', 'Chart')}</span>
+          </button>
+
+          <button
+            className={`gp-btn ${viewMode === 'properties' ? 'on' : ''}`}
+            onClick={() => setViewMode('properties')}
+            title={t('dataGrid.propertiesViewTitle')}
+          >
+            <Sliders size={12} />
+            <span>{t('dataGrid.propertiesTab')}</span>
           </button>
 
           {viewMode === 'structure' && (
