@@ -317,8 +317,15 @@ fn rotate_if_needed(path: &Path) -> bool {
 mod tests {
     use super::*;
 
+    /// A cipher under a FRESH random key.
+    ///
+    /// Not a constant, and not for style: a literal 32-byte array here is what CodeQL reports as a
+    /// hard-coded cryptographic value (PR #35), and it is right to - nothing at the call site
+    /// distinguishes a test key from a real one. None of these tests depends on the key's VALUE,
+    /// so generating one says that outright instead of leaving a reader to work it out.
     fn cipher() -> Aes256Gcm {
-        Aes256Gcm::new_from_slice(&[7u8; 32]).expect("32 bytes is a valid key")
+        let key = aes_gcm::Key::<Aes256Gcm>::try_generate().expect("the OS RNG answers");
+        Aes256Gcm::new(&key)
     }
 
     #[test]
@@ -380,7 +387,9 @@ mod tests {
         let zero = [0u8; TAG_LEN];
         write_line(&path, &cipher(), r#"{"id":1}"#, &zero).unwrap();
 
-        let other = Aes256Gcm::new_from_slice(&[9u8; 32]).unwrap();
+        // A second generated key. Two random 256-bit keys differ, and saying "a different key"
+        // this way needs no second literal for CodeQL to flag.
+        let other = cipher();
         let line = BufReader::new(File::open(&path).unwrap())
             .lines()
             .next()
