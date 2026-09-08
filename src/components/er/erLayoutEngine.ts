@@ -108,33 +108,69 @@ export function computeAutoLayout(
     }
   }
 
+  // Measure every node up front, so the column height can be derived from the real total rather
+  // than guessed.
+  const dims = new Map<string, { width: number; height: number }>();
+  let totalStack = 0;
+  for (const table of tables) {
+    const dim = calculateNodeDimensions(table, detailLevel, !!collapsedMap[table.name]);
+    dims.set(table.name, dim);
+    totalStack += dim.height + VERTICAL_SPACING;
+  }
+
+  /**
+   * How tall one column may get before the layer spills into another one.
+   *
+   * Without this, layering alone decides the shape — and the layering here puts most tables in a
+   * handful of layers, so 320 tables came out **5580 x 17460**: a ribbon three times taller than
+   * it is wide, which cannot be fitted on any screen (fit-to-view clamped at the minimum zoom and
+   * still showed a sliver) and which reduces the minimap to a 44px strip in a 208px box.
+   *
+   * Solving `columns * COLUMN_PITCH = totalStack / columns` for a square-ish diagram gives the
+   * column count below; the budget is then the height that many columns need. Layer order is
+   * untouched — a spilled layer simply continues in the next column, so a table still sits to the
+   * right of everything it references.
+   */
+  const columnPitch = DEFAULT_NODE_WIDTH + HORIZONTAL_SPACING;
+  const columnCount = Math.max(1, Math.ceil(Math.sqrt(totalStack / columnPitch)));
+  // The floor keeps a small diagram (a handful of tables) laid out exactly as before, one layer
+  // per column, instead of wrapping a two-node layer.
+  const columnBudget = Math.max(totalStack / columnCount, 1200);
+
   const positions: ERLayoutPositions = {};
-  let currentX = 60;
+  const ORIGIN = 60;
+  let currentX = ORIGIN;
+  let currentY = ORIGIN;
+  let columnWidth = DEFAULT_NODE_WIDTH;
+
+  const nextColumn = () => {
+    currentX += columnWidth + HORIZONTAL_SPACING;
+    currentY = ORIGIN;
+    columnWidth = DEFAULT_NODE_WIDTH;
+  };
 
   layers.forEach((layer) => {
-    let currentY = 60;
-    let maxLayerWidth = DEFAULT_NODE_WIDTH;
+    // Every layer starts its own column, which is what keeps the left-to-right reading.
+    if (currentY > ORIGIN) nextColumn();
 
     layer.forEach((tableName) => {
       const table = tableMap.get(tableName);
-      if (!table) return;
+      const dim = dims.get(tableName);
+      if (!table || !dim) return;
 
-      const isCollapsed = !!collapsedMap[tableName];
-      const { width, height } = calculateNodeDimensions(table, detailLevel, isCollapsed);
+      if (currentY > ORIGIN && currentY - ORIGIN + dim.height > columnBudget) nextColumn();
 
       positions[tableName] = {
         x: currentX,
         y: currentY,
-        width,
-        height,
-        isCollapsed,
+        width: dim.width,
+        height: dim.height,
+        isCollapsed: !!collapsedMap[tableName],
       };
 
-      currentY += height + VERTICAL_SPACING;
-      maxLayerWidth = Math.max(maxLayerWidth, width);
+      currentY += dim.height + VERTICAL_SPACING;
+      columnWidth = Math.max(columnWidth, dim.width);
     });
-
-    currentX += maxLayerWidth + HORIZONTAL_SPACING;
   });
 
   return positions;
@@ -190,6 +226,86 @@ export function computeBezierPath(
   const cy2 = target.y;
 
   return `M ${source.x} ${source.y} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${target.x} ${target.y}`;
+}
+
+/**
+ * The two anchor points of one connector, including which side of each card it leaves from.
+ *
+ * Shared by the per-connector component and by the flattened path below, so the two can never
+ * disagree about where a line starts — the alternative is the same side-picking rules written
+ * twice and the lines jumping when the level of detail changes.
+ */
+export function connectorSockets(
+  relationship: ERRelationship,
+  sourceTable: ERTable,
+  targetTable: ERTable,
+  sourcePos: ERNodePosition,
+  targetPos: ERNodePosition,
+  detailLevel: ERDetailLevel = 'full'
+): { source: { x: number; y: number }; target: { x: number; y: number } } {
+  const sourceLeftOfTarget = sourcePos.x + sourcePos.width < targetPos.x;
+  const targetLeftOfSource = targetPos.x + targetPos.width < sourcePos.x;
+
+  let sourceSide: 'left' | 'right' = 'right';
+  let targetSide: 'left' | 'right' = 'right';
+  if (sourceLeftOfTarget) {
+    targetSide = 'left';
+  } else if (targetLeftOfSource) {
+    sourceSide = 'left';
+  }
+
+  return {
+    source: getColumnSocketPosition(
+      sourcePos,
+      sourceTable,
+      relationship.sourceColumn,
+      sourceSide,
+      detailLevel
+    ),
+    target: getColumnSocketPosition(
+      targetPos,
+      targetTable,
+      relationship.targetColumn,
+      targetSide,
+      detailLevel
+    ),
+  };
+}
+
+/**
+ * Every connector as straight segments of ONE path.
+ *
+ * For the zoomed-out level of detail, where no connector can be hovered, highlighted or dimmed
+ * individually and a curve is indistinguishable from a line. A few hundred `<path>` elements
+ * become one: that is a few hundred fewer DOM nodes, memo comparisons and stroked paths, and it
+ * is the difference that matters in the one case culling cannot help with — the whole diagram
+ * fitted on screen, where every connector there is has to be drawn.
+ */
+export function buildFlatConnectorPath(
+  relationships: ERRelationship[],
+  positions: ERLayoutPositions,
+  tables: Map<string, ERTable>,
+  detailLevel: ERDetailLevel = 'full'
+): string {
+  const parts: string[] = [];
+  for (const rel of relationships) {
+    const sourceTable = tables.get(rel.sourceTable);
+    const targetTable = tables.get(rel.targetTable);
+    const sourcePos = positions[rel.sourceTable];
+    const targetPos = positions[rel.targetTable];
+    if (!sourceTable || !targetTable || !sourcePos || !targetPos) continue;
+
+    const { source, target } = connectorSockets(
+      rel,
+      sourceTable,
+      targetTable,
+      sourcePos,
+      targetPos,
+      detailLevel
+    );
+    parts.push(`M ${source.x} ${source.y} L ${target.x} ${target.y}`);
+  }
+  return parts.join(' ');
 }
 
 /**

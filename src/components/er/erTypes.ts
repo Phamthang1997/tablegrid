@@ -50,7 +50,32 @@ export interface ERViewport {
   zoom: number;
 }
 
+/**
+ * Live viewport feed.
+ *
+ * While a gesture is running, the canvas writes its transform straight to the DOM and never
+ * re-renders — so anything that has to keep up with a pan (the minimap indicator, the zoom
+ * readout) subscribes here and updates its own DOM instead of taking the viewport as a prop.
+ * The subscribe function calls back once immediately with the current value.
+ */
+export type ERViewportListener = (vp: ERViewport) => void;
+export type ERViewportSubscribe = (fn: ERViewportListener) => () => void;
+
 export type ERDetailLevel = 'full' | 'keys_only' | 'compact';
+
+/**
+ * The active canvas tool, Figma-style.
+ *
+ *  - `select` — click picks a table, dragging a table moves it, dragging the empty canvas
+ *    lassoes. This is where every mutation of the diagram happens.
+ *  - `hand`   — the pointer only moves the viewport. The node layer stops taking pointer
+ *    events entirely in this mode, which is also what makes it the cheap one: no hover
+ *    tracking, no accidental table drag, no hover repaint of a card while panning over it.
+ *
+ * Holding Space borrows `hand` from whichever tool is active, and the middle mouse button pans
+ * in both — the tool only decides what the LEFT button does.
+ */
+export type ERTool = 'select' | 'hand';
 
 export interface ERDisplayConfig {
   detailLevel: ERDetailLevel;

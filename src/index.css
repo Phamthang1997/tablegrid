@@ -17263,11 +17263,26 @@ input.rename-input {
   background-color: var(--win-bg-window);
   background-image: radial-gradient(var(--win-border) 1px, transparent 1px);
   background-size: 24px 24px;
+  /* The cursor belongs to the TOOL, not to the canvas: `grab` under the move tool promised
+     panning on a left-drag, which is what the hand tool is for. */
+  cursor: default;
+  touch-action: none;
+}
+
+.er-diagram-container.tool-hand {
   cursor: grab;
 }
 
-.er-diagram-container:active {
+.er-diagram-container.tool-hand.gesturing {
   cursor: grabbing;
+}
+
+/* Hand tool: the node and connector layers stop taking pointer events entirely. That is what
+   removes hover tracking, the accidental table drag AND the hover repaint of every card the
+   pointer crosses while panning — the three things that made panning expensive. */
+.er-diagram-container.tool-hand .er-nodes-layer,
+.er-diagram-container.tool-hand .er-rel-group {
+  pointer-events: none;
 }
 
 .er-canvas-layer {
@@ -17277,6 +17292,26 @@ input.rename-input {
   width: 100%;
   height: 100%;
   pointer-events: none;
+  transform-origin: 0 0;
+}
+
+/* `will-change` asks the compositor to keep a texture for this layer ready. On a diagram a
+   few hundred tables wide that texture is not small, so the promise is made only around the
+   moments it is collected — and it outlives the gesture by about a second, because creating
+   and destroying the layer each cost a full rasterization and wheel gestures come in bursts.
+   See `setMoving` in ERDiagramView.tsx for why this is a separate class from `.gesturing`. */
+.er-diagram-container.compositing .er-canvas-layer {
+  will-change: transform;
+}
+
+/* While a gesture runs, nothing may animate: a 0.15s box-shadow transition on a few hundred
+   cards is a repaint per frame for something nobody can perceive mid-drag. */
+.er-diagram-container.gesturing .er-table-node,
+.er-diagram-container.gesturing .er-column-row,
+.er-diagram-container.gesturing .er-rel-path,
+.er-diagram-container.gesturing .er-rel-socket-source,
+.er-diagram-container.gesturing .er-rel-socket-target {
+  transition: none !important;
 }
 
 .er-nodes-layer {
@@ -17301,8 +17336,11 @@ input.rename-input {
   display: flex;
   flex-direction: column;
   cursor: pointer;
-  transition: box-shadow 0.15s ease, border-color 0.15s ease, opacity 0.2s ease;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
   overflow: hidden;
+  /* A card never affects the layout or the paint of anything outside itself, and saying so
+     keeps a few hundred of them from invalidating each other. */
+  contain: layout paint;
 }
 
 .er-table-node:hover {
@@ -17317,14 +17355,31 @@ input.rename-input {
   z-index: 20;
 }
 
-.er-table-node.highlighted {
+/* ---------------------------------------------------------------------------------------
+   Hover highlight.
+
+   The dim is expressed as "everything, except what is lit" so that hovering writes classes
+   on the neighbourhood only — a handful of elements — instead of on every mounted card. It
+   used to arrive through React props, which made crossing a card boundary a re-render plus
+   an opacity change on the whole visible set.
+   --------------------------------------------------------------------------------------- */
+.er-diagram-container.hovering .er-table-node {
+  opacity: 0.35;
+}
+
+.er-diagram-container.hovering .er-table-node.hl {
+  opacity: 1;
   border-color: var(--win-accent);
   box-shadow: 0 0 0 2px var(--win-accent), 0 4px 16px rgba(59, 130, 246, 0.25);
   z-index: 15;
 }
 
-.er-table-node.dimmed {
-  opacity: 0.35;
+.er-diagram-container.hovering .er-rel-group {
+  opacity: 0.15;
+}
+
+.er-diagram-container.hovering .er-rel-group.hl {
+  opacity: 1;
 }
 
 .er-node-header {
@@ -17404,7 +17459,9 @@ input.rename-input {
 .er-node-columns {
   display: flex;
   flex-direction: column;
-  padding: 4px 0;
+  /* 3+3 = FOOTER_HEIGHT in erLayoutEngine.ts. The node height is now set from that formula,
+     and 4px here would overflow it by 2px and clip the last row. */
+  padding: 3px 0;
 }
 
 .er-column-row {
@@ -17494,7 +17551,14 @@ input.rename-input {
 
 /* SVG Connector Lines */
 .er-svg-connectors-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Nodes can be dragged to negative coordinates, and the bezier control points reach past the
+     endpoints, so the layer must not clip to its own width/height. */
   overflow: visible;
+  /* Only the connector groups take pointer events, and only above the lowest LOD. */
+  pointer-events: none;
 }
 
 .er-rel-group {
@@ -17512,13 +17576,19 @@ input.rename-input {
   fill: none;
   stroke: var(--win-text-secondary);
   stroke-width: 1.5px;
-  stroke-dasharray: 4 2;
   transition: stroke 0.15s ease, stroke-width 0.15s ease, opacity 0.2s ease;
   opacity: 0.6;
 }
 
+/* Only added at the highest level of detail. Dashing forces the rasterizer to flatten the
+   curve and lay out every dash along it, and a 4-and-2 pattern is invisible below ~0.7 zoom
+   anyway — see the `lod` check in ERRelationshipLine.tsx. */
+.er-rel-path.dashed {
+  stroke-dasharray: 4 2;
+}
+
 .er-rel-group:hover .er-rel-path,
-.er-rel-group.highlighted .er-rel-path {
+.er-rel-group.hl .er-rel-path {
   stroke: var(--win-accent);
   stroke-width: 2.5px;
   stroke-dasharray: none;
@@ -17526,8 +17596,9 @@ input.rename-input {
   filter: drop-shadow(0 0 3px rgba(59, 130, 246, 0.4));
 }
 
-.er-rel-group.dimmed {
-  opacity: 0.15;
+/* `.hl` and the container-scoped dim above replace what used to be a per-connector prop. */
+.er-rel-group.hl {
+  opacity: 1;
 }
 
 .er-rel-socket-source,
@@ -17540,8 +17611,8 @@ input.rename-input {
 
 .er-rel-group:hover .er-rel-socket-source,
 .er-rel-group:hover .er-rel-socket-target,
-.er-rel-group.highlighted .er-rel-socket-source,
-.er-rel-group.highlighted .er-rel-socket-target {
+.er-rel-group.hl .er-rel-socket-source,
+.er-rel-group.hl .er-rel-socket-target {
   fill: var(--win-accent);
   stroke: #ffffff;
   stroke-width: 2px;
@@ -17842,31 +17913,143 @@ input.rename-input {
   position: absolute;
   bottom: 16px;
   right: 16px;
-  width: 180px;
-  height: 120px;
+  width: 208px;
+  height: 140px;
   background: var(--win-bg-card);
   border: 1px solid var(--win-border);
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
   overflow: hidden;
-  cursor: crosshair;
+  /* It pans, so it says grab — `crosshair` promised drawing something. */
+  cursor: grab;
   z-index: 90;
-  backdrop-filter: blur(8px);
+  /* Deliberately NOT backdrop-filter. It sits on top of the diagram, so a blurred backdrop
+     means reading back the pixels of a few hundred cards and connectors every time any of
+     them repaints. The card background is opaque instead. */
+  contain: paint;
+}
+
+.er-minimap-container:active {
+  cursor: grabbing;
 }
 
 .er-minimap-svg {
   display: block;
 }
 
+/* Faint on purpose: at a few hundred tables these are 2-3px each, and at 0.4 opacity in a
+   slate grey they merged into one block of mush. */
 .er-minimap-node {
   fill: var(--win-text-secondary);
-  opacity: 0.4;
+  opacity: 0.28;
 }
 
-.er-minimap-viewport {
-  fill: rgba(59, 130, 246, 0.15);
+.er-minimap-node.selected {
+  fill: var(--win-accent);
+  opacity: 1;
+}
+
+/* Everything OUTSIDE the viewport, punched out by the mask in ERMinimap.tsx. */
+.er-minimap-shade {
+  fill: var(--win-bg-window);
+  opacity: 0.62;
+}
+
+.er-minimap-frame {
+  fill: none;
   stroke: var(--win-accent);
+  stroke-width: 1px;
+  opacity: 0.9;
+}
+
+/* ---------------------------------------------------------------------------------------
+   Level of detail.
+
+   Chosen from the zoom in `erViewport.ts`, and deliberately only about what is DRAWN: the card
+   keeps the height the layout gave it at every level, so the FK sockets never move.
+   --------------------------------------------------------------------------------------- */
+
+/* `names`: one element per column row, holding its own text. */
+.er-column-row.plain {
+  display: block;
+  padding: 0 10px;
+  font-size: 11px;
+  line-height: 24px;
+  color: var(--win-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* `blocks`: the body is gone, so the header is the whole card. */
+.er-table-node.lod-blocks .er-node-header {
+  height: 100%;
+  border-bottom: none;
+}
+
+.er-table-node.lod-blocks .er-node-title {
+  font-size: 13px;
+}
+
+/* Below this zoom the shadow is a smear, but it still costs a composite for every visible card.
+   The `:not()` matters: this block sits BELOW `.er-table-node.selected` and the hover rules,
+   which carry their rings in `box-shadow` — dropping the shadow unconditionally would make a
+   selection invisible at exactly the zoom where tables are picked out of the whole map. */
+.er-table-node.lod-blocks {
+  border-radius: 4px;
+  /* Nothing here is legible enough to be worth animating between states. */
+  transition: none;
+}
+
+.er-table-node.lod-blocks:not(.selected):not(.hl) {
+  box-shadow: none;
+}
+
+/* The flattened single path that carries EVERY connector at the lowest level of detail
+   (see buildFlatConnectorPath). Transition-free: there is no state for it to animate. */
+.er-rel-path.bare {
+  fill: none;
+  stroke: var(--win-text-secondary);
   stroke-width: 1.5px;
+  transition: none;
+  opacity: 0.45;
+}
+
+/* ---------------------------------------------------------------------------------------
+   Lasso (move tool, dragging the empty canvas)
+   --------------------------------------------------------------------------------------- */
+.er-marquee {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  background: rgba(59, 130, 246, 0.1);
+  /* It lives inside the scaled layer, so the border is divided back out to stay 1px on
+     screen at every zoom. `--er-inv-zoom` is written by `applyTransform`. */
+  border: calc(1px * var(--er-inv-zoom, 1)) solid var(--win-accent);
+  z-index: 30;
+}
+
+/* ---------------------------------------------------------------------------------------
+   Tool switch
+   --------------------------------------------------------------------------------------- */
+.er-tool-group {
+  flex-shrink: 0;
+}
+
+.er-toolbar-icon-btn.active {
+  background: var(--win-accent);
+  color: #fff;
+}
+
+.er-toolbar-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.er-toolbar-icon-btn:disabled:hover {
+  background: transparent;
+  color: var(--win-text-secondary);
 }
 
 /* Loading & Empty States */

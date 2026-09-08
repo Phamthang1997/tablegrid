@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildFlatConnectorPath,
   computeAutoLayout,
   calculateNodeDimensions,
+  connectorSockets,
   getColumnSocketPosition,
   computeBezierPath,
   computeDiagramBounds,
@@ -91,6 +93,56 @@ describe('erLayoutEngine', () => {
     expect(layout['customer'].x).toBeLessThan(layout['payment'].x);
   });
 
+  it('keeps a large schema roughly screen-shaped instead of a tall ribbon', () => {
+    // The layering puts most tables into a handful of layers, so before the column budget a
+    // 320-table schema came out 5580x17460 — three times taller than wide, which no fit-to-view
+    // could show (it clamped at the minimum zoom) and which squeezed the minimap into a strip.
+    const tables: ERTable[] = [];
+    const rels: ERRelationship[] = [];
+    for (let i = 0; i < 320; i++) {
+      tables.push({
+        id: `t${i}`,
+        name: `t${i}`,
+        columns: Array.from({ length: 10 }, (_, c) => ({
+          name: `c${c}`,
+          type: 'int',
+          isPrimaryKey: c === 0,
+          isForeignKey: false,
+        })),
+      });
+      if (i > 0) {
+        rels.push({
+          id: `r${i}`,
+          sourceTable: `t${i}`,
+          sourceColumn: 'c1',
+          targetTable: `t${i % 17}`,
+          targetColumn: 'c0',
+        });
+      }
+    }
+
+    const layout = computeAutoLayout(tables, rels, 'full');
+    expect(Object.keys(layout)).toHaveLength(320);
+
+    const bounds = computeDiagramBounds(layout);
+    const aspect = bounds.width / bounds.height;
+    expect(aspect).toBeGreaterThan(0.6);
+    expect(aspect).toBeLessThan(3);
+
+    // No two nodes may share a spot: a column that wraps must move sideways, not overlap.
+    const spots = new Set(Object.values(layout).map((pos) => `${pos.x},${pos.y}`));
+    expect(spots.size).toBe(320);
+  });
+
+  it('does not wrap a small schema, so one layer stays one column', () => {
+    const layout = computeAutoLayout(mockTables, mockRelationships, 'full');
+    const columns = new Set(Object.values(layout).map((pos) => pos.x));
+    // Three layers, three columns: `store` shares layer 0 with `isolated_log` (both have nothing
+    // pointing at them), then `customer`, then `payment`.
+    expect(columns.size).toBe(3);
+    expect(layout['isolated_log'].x).toBe(layout['store'].x);
+  });
+
   it('computes correct column socket positions', () => {
     const layout = computeAutoLayout(mockTables, mockRelationships, 'full');
     const socket = getColumnSocketPosition(
@@ -103,6 +155,61 @@ describe('erLayoutEngine', () => {
 
     expect(socket.x).toBe(layout['customer'].x + layout['customer'].width);
     expect(socket.y).toBe(layout['customer'].y + 74);
+  });
+
+  it('picks the connector sides from where the two cards actually are', () => {
+    const left = { x: 0, y: 0, width: 260, height: 200 };
+    const right = { x: 500, y: 0, width: 260, height: 200 };
+    const rel = mockRelationships[0];
+
+    // Source left of target: leaves the right edge, arrives at the left one.
+    const forward = connectorSockets(rel, mockTables[1], mockTables[0], left, right, 'full');
+    expect(forward.source.x).toBe(260);
+    expect(forward.target.x).toBe(500);
+
+    // Reversed, so both flip.
+    const backward = connectorSockets(rel, mockTables[1], mockTables[0], right, left, 'full');
+    expect(backward.source.x).toBe(500);
+    expect(backward.target.x).toBe(260);
+
+    // Overlapping horizontally: both leave the right edge rather than crossing the cards.
+    const overlap = { x: 40, y: 400, width: 260, height: 200 };
+    const stacked = connectorSockets(rel, mockTables[1], mockTables[0], left, overlap, 'full');
+    expect(stacked.source.x).toBe(260);
+    expect(stacked.target.x).toBe(300);
+  });
+
+  it('flattens every connector into one path, skipping the ones it cannot place', () => {
+    const layout = computeAutoLayout(mockTables, mockRelationships, 'full');
+    const tableMap = new Map(mockTables.map((table) => [table.name, table]));
+
+    const d = buildFlatConnectorPath(mockRelationships, layout, tableMap, 'full');
+    // One `M ... L ...` per relationship, and straight segments only.
+    expect(d.match(/M /g)).toHaveLength(mockRelationships.length);
+    expect(d.match(/L /g)).toHaveLength(mockRelationships.length);
+    expect(d).not.toContain('C ');
+
+    // Endpoints agree with the per-connector geometry, so lines cannot jump when the level of
+    // detail crosses the threshold between the two renderers.
+    const first = mockRelationships[0];
+    const sockets = connectorSockets(
+      first,
+      tableMap.get(first.sourceTable)!,
+      tableMap.get(first.targetTable)!,
+      layout[first.sourceTable],
+      layout[first.targetTable],
+      'full'
+    );
+    expect(d).toContain(`M ${sockets.source.x} ${sockets.source.y}`);
+
+    // A relationship naming a table that is not in the diagram is dropped, not drawn to 0,0.
+    const dangling = buildFlatConnectorPath(
+      [{ ...first, id: 'x', targetTable: 'not_here' }],
+      layout,
+      tableMap,
+      'full'
+    );
+    expect(dangling).toBe('');
   });
 
   it('computes valid Cubic Bezier SVG path', () => {

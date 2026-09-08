@@ -2362,6 +2362,10 @@ export const App: React.FC = () => {
                         <ERDiagramTab
                           key={activeConnIdState + '|' + activeTab.id}
                           connId={activeTab.connId || activeConnIdState}
+                          // The saved node layout is keyed by SERVER, not by conn_id: that id is a
+                          // fresh UUID per connect, so a hand-arranged diagram would never be
+                          // found again after reconnecting.
+                          storageScope={connKey(activeConnConfig)}
                           dbName={connection?.dbName}
                           schema={connection?.schema ?? undefined}
                           onOpenTable={(tableName) => handleSelectTable(tableName, 'data')}
