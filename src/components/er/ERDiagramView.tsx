@@ -61,8 +61,12 @@ export interface ERDiagramViewProps {
 
 const INITIAL_VIEWPORT: ERViewport = { x: 40, y: 40, zoom: 1 };
 
-/** On the container while anything is hovered: what dims everything not carrying HL_CLASS. */
-const HOVERING_CLASS = 'hovering';
+/**
+ * On the container while anything is selected or hovered: what dims everything not carrying
+ * HL_CLASS. Expressed as "everything, except what is lit" so that focusing writes classes on
+ * the neighbourhood only, instead of on every mounted card.
+ */
+const FOCUSED_CLASS = 'focused';
 const HL_CLASS = 'hl';
 
 const TWEEN_MS = 260;
@@ -678,9 +682,10 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   const handleToggleMinimap = useCallback(() => setShowMinimap((prev) => !prev), []);
 
   /**
-   * Lights the hovered table, its FK neighbours and the connectors between them, by writing
-   * classes onto the DOM. `.hovering` on the container is what dims everything else, so the
-   * number of writes is the size of the neighbourhood rather than the size of the diagram.
+   * Lights the selected and hovered tables, their FK neighbours and the connectors between
+   * them, by writing classes onto the DOM. `.focused` on the container is what dims
+   * everything else, so the number of writes is the size of the neighbourhood rather than
+   * the size of the diagram.
    *
    * Re-applied after every render as well (the effect right below), because culling mounts
    * and unmounts cards and a freshly mounted one arrives without the class.
@@ -692,24 +697,33 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     for (const el of litElementsRef.current) el.classList.remove(HL_CLASS);
     litElementsRef.current = [];
 
-    const table = hoveredTableRef.current;
-    const rel = hoveredRelRef.current;
-    container.classList.toggle(HOVERING_CLASS, table !== null || rel !== null);
-    if (table === null && rel === null) return;
-
     // Which names to light, then ONE pass over what is mounted. Building
     // `[data-er-node="…"]` selectors from table and constraint names would have to escape them
     // first — they are user data, not identifiers — and only saves a walk over a set that
     // culling already keeps down to what is roughly on screen.
     const litNodes = new Set<string>();
     const litRels = new Set<string>();
-    if (table !== null) {
-      litNodes.add(table);
-      for (const name of hoverGraph.neighbours.get(table) ?? []) litNodes.add(name);
-      for (const relId of hoverGraph.rels.get(table) ?? []) litRels.add(relId);
-    } else if (rel !== null) {
-      litRels.add(rel);
-    }
+
+    const lightNeighbourhood = (name: string) => {
+      litNodes.add(name);
+      for (const other of hoverGraph.neighbours.get(name) ?? []) litNodes.add(other);
+      for (const relId of hoverGraph.rels.get(name) ?? []) litRels.add(relId);
+    };
+
+    // SELECTION lights the same neighbourhood as hover, and keeps it: the point of clicking a
+    // table is to hold its relationships still while you read them, which hover cannot do
+    // because it ends the moment the pointer moves away. The two are a union rather than a
+    // priority, so hovering around does not throw away what is selected.
+    for (const name of selectedRef.current) lightNeighbourhood(name);
+
+    const hoveredTable = hoveredTableRef.current;
+    const hoveredRel = hoveredRelRef.current;
+    if (hoveredTable !== null) lightNeighbourhood(hoveredTable);
+    else if (hoveredRel !== null) litRels.add(hoveredRel);
+
+    const focused = litNodes.size > 0 || litRels.size > 0;
+    container.classList.toggle(FOCUSED_CLASS, focused);
+    if (!focused) return;
 
     const lit: Element[] = [];
     for (const el of container.querySelectorAll<HTMLElement>('[data-er-node]')) {
@@ -1043,7 +1057,9 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       }
 
       setMoving(true);
-      setHovered(null, null);
+      // Dragging a card keeps its own neighbourhood lit, which is how you see where it connects
+      // while moving it. A pan or a lasso clears it.
+      setHovered(nodeName, null);
       el.setPointerCapture(e.pointerId);
     },
     [buildDragPlan, cancelTween, refreshOrigin, setHovered, setMoving]

@@ -17356,29 +17356,35 @@ input.rename-input {
 }
 
 /* ---------------------------------------------------------------------------------------
-   Hover highlight.
+   Focus: the table under the pointer, or the one clicked, plus its FK neighbourhood.
 
-   The dim is expressed as "everything, except what is lit" so that hovering writes classes
+   The dim is expressed as "everything, except what is lit" so that focusing writes classes
    on the neighbourhood only — a handful of elements — instead of on every mounted card. It
    used to arrive through React props, which made crossing a card boundary a re-render plus
    an opacity change on the whole visible set.
    --------------------------------------------------------------------------------------- */
-.er-diagram-container.hovering .er-table-node {
+.er-diagram-container.focused .er-table-node {
   opacity: 0.35;
 }
 
-.er-diagram-container.hovering .er-table-node.hl {
+/* A related table: readable, and outlined. The thick ring stays the SELECTED card's alone,
+   below, so a click can be told from its own neighbours. */
+.er-diagram-container.focused .er-table-node.hl {
   opacity: 1;
   border-color: var(--win-accent);
-  box-shadow: 0 0 0 2px var(--win-accent), 0 4px 16px rgba(59, 130, 246, 0.25);
   z-index: 15;
 }
 
-.er-diagram-container.hovering .er-rel-group {
+.er-diagram-container.focused .er-table-node.hl.selected {
+  box-shadow: 0 0 0 2px var(--win-accent), 0 8px 24px rgba(59, 130, 246, 0.2);
+  z-index: 20;
+}
+
+.er-diagram-container.focused .er-rel-group {
   opacity: 0.15;
 }
 
-.er-diagram-container.hovering .er-rel-group.hl {
+.er-diagram-container.focused .er-rel-group.hl {
   opacity: 1;
 }
 
