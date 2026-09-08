@@ -4,7 +4,14 @@
  * and smart socket routing for relationship connector lines.
  */
 
-import type { ERTable, ERRelationship, ERNodePosition, ERLayoutPositions, ERDetailLevel } from './erTypes';
+import type {
+  ERColumn,
+  ERTable,
+  ERRelationship,
+  ERNodePosition,
+  ERLayoutPositions,
+  ERDetailLevel,
+} from './erTypes';
 
 export const HEADER_HEIGHT = 38;
 export const ROW_HEIGHT = 24;
@@ -12,6 +19,23 @@ export const FOOTER_HEIGHT = 6;
 export const DEFAULT_NODE_WIDTH = 260;
 export const HORIZONTAL_SPACING = 120;
 export const VERTICAL_SPACING = 60;
+
+/**
+ * The rows a detail level actually shows.
+ *
+ * The single definition of it: the card renders these, the node height is measured from
+ * them, and the FK connectors anchor at their positions — three answers that have to agree
+ * or a line points at the wrong row.
+ */
+export function visibleColumnsOf(table: ERTable, detailLevel: ERDetailLevel): ERColumn[] {
+  if (detailLevel === 'keys_only') {
+    const keys = table.columns.filter((col) => col.isPrimaryKey || col.isForeignKey);
+    // A table with no key at all would otherwise be a header with nothing under it.
+    return keys.length > 0 ? keys : table.columns.slice(0, 3);
+  }
+  if (detailLevel === 'compact') return table.columns.slice(0, 5);
+  return table.columns;
+}
 
 /**
  * Calculates node dimensions based on columns and detail level.
@@ -24,19 +48,8 @@ export function calculateNodeDimensions(
   if (isCollapsed) {
     return { width: DEFAULT_NODE_WIDTH, height: HEADER_HEIGHT };
   }
-
-  let visibleColumns = table.columns;
-  if (detailLevel === 'keys_only') {
-    visibleColumns = table.columns.filter((col) => col.isPrimaryKey || col.isForeignKey);
-    if (visibleColumns.length === 0) {
-      visibleColumns = table.columns.slice(0, 3);
-    }
-  } else if (detailLevel === 'compact') {
-    visibleColumns = table.columns.slice(0, 5);
-  }
-
-  const height = HEADER_HEIGHT + visibleColumns.length * ROW_HEIGHT + FOOTER_HEIGHT;
-  return { width: DEFAULT_NODE_WIDTH, height };
+  const rows = visibleColumnsOf(table, detailLevel).length;
+  return { width: DEFAULT_NODE_WIDTH, height: HEADER_HEIGHT + rows * ROW_HEIGHT + FOOTER_HEIGHT };
 }
 
 /**
@@ -193,18 +206,14 @@ export function getColumnSocketPosition(
     };
   }
 
-  let visibleColumns = table.columns;
-  if (detailLevel === 'keys_only') {
-    visibleColumns = table.columns.filter((col) => col.isPrimaryKey || col.isForeignKey);
-    if (visibleColumns.length === 0) visibleColumns = table.columns.slice(0, 3);
-  } else if (detailLevel === 'compact') {
-    visibleColumns = table.columns.slice(0, 5);
-  }
-
-  const colIndex = visibleColumns.findIndex((col) => col.name.toLowerCase() === columnName.toLowerCase());
-  const actualIndex = colIndex !== -1 ? colIndex : 0;
-
-  const y = nodePos.y + HEADER_HEIGHT + actualIndex * ROW_HEIGHT + ROW_HEIGHT / 2;
+  const shown = visibleColumnsOf(table, detailLevel);
+  const needle = columnName.toLowerCase();
+  // A column this level does not show anchors on the first row rather than off the card.
+  const row = Math.max(
+    shown.findIndex((col) => col.name.toLowerCase() === needle),
+    0
+  );
+  const y = nodePos.y + HEADER_HEIGHT + row * ROW_HEIGHT + ROW_HEIGHT / 2;
   const x = side === 'left' ? nodePos.x : nodePos.x + nodePos.width;
 
   return { x, y };

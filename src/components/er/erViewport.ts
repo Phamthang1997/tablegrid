@@ -10,7 +10,13 @@
 
 import type { ERLayoutPositions, ERNodePosition, ERViewport } from './erTypes';
 
-export const ZOOM_MIN = 0.06;
+/**
+ * The lower bound is deliberately far below anything readable: it is there to stop a runaway
+ * pinch, not to cap the size of a diagram. Fit-to-view scales as `1/sqrt(tables)` — 320
+ * tables land near 0.12 and 1200 near 0.066, so a floor of 0.06 was about to start clamping
+ * and leaving "fit the whole diagram" showing only part of it.
+ */
+export const ZOOM_MIN = 0.02;
 export const ZOOM_MAX = 3;
 
 /**
@@ -145,20 +151,101 @@ export function rectContainsNode(rect: ERRect, pos: ERNodePosition): boolean {
   );
 }
 
-/**
- * Bezier control points reach up to 180px sideways past a socket (`computeBezierPath`), so a
- * connector can be visible while both of its tables are culled away. Growing the pair's
- * bounding box by that much is what keeps a line from popping in late at the screen edge.
- */
+/** Bezier control points reach up to 180px sideways past a socket (`computeBezierPath`). */
 const BEZIER_SLACK = 200;
 
-export function relationshipBox(a: ERNodePosition, b: ERNodePosition): ERRect {
-  return {
-    minX: Math.min(a.x, b.x) - BEZIER_SLACK,
-    minY: Math.min(a.y, b.y),
-    maxX: Math.max(a.x + a.width, b.x + b.width) + BEZIER_SLACK,
-    maxY: Math.max(a.y + a.height, b.y + b.height),
+/**
+ * Whether the segment a-b passes through the rectangle. Liang-Barsky, written out so it
+ * allocates nothing: it runs once per relationship on every viewport commit.
+ */
+export function segmentIntersectsRect(
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+): boolean {
+  const dx = bx - ax;
+  const dy = by - ay;
+  let t0 = 0;
+  let t1 = 1;
+
+  // Each edge as a half-plane: p is the direction along the segment, q the distance to it.
+  const clip = (p: number, q: number): boolean => {
+    if (p === 0) return q >= 0; // Parallel: inside the slab, or nowhere near it.
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
   };
+
+  return (
+    clip(-dx, ax - minX) &&
+    clip(dx, maxX - ax) &&
+    clip(-dy, ay - minY) &&
+    clip(dy, maxY - ay)
+  );
+}
+
+/**
+ * Whether a connector between two cards can be seen in `rect`.
+ *
+ * It tests the LINE, not the bounding box of the two cards. That distinction is the whole
+ * point and it was measured: on a 1200-table diagram at 85% zoom, 21 cards are mounted and
+ * the box test passed **all 2398** connectors, because a connector between two tables half a
+ * diagram apart has a box that overlaps every viewport. Rendering all of them is a few
+ * thousand SVG elements for the sake of a handful of visible lines.
+ *
+ * Conservative by construction: the drawn curve stays within the centre-to-centre segment
+ * grown by half a card plus the bezier reach, so nothing visible is ever culled.
+ */
+/**
+ * Whether either end of the connector is itself on screen.
+ *
+ * The test used at the zoomed-in levels, where each connector is its own `<g>` with a hitbox, a
+ * stroke and (at `full`) markers and socket dots — six elements and two marker instances each.
+ * `connectorIntersects` below is geometrically honest but at a couple of thousand tables it
+ * still passes several hundred long diagonals whose two ends are both off screen, and such a
+ * line carries no information: you cannot see what it joins or follow it anywhere. Measured on a
+ * 2500-table diagram at 85% zoom: 42 cards mounted, and the line test passed 600 connectors
+ * against this one's few dozen.
+ *
+ * At `blocks` the whole layer is a single path, so the honest test is used there instead and the
+ * long diagonals stay — zoomed out they are the shape of the graph, and they are nearly free.
+ */
+export function connectorHasVisibleEnd(
+  rect: ERRect,
+  a: ERNodePosition,
+  b: ERNodePosition
+): boolean {
+  return rectIntersectsNode(rect, a) || rectIntersectsNode(rect, b);
+}
+
+export function connectorIntersects(
+  rect: ERRect,
+  a: ERNodePosition,
+  b: ERNodePosition
+): boolean {
+  const padX = Math.max(a.width, b.width) / 2 + BEZIER_SLACK;
+  const padY = Math.max(a.height, b.height) / 2;
+  return segmentIntersectsRect(
+    rect.minX - padX,
+    rect.minY - padY,
+    rect.maxX + padX,
+    rect.maxY + padY,
+    a.x + a.width / 2,
+    a.y + a.height / 2,
+    b.x + b.width / 2,
+    b.y + b.height / 2
+  );
 }
 
 /**

@@ -2,6 +2,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Database, Eye, Key, Link2, ChevronDown, ChevronRight } from 'lucide-react';
 import type { ERTable, ERNodePosition, ERDetailLevel } from './erTypes';
+import { visibleColumnsOf } from './erLayoutEngine';
 import type { ERLodLevel } from './erViewport';
 
 interface ERTableNodeProps {
@@ -41,15 +42,7 @@ const ERTableNodeInner: React.FC<ERTableNodeProps> = ({
   const { t } = useTranslation();
   const isCollapsed = !!position.isCollapsed;
 
-  let visibleColumns = table.columns;
-  if (!isCollapsed) {
-    if (detailLevel === 'keys_only') {
-      visibleColumns = table.columns.filter((col) => col.isPrimaryKey || col.isForeignKey);
-      if (visibleColumns.length === 0) visibleColumns = table.columns.slice(0, 3);
-    } else if (detailLevel === 'compact') {
-      visibleColumns = table.columns.slice(0, 5);
-    }
-  }
+  const visibleColumns = isCollapsed ? table.columns : visibleColumnsOf(table, detailLevel);
 
   const isView = table.kind === 'view';
   const showBody = !isCollapsed && lod !== 'blocks';

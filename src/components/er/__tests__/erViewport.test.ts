@@ -14,9 +14,10 @@ import {
   needsRecommit,
   rectContainsNode,
   rectFromCorners,
+  connectorHasVisibleEnd,
+  connectorIntersects,
   rectIntersectsNode,
-  rectsOverlap,
-  relationshipBox,
+  segmentIntersectsRect,
   screenToWorld,
   visibleWorldRect,
   worldToScreen,
@@ -113,13 +114,54 @@ describe('erViewport culling', () => {
     expect(rectIntersectsNode(rect, node(200, 10))).toBe(true);
   });
 
-  it('pads a connector box sideways so a bezier is never clipped in', () => {
-    // Control points reach up to 180px past the socket, so both endpoints being off screen does
-    // not mean the curve is.
-    const box = relationshipBox(node(0, 0), node(1000, 0));
-    expect(box.minX).toBeLessThan(0);
-    expect(box.maxX).toBeGreaterThan(1260);
-    expect(rectsOverlap({ minX: -300, minY: -10, maxX: -150, maxY: 10 }, box)).toBe(true);
+  it('clips a segment against a rectangle, including the parallel cases', () => {
+    const inside = (ax: number, ay: number, bx: number, by: number) =>
+      segmentIntersectsRect(0, 0, 100, 100, ax, ay, bx, by);
+
+    expect(inside(-50, 50, 150, 50)).toBe(true); // straight through
+    expect(inside(10, 10, 20, 20)).toBe(true); // entirely inside
+    expect(inside(-50, 50, 10, 50)).toBe(true); // enters and stops
+    expect(inside(-50, -50, 150, 150)).toBe(true); // corner to corner
+    expect(inside(-50, 150, 150, 250)).toBe(false); // below, parallel-ish
+    expect(inside(-50, 50, -10, 50)).toBe(false); // stops short
+    expect(inside(50, -50, 50, -10)).toBe(false); // above, vertical
+    expect(inside(50, -50, 50, 150)).toBe(true); // vertical through
+    expect(inside(50, 50, 50, 50)).toBe(true); // degenerate, inside
+    expect(inside(-50, -50, -50, -50)).toBe(false); // degenerate, outside
+  });
+
+  it('culls a connector by its line, not by the box around its two cards', () => {
+    const rect = { minX: 0, minY: 0, maxX: 800, maxY: 600 };
+
+    // The box test that this replaced passed this: two cards far apart on opposite sides
+    // give a bounding box that swallows the viewport, even though the line misses it by
+    // thousands of pixels.
+    const farAbove = node(-4000, -5000);
+    const farBelow = node(6000, -4800);
+    expect(connectorIntersects(rect, farAbove, farBelow)).toBe(false);
+
+    // A line that really does cross the viewport survives, with both cards off screen.
+    expect(connectorIntersects(rect, node(-3000, -2000), node(4000, 2600))).toBe(true);
+
+    // And so does one whose cards merely sit just outside, because the curve bows out.
+    expect(connectorIntersects(rect, node(-300, 100), node(-320, 400))).toBe(true);
+  });
+
+  it('at the zoomed-in levels keeps only connectors with an end on screen', () => {
+    const rect = { minX: 0, minY: 0, maxX: 800, maxY: 600 };
+    const inside = node(100, 100);
+    const outside = node(-9000, -9000);
+
+    expect(connectorHasVisibleEnd(rect, inside, outside)).toBe(true);
+    expect(connectorHasVisibleEnd(rect, outside, inside)).toBe(true);
+    expect(connectorHasVisibleEnd(rect, inside, node(400, 300))).toBe(true);
+
+    // A long diagonal that crosses the viewport with both ends far outside: honest geometry,
+    // and the line test keeps it — but there is nothing to read in it at this zoom, and at a
+    // few thousand tables there are hundreds of them, each a `<g>` of six elements.
+    const across = [node(-3000, -2000), node(4000, 2600)] as const;
+    expect(connectorIntersects(rect, across[0], across[1])).toBe(true);
+    expect(connectorHasVisibleEnd(rect, across[0], across[1])).toBe(false);
   });
 });
 

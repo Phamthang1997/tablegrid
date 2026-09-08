@@ -26,9 +26,9 @@ import {
   marqueeHits,
   needsRecommit,
   rectFromCorners,
+  connectorHasVisibleEnd,
+  connectorIntersects,
   rectIntersectsNode,
-  rectsOverlap,
-  relationshipBox,
   screenToWorld,
   visibleWorldRect,
   zoomAtPoint,
@@ -490,9 +490,13 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
         const src = positions[rel.sourceTable];
         const tgt = positions[rel.targetTable];
         if (!src || !tgt) return false;
-        return rectsOverlap(cullRect, relationshipBox(src, tgt));
+        // Two tests, because the two levels of detail cost completely different things per
+        // connector — see connectorHasVisibleEnd.
+        return lod === 'blocks'
+          ? connectorIntersects(cullRect, src, tgt)
+          : connectorHasVisibleEnd(cullRect, src, tgt);
       }),
-    [relationships, visibleNames, positions, cullRect]
+    [relationships, visibleNames, positions, cullRect, lod]
   );
 
   const tableMap = useMemo(() => {
