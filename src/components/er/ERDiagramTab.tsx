@@ -24,10 +24,11 @@ type StaleCheck = () => boolean;
 /**
  * Reads the schema for the diagram.
  *
- * `get_full_catalog` answers in two or three queries on MySQL/Postgres. It returns nothing on
- * SQLite (no `information_schema`), which is the only reason the per-table fallback exists — and
- * that one is deliberately sequential: one `Promise.all` over a few hundred tables would fire
- * that many concurrent reads at the user's database, which this app avoids everywhere else.
+ * `get_full_catalog` answers in two or three queries on every dialect it knows — including
+ * SQLite, which has no `information_schema` but does expose the pragmas as table-valued
+ * functions. The per-table fallback below is what an unknown dialect (an empty answer) gets, and
+ * it is deliberately sequential: one `Promise.all` over a few hundred tables would fire that
+ * many concurrent reads at the user's database, which this app avoids everywhere else.
  */
 async function loadDiagram(connId: string, isStale: StaleCheck): Promise<Loaded> {
   const fullCatalog = await dbHelper.getFullCatalog(connId);

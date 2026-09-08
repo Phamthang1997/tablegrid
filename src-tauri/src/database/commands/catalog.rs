@@ -10,10 +10,12 @@ use crate::database::{
     DbConnection, DbKind, cell, execute_raw_sql_generic, first_i64, pg_schema_of, rows_of, sql_str,
 };
 
-// Fetch the whole catalog (tables + columns/types/PK + FKs) in FEW queries so smart completion loads once
-// instead of calling get_table_schema per table. MySQL/Postgres only (they have information_schema);
-
-// SQLite returns empty -> the frontend falls back to lazy per-table loading.
+// Fetch the whole catalog (tables + columns/types/PK + FKs) in FEW queries so smart completion
+// loads once instead of calling get_table_schema per table. Two or three queries per dialect:
+// information_schema on MySQL/Postgres, the table-valued pragma functions on SQLite.
+//
+// The frontend still keeps its per-table fallback for an empty answer, which is what a dialect
+// with no branch here would give.
 #[tauri::command]
 pub async fn get_full_catalog(conn_id: String) -> Result<Value, String> {
     Box::pin(async move {
@@ -83,8 +85,52 @@ pub async fn get_full_catalog(conn_id: String) -> Result<Value, String> {
                 arr.push(json!({ "column": cell(&row, "c"), "refTable": cell(&row, "rt"), "refColumn": cell(&row, "rc") }));
             }
         }
+    } else if db_type == "sqlite" {
+        // SQLite has no information_schema, but it does have the pragmas as TABLE-VALUED
+        // functions (3.16+, and the bundled amalgamation is far newer), so joining
+        // `sqlite_master` against them answers for every table in one query each.
+        //
+        // This used to return empty and let the frontend fall back to one `get_table_schema`
+        // per table. That is fine for autocomplete, which primes lazily and only needs the
+        // table the user is typing about — but the ER diagram needs all of it at once, and a
+        // few hundred tables meant a few hundred round trips before the first frame.
+        let col_sql = "SELECT m.name AS t, p.name AS c, p.type AS ty, CAST(p.pk AS TEXT) AS pk \
+             FROM sqlite_master m JOIN pragma_table_info(m.name) p \
+             WHERE m.type IN ('table','view') AND m.name NOT LIKE 'sqlite_%' \
+             ORDER BY m.name, p.cid"
+            .to_string();
+        for row in rows_of(&execute_raw_sql_generic(&conn_type, col_sql).await?) {
+            let t = cell(&row, "t").to_string();
+            let entry = columns_map.entry(t).or_insert_with(|| Value::Array(vec![]));
+            if let Some(arr) = entry.as_array_mut() {
+                // `pk` is 0 for a plain column and the 1-based position within a composite
+                // primary key otherwise — so "not zero", not "is one".
+                arr.push(json!({
+                    "name": cell(&row, "c"),
+                    "type": cell(&row, "ty"),
+                    "isPrimaryKey": cell(&row, "pk") != "0",
+                }));
+            }
+        }
+        // `"to"` is NULL when the constraint points at the parent's primary key without naming
+        // it; that reaches the frontend as an empty string, which its `refColumn || column`
+        // fallback already handles the same way it does for the other dialects.
+        let fk_sql = "SELECT m.name AS t, f.\"from\" AS c, f.\"table\" AS rt, f.\"to\" AS rc \
+             FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) f \
+             WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'"
+            .to_string();
+        for row in rows_of(&execute_raw_sql_generic(&conn_type, fk_sql).await?) {
+            let t = cell(&row, "t").to_string();
+            let entry = fk_map.entry(t).or_insert_with(|| Value::Array(vec![]));
+            if let Some(arr) = entry.as_array_mut() {
+                arr.push(json!({
+                    "column": cell(&row, "c"),
+                    "refTable": cell(&row, "rt"),
+                    "refColumn": cell(&row, "rc"),
+                }));
+            }
+        }
     }
-    // SQLite: return empty -> the frontend does its own lazy per-table loading
 
     Ok(json!({ "columns": columns_map, "foreignKeys": fk_map }))
 }).await
