@@ -13,7 +13,8 @@ import {
   buildFlatConnectorPath,
   computeAutoLayout,
   calculateNodeDimensions,
-  computeDiagramBounds,
+  computeBezierPath,
+  connectorSockets,
 } from './erLayoutEngine';
 import {
   CULL_MARGIN,
@@ -164,7 +165,6 @@ type Gesture =
       pointerId: number;
       startX: number;
       startY: number;
-      initial: Record<string, { x: number; y: number }>;
       moved: boolean;
     }
   | {
@@ -440,12 +440,6 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     setLayout((prev) => ({ ...prev, positions: next, persist }));
   }, []);
 
-  /** Marks the layout for saving without touching it. Queued after the drag's own update, so
-   *  what gets written is the position the card ended on rather than the previous frame's. */
-  const markLayoutDirty = useCallback(() => {
-    setLayout((prev) => (prev.persist ? prev : { ...prev, persist: true }));
-  }, []);
-
   // ---------------------------------------------------------------------------------------
   // Filtering, culling and level of detail
   // ---------------------------------------------------------------------------------------
@@ -539,16 +533,30 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     return buildFlatConnectorPath(renderedRelationships, positions, tableMap, detailLevel);
   }, [lod, renderedRelationships, positions, tableMap, detailLevel]);
 
-  const diagramBounds = useMemo(() => computeDiagramBounds(positions), [positions]);
-
-  // Rounded up so dragging a node near the edge does not resize the SVG every frame.
-  const svgSize = useMemo(
-    () => ({
-      width: Math.max(Math.ceil((diagramBounds.maxX + 600) / 1000) * 1000, 1000),
-      height: Math.max(Math.ceil((diagramBounds.maxY + 600) / 1000) * 1000, 1000),
-    }),
-    [diagramBounds]
-  );
+  /**
+   * The connector layer follows the culling rectangle rather than covering the diagram.
+   *
+   * It used to be sized to the whole thing, which on a few hundred tables is an element of
+   * 11000x7000 sitting inside the layer the compositor has to keep a texture for. The
+   * `viewBox` matches the box one-to-one, so the connectors keep their world coordinates and
+   * nothing inside needs translating.
+   *
+   * Snapped to a grid so panning does not change the geometry on every commit, and padded
+   * past the cull rect by more than the bezier reach (`relationshipBox`), so a curve whose
+   * endpoints are just off screen is not clipped at the edge.
+   */
+  const connectorBox = useMemo(() => {
+    const SNAP = 512;
+    const PAD = 512;
+    const x = Math.floor((cullRect.minX - PAD) / SNAP) * SNAP;
+    const y = Math.floor((cullRect.minY - PAD) / SNAP) * SNAP;
+    return {
+      x,
+      y,
+      width: Math.ceil((cullRect.maxX + PAD) / SNAP) * SNAP - x,
+      height: Math.ceil((cullRect.maxY + PAD) / SNAP) * SNAP - y,
+    };
+  }, [cullRect]);
 
   // ---------------------------------------------------------------------------------------
   // Viewport commands
@@ -725,6 +733,132 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     applyHighlight();
   });
 
+  /**
+   * Everything a node drag needs, resolved once when the drag starts.
+   *
+   * Dragging was the last path that went through React on every frame: one `setPositions` per
+   * pointer move re-rendered the whole culled set and recomputed every connector, and at the
+   * zooms where a hundred-odd cards are mounted that is the expensive kind of frame. What a drag
+   * actually changes is bounded — the cards under the pointer and the connectors touching them —
+   * so it moves them itself and lets React see the result once, on release.
+   *
+   * Resolving the elements up front is also what keeps the drag consistent: the level of detail
+   * and the connector list cannot change mid-gesture, because nothing commits during one.
+   */
+  interface DragPlan {
+    /** Private mutable copy. Unmoved entries keep their identity, so the memos still bail out. */
+    live: ERLayoutPositions;
+    cards: { name: string; el: HTMLElement; startX: number; startY: number }[];
+    edges: {
+      rel: ERRelationship;
+      sourceTable: ERTable;
+      targetTable: ERTable;
+      hitbox: SVGPathElement | null;
+      path: SVGPathElement | null;
+      sourceDot: SVGCircleElement | null;
+      targetDot: SVGCircleElement | null;
+    }[];
+    /** At the lowest level of detail every connector is one path, rebuilt whole. */
+    flat: { el: SVGPathElement; rels: ERRelationship[] } | null;
+    tables: Map<string, ERTable>;
+    detailLevel: ERDetailLevel;
+  }
+
+  const dragPlanRef = useRef<DragPlan | null>(null);
+
+  const buildDragPlan = useCallback(
+    (names: Set<string>): DragPlan | null => {
+      const container = containerRef.current;
+      if (!container) return null;
+
+      const live: ERLayoutPositions = { ...positionsRef.current };
+      const cards: DragPlan['cards'] = [];
+      for (const el of container.querySelectorAll<HTMLElement>('[data-er-node]')) {
+        const name = el.dataset.erNode;
+        const pos = name ? live[name] : undefined;
+        if (!name || !pos || !names.has(name)) continue;
+        cards.push({ name, el, startX: pos.x, startY: pos.y });
+      }
+
+      const wanted = new Set<string>();
+      for (const name of names) {
+        for (const id of hoverGraph.rels.get(name) ?? []) wanted.add(id);
+      }
+      const byId = new Map(renderedRelationships.map((rel) => [rel.id, rel]));
+
+      const edges: DragPlan['edges'] = [];
+      for (const group of container.querySelectorAll('[data-er-rel]')) {
+        const id = group.getAttribute('data-er-rel');
+        const rel = id ? byId.get(id) : undefined;
+        if (!rel || !wanted.has(rel.id)) continue;
+        const sourceTable = tableMap.get(rel.sourceTable);
+        const targetTable = tableMap.get(rel.targetTable);
+        if (!sourceTable || !targetTable) continue;
+        edges.push({
+          rel,
+          sourceTable,
+          targetTable,
+          hitbox: group.querySelector<SVGPathElement>('.er-rel-hitbox'),
+          path: group.querySelector<SVGPathElement>('.er-rel-path'),
+          sourceDot: group.querySelector<SVGCircleElement>('.er-rel-socket-source'),
+          targetDot: group.querySelector<SVGCircleElement>('.er-rel-socket-target'),
+        });
+      }
+
+      const flatEl = container.querySelector<SVGPathElement>('.er-rel-path.bare');
+      return {
+        live,
+        cards,
+        edges,
+        flat: flatEl ? { el: flatEl, rels: renderedRelationships } : null,
+        tables: tableMap,
+        detailLevel,
+      };
+    },
+    [detailLevel, hoverGraph, renderedRelationships, tableMap]
+  );
+
+  const applyDragFrame = useCallback((dx: number, dy: number) => {
+    const plan = dragPlanRef.current;
+    if (!plan) return;
+
+    for (const card of plan.cards) {
+      const x = Math.round(card.startX + dx);
+      const y = Math.round(card.startY + dy);
+      const pos = plan.live[card.name];
+      if (pos) plan.live[card.name] = { ...pos, x, y };
+      card.el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    }
+
+    for (const edge of plan.edges) {
+      const sourcePos = plan.live[edge.rel.sourceTable];
+      const targetPos = plan.live[edge.rel.targetTable];
+      if (!sourcePos || !targetPos) continue;
+      const { source, target } = connectorSockets(
+        edge.rel,
+        edge.sourceTable,
+        edge.targetTable,
+        sourcePos,
+        targetPos,
+        plan.detailLevel
+      );
+      const d = computeBezierPath(source, target);
+      edge.hitbox?.setAttribute('d', d);
+      edge.path?.setAttribute('d', d);
+      edge.sourceDot?.setAttribute('cx', String(source.x));
+      edge.sourceDot?.setAttribute('cy', String(source.y));
+      edge.targetDot?.setAttribute('cx', String(target.x));
+      edge.targetDot?.setAttribute('cy', String(target.y));
+    }
+
+    if (plan.flat) {
+      plan.flat.el.setAttribute(
+        'd',
+        buildFlatConnectorPath(plan.flat.rels, plan.live, plan.tables, plan.detailLevel)
+      );
+    }
+  }, []);
+
   const setHovered = useCallback(
     (table: string | null, rel: string | null) => {
       if (hoveredTableRef.current === table && hoveredRelRef.current === rel) return;
@@ -825,13 +959,18 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     setMoving(false);
     showMarquee(null);
 
+    const plan = dragPlanRef.current;
+    dragPlanRef.current = null;
+
     if (!gesture) return;
     if (gesture.kind === 'pan') {
       commitViewport();
-    } else if (gesture.kind === 'node' && gesture.moved) {
-      markLayoutDirty();
+    } else if (gesture.kind === 'node' && gesture.moved && plan) {
+      // The cards and connectors are already where they belong; this is React catching up,
+      // once, with the positions to persist.
+      setPositions(plan.live, true);
     }
-  }, [commitViewport, markLayoutDirty, setMoving, showMarquee]);
+  }, [commitViewport, setMoving, setPositions, showMarquee]);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -875,17 +1014,12 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
           setSelectedTableIds(next);
         }
 
-        const initial: Record<string, { x: number; y: number }> = {};
-        for (const name of next) {
-          const pos = positionsRef.current[name];
-          if (pos) initial[name] = { x: pos.x, y: pos.y };
-        }
+        dragPlanRef.current = buildDragPlan(next);
         gestureRef.current = {
           kind: 'node',
           pointerId: e.pointerId,
           startX: e.clientX,
           startY: e.clientY,
-          initial,
           moved: false,
         };
       } else {
@@ -908,7 +1042,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       setHovered(null, null);
       el.setPointerCapture(e.pointerId);
     },
-    [cancelTween, refreshOrigin, setHovered, setMoving]
+    [buildDragPlan, cancelTween, refreshOrigin, setHovered, setMoving]
   );
 
   const handlePointerMove = useCallback(
@@ -937,16 +1071,8 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
         const dy = (e.clientY - gesture.startY) / zoom;
         if (!gesture.moved && Math.abs(dx) + Math.abs(dy) < 1) return;
         gesture.moved = true;
-        schedule(() => {
-          const next: ERLayoutPositions = { ...positionsRef.current };
-          for (const [name, start] of Object.entries(gesture.initial)) {
-            const pos = next[name];
-            if (!pos) continue;
-            next[name] = { ...pos, x: Math.round(start.x + dx), y: Math.round(start.y + dy) };
-          }
-          // Not persisted yet — that would write localStorage on every frame of the drag.
-          setPositions(next, false);
-        });
+        // Straight to the DOM, like the pan. React sees the result once, on release.
+        schedule(() => applyDragFrame(dx, dy));
         return;
       }
 
@@ -966,7 +1092,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
         })
       );
     },
-    [applyTransform, maybeCommitViewport, schedule, setPositions, showMarquee]
+    [applyDragFrame, applyTransform, maybeCommitViewport, schedule, showMarquee]
   );
 
   const handlePointerUp = useCallback(
@@ -1232,8 +1358,12 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       <div className="er-canvas-layer" ref={canvasRef}>
         <svg
           className="er-svg-connectors-layer"
-          width={svgSize.width}
-          height={svgSize.height}
+          width={connectorBox.width}
+          height={connectorBox.height}
+          viewBox={`${connectorBox.x} ${connectorBox.y} ${connectorBox.width} ${connectorBox.height}`}
+          // Placed with a transform rather than left/top: it is a computed value that moves
+          // with the viewport, and a transform costs no layout.
+          style={{ transform: `translate3d(${connectorBox.x}px, ${connectorBox.y}px, 0)` }}
         >
           <defs>
             <marker
