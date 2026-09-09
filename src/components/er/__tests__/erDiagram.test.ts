@@ -137,10 +137,73 @@ describe('erLayoutEngine', () => {
   it('does not wrap a small schema, so one layer stays one column', () => {
     const layout = computeAutoLayout(mockTables, mockRelationships, 'full');
     const columns = new Set(Object.values(layout).map((pos) => pos.x));
-    // Three layers, three columns: `store` shares layer 0 with `isolated_log` (both have nothing
-    // pointing at them), then `customer`, then `payment`.
-    expect(columns.size).toBe(3);
-    expect(layout['isolated_log'].x).toBe(layout['store'].x);
+    // store | customer | payment, and then the tables with no foreign key at all.
+    expect(columns.size).toBe(4);
+  });
+
+  it('packs the tables with no foreign key after the flow, not into it', () => {
+    const layout = computeAutoLayout(mockTables, mockRelationships, 'full');
+    // `isolated_log` has an in-degree of zero like `store` does, so it used to share layer 0
+    // with it and push the real root tables down a column they had no reason to be long.
+    expect(layout['isolated_log'].x).toBeGreaterThan(layout['payment'].x);
+    expect(layout['store'].y).toBe(layout['customer'].y);
+  });
+
+  it('breaks a circular reference instead of letting a table outrun its parents', () => {
+    // Two tables referencing each other have no valid layering. The old code coped by
+    // admitting a child before its parents whenever the next layer was small, which also
+    // created backwards edges in schemas that had no cycle at all.
+    const cyclic: ERRelationship[] = [
+      ...mockRelationships,
+      {
+        id: 'store.manager_staff_id->customer.customer_id',
+        sourceTable: 'store',
+        sourceColumn: 'manager_staff_id',
+        targetTable: 'payment',
+        targetColumn: 'payment_id',
+      },
+    ];
+    const layout = computeAutoLayout(mockTables, cyclic, 'full');
+    expect(Object.keys(layout)).toHaveLength(mockTables.length);
+    const spots = new Set(Object.values(layout).map((pos) => `${pos.x},${pos.y}`));
+    expect(spots.size).toBe(mockTables.length);
+  });
+
+  it('keeps a module together and orders the layer by its neighbours', () => {
+    // Two disjoint chains of three. Whatever order the tables arrive in, each chain has to
+    // come out contiguous rather than interleaved with the other one.
+    const tables: ERTable[] = [];
+    const rels: ERRelationship[] = [];
+    for (const group of ['a', 'b']) {
+      for (let i = 0; i < 3; i++) {
+        tables.push({
+          id: `${group}${i}`,
+          name: `${group}${i}`,
+          columns: [{ name: 'id', type: 'int', isPrimaryKey: true, isForeignKey: false }],
+        });
+        if (i > 0) {
+          rels.push({
+            id: `${group}${i}_fk`,
+            sourceTable: `${group}${i}`,
+            sourceColumn: 'id',
+            targetTable: `${group}${i - 1}`,
+            targetColumn: 'id',
+          });
+        }
+      }
+    }
+
+    const layout = computeAutoLayout(tables, rels, 'full');
+    // Each chain is three layers deep, so the two heads share the first column, and so on.
+    expect(layout['a0'].x).toBe(layout['b0'].x);
+    expect(layout['a1'].x).toBe(layout['b1'].x);
+    expect(layout['a0'].x).toBeLessThan(layout['a1'].x);
+    expect(layout['a1'].x).toBeLessThan(layout['a2'].x);
+    // And a chain keeps the same side of its column in every layer, which is what "the
+    // module stays together" means once the layers are columns.
+    const aSide = layout['a0'].y < layout['b0'].y;
+    expect(layout['a1'].y < layout['b1'].y).toBe(aSide);
+    expect(layout['a2'].y < layout['b2'].y).toBe(aSide);
   });
 
   it('computes correct column socket positions', () => {
@@ -257,8 +320,11 @@ describe('erExportHelper', () => {
     const layout = computeAutoLayout(mockTables, mockRelationships, 'full');
     const { svgString, width, height } = generateFullDiagramSvg(mockTables, mockRelationships, layout, 'full', 'dark');
 
-    expect(width).toBeGreaterThan(500);
-    expect(height).toBeGreaterThan(300);
+    // Against the diagram it is exporting, not against a number: the previous thresholds
+    // happened to hold for one particular layout and broke the moment it improved.
+    const bounds = computeDiagramBounds(layout);
+    expect(width).toBeGreaterThanOrEqual(bounds.width);
+    expect(height).toBeGreaterThanOrEqual(bounds.height);
     expect(svgString).toContain('<svg xmlns="http://www.w3.org/2000/svg"');
     expect(svgString).toContain('customer');
     expect(svgString).toContain('payment');
