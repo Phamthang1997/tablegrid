@@ -33,6 +33,7 @@ import {
   visibleWorldRect,
   zoomAtPoint,
 } from './erViewport';
+import type { ERLodLevel } from './erViewport';
 import { erLayoutKey, loadSavedLayout, saveCurrentLayout } from './erPersistence';
 import {
   exportToMermaid,
@@ -191,6 +192,15 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const marqueeRef = useRef<HTMLDivElement>(null);
+  /**
+   * The lit connectors at the lowest level of detail.
+   *
+   * There, every connector is one flattened `<path>` with no identity of its own, so there is
+   * nothing for `applyHighlight` to add a class to — a selected table's foreign keys were
+   * simply lost in the crowd. This second path carries only the focused ones and is written
+   * the same imperative way, so it costs a `setAttribute` rather than a render.
+   */
+  const focusPathRef = useRef<SVGPathElement>(null);
 
   /**
    * Marks the window in which the transform is being written continuously — a pointer
@@ -436,6 +446,15 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     toolRef.current = effectiveTool;
   }, [dimensions, positions, selectedTableIds, effectiveTool]);
 
+  // What building the focus path needs. Mirrored rather than closed over, so
+  // `applyHighlight` keeps one identity and the layout effect that calls it needs no deps.
+  const connectorCtxRef = useRef({
+    byId: new Map<string, ERRelationship>(),
+    lod: 'full' as ERLodLevel,
+    detailLevel: 'full' as ERDetailLevel,
+    tables: new Map<string, ERTable>(),
+  });
+
   useEffect(() => {
     if (layout.persist) saveCurrentLayout(layout.key, layout.positions);
   }, [layout]);
@@ -577,6 +596,15 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
    * past the cull rect by more than the bezier reach (`relationshipBox`), so a curve whose
    * endpoints are just off screen is not clipped at the edge.
    */
+  const relationshipsById = useMemo(
+    () => new Map(relationships.map((rel) => [rel.id, rel])),
+    [relationships]
+  );
+
+  useLayoutEffect(() => {
+    connectorCtxRef.current = { byId: relationshipsById, lod, detailLevel, tables: tableMap };
+  }, [relationshipsById, lod, detailLevel, tableMap]);
+
   const connectorBox = useMemo(() => {
     const SNAP = 512;
     const PAD = 512;
@@ -747,7 +775,10 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
 
     const focused = litNodes.size > 0 || litRels.size > 0;
     container.classList.toggle(FOCUSED_CLASS, focused);
-    if (!focused) return;
+    if (!focused) {
+      focusPathRef.current?.setAttribute('d', '');
+      return;
+    }
 
     const lit: Element[] = [];
     for (const el of container.querySelectorAll<HTMLElement>('[data-er-node]')) {
@@ -766,6 +797,22 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     }
 
     litElementsRef.current = lit;
+
+    // At `blocks` the classes above found no connector to light, because there is only the
+    // one flattened path. Draw the lit ones again into a path of their own.
+    const focusEl = focusPathRef.current;
+    const ctx = connectorCtxRef.current;
+    if (focusEl && ctx.lod === 'blocks') {
+      const focusRels: ERRelationship[] = [];
+      for (const id of litRels) {
+        const rel = ctx.byId.get(id);
+        if (rel) focusRels.push(rel);
+      }
+      focusEl.setAttribute(
+        'd',
+        buildFlatConnectorPath(focusRels, positionsRef.current, ctx.tables, ctx.detailLevel)
+      );
+    }
   }, [hoverGraph]);
 
   // Culling remounts cards as the viewport moves, and React knows nothing about these classes,
@@ -1436,6 +1483,9 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
           {lod === 'blocks' && flatConnectorPath && (
             <path d={flatConnectorPath} className="er-rel-path bare" />
           )}
+
+          {/* Filled by applyHighlight, never by React — see focusPathRef. */}
+          <path ref={focusPathRef} className="er-rel-path focus" />
 
           {lod !== 'blocks' &&
             renderedRelationships.map((rel) => {

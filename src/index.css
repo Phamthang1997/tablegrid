@@ -17388,6 +17388,26 @@ input.rename-input {
   opacity: 1;
 }
 
+/* The lit connectors at the lowest level of detail, where the others are one anonymous path
+   that no class can pick out of. Written by applyHighlight, empty the rest of the time.
+
+   `non-scaling-stroke` is what makes it visible at all down there: stroke width is in user
+   units inside a scaled layer, so the 1.5px of the path below renders under a fifth of a device
+   pixel at 0.1 zoom — a haze, which is right for context and useless for "these ones". */
+.er-rel-path.focus {
+  fill: none;
+  stroke: var(--win-accent);
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+  transition: none;
+  opacity: 1;
+}
+
+/* And the crowd steps back so the accent reads against it. */
+.er-diagram-container.focused .er-rel-path.bare {
+  opacity: 0.12;
+}
+
 .er-node-header {
   display: flex;
   align-items: center;
