@@ -675,6 +675,14 @@ const ja: typeof en = {
     copiedRowCsv: '行を CSV としてコピーしました。',
     copiedRowSql: 'SQL INSERT としてコピーしました。',
     copiedRowMarkdown: 'Markdown テーブルとしてコピーしました。',
+    copiedRowUpdate: 'SQL UPDATE 文としてコピーしました。',
+    copiedInList: '{{n}} 件の値を IN (…) リストとしてコピーしました。',
+    copiedInListTrimmed:
+      '{{n}} 件の値を IN (…) リストとしてコピーしました — 重複または NULL の {{skipped}} 件は除きました。',
+    copyInListEmpty: 'コピーするものがありません: その列の値はすべて NULL です。',
+    copyUpdateNoKey:
+      'このテーブルには主キーがないため、UPDATE を行に絞り込めません — テーブル全体を書き換えてしまいます。',
+    copyUpdateNothingToSet: 'コピー対象の列がすべてキーの一部なので、SET するものがありません。',
     copiedRowJson: 'JSON 配列としてコピーしました。',
     copiedRowsTsv: '{{n}} 行をコピーしました。',
     ctxJsonArray: 'JSON 配列',
@@ -781,6 +789,8 @@ const ja: typeof en = {
     ctxQuickLook: 'クイックルック',
     ctxViewDocument: 'ドキュメント / 行の詳細を表示',
     ctxGoToFk: '参照テーブル "{{table}}" を開く',
+    ctxCopySqlUpdate: 'SQL UPDATE',
+    ctxCopyInList: 'SQL IN (…) リスト',
     ctxCopyRowAs: '行を次の形式でコピー',
     ctxCopyRowsAs: '{{n}} 行を次の形式でコピー',
     ctxCsvHeader: 'CSV (ヘッダー付き)',

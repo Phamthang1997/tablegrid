@@ -686,6 +686,14 @@ const en = {
     copiedRowCsv: 'Row copied as CSV.',
     copiedRowSql: 'Copied as a SQL INSERT.',
     copiedRowMarkdown: 'Copied as a Markdown table.',
+    copiedRowUpdate: 'Copied as SQL UPDATE statements.',
+    copiedInList: "{{n}} values copied as an IN (…) list.",
+    copiedInListTrimmed:
+      '{{n}} values copied as an IN (…) list — {{skipped}} duplicate or NULL values left out.',
+    copyInListEmpty: 'Nothing to copy: every value in that column is NULL.',
+    copyUpdateNoKey:
+      'This table has no primary key, so an UPDATE cannot be keyed to a row — it would rewrite the whole table.',
+    copyUpdateNothingToSet: 'Every copied column is part of the key, so there is nothing to set.',
     copiedRowJson: 'Copied as a JSON array.',
     copiedRowsTsv: '{{n}} rows copied.',
     ctxJsonArray: 'JSON Array',
@@ -792,6 +800,8 @@ const en = {
     ctxQuickLook: 'Quick Look',
     ctxViewDocument: 'View Document / Row Details',
     ctxGoToFk: 'Open referenced table "{{table}}"',
+    ctxCopySqlUpdate: 'SQL UPDATE',
+    ctxCopyInList: 'SQL IN (…) list',
     ctxCopyRowAs: 'Copy the row as',
     ctxCopyRowsAs: 'Copy {{n}} rows as',
     ctxCsvHeader: 'CSV (with header)',

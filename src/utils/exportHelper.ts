@@ -84,7 +84,22 @@ function binaryLiteral(bytes: number[], dbType: string): string {
   return `X'${hex}'`;
 }
 
-function sqlValue(v: any, dbType: string, isBinary = false): string {
+/**
+ * Quotes an identifier for one dialect. MySQL uses backticks, Postgres and SQLite double
+ * quotes — see the note on dialect quoting in CLAUDE.md.
+ *
+ * Exported because the clipboard copies in `copyAs.ts` build the same kind of statement, and
+ * the grid's own version of this was hardcoded to backticks: a `SQL INSERT` copied from a
+ * Postgres table came out unusable.
+ */
+export function quoteIdent(name: string, dbType: string): string {
+  const q = dbType === 'mysql' ? '`' : '"';
+  // A quote inside an identifier is escaped by doubling it, in all three dialects.
+  return `${q}${name.split(q).join(q + q)}${q}`;
+}
+
+/** One value as a SQL literal. Exported for the same reason as `quoteIdent`. */
+export function sqlValue(v: any, dbType: string, isBinary = false): string {
   if (v === null || v === undefined) return 'NULL';
   if (isBinary && Array.isArray(v)) return binaryLiteral(v, dbType);
   if (typeof v === 'number' && Number.isFinite(v)) return String(v);
@@ -115,8 +130,7 @@ export function buildSql(
    */
   overridingSystemValue = false
 ): string {
-  const q = dbType === 'mysql' ? '`' : '"';
-  const qi = (n: string) => `${q}${n}${q}`;
+  const qi = (n: string) => quoteIdent(n, dbType);
   const cols = colNames.map(qi).join(', ');
   if (rows.length === 0) return i18n.t('errors.sqlTableNoData', { table: qi(tableName) });
 

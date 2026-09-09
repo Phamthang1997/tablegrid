@@ -678,6 +678,14 @@ const vi: typeof en = {
     copiedRowCsv: 'Đã sao chép dòng dưới dạng CSV!',
     copiedRowSql: 'Đã sao chép dưới dạng SQL INSERT!',
     copiedRowMarkdown: 'Đã sao chép dưới dạng Markdown table!',
+    copiedRowUpdate: 'Đã copy dạng câu lệnh SQL UPDATE.',
+    copiedInList: 'Đã copy {{n}} giá trị dạng danh sách IN (…).',
+    copiedInListTrimmed:
+      'Đã copy {{n}} giá trị dạng danh sách IN (…) — bỏ qua {{skipped}} giá trị trùng hoặc NULL.',
+    copyInListEmpty: 'Không có gì để copy: mọi giá trị trong cột đó đều NULL.',
+    copyUpdateNoKey:
+      'Bảng này không có khoá chính nên UPDATE không thể khoá theo dòng — nó sẽ ghi lại toàn bộ bảng.',
+    copyUpdateNothingToSet: 'Mọi cột được copy đều thuộc khoá, nên không có gì để SET.',
     copiedRowJson: 'Đã sao chép dưới dạng mảng JSON!',
     copiedRowsTsv: 'Đã sao chép {{n}} dòng.',
     ctxJsonArray: 'Mảng JSON',
@@ -784,6 +792,8 @@ const vi: typeof en = {
     ctxQuickLook: 'Quick Look',
     ctxViewDocument: 'Xem chi tiết dòng (Document Viewer)',
     ctxGoToFk: 'Mở bảng liên kết "{{table}}"',
+    ctxCopySqlUpdate: 'SQL UPDATE',
+    ctxCopyInList: 'Danh sách SQL IN (…)',
     ctxCopyRowAs: 'Sao chép dòng dưới dạng',
     ctxCopyRowsAs: 'Sao chép {{n}} dòng dưới dạng',
     ctxCsvHeader: 'CSV (kèm tiêu đề)',

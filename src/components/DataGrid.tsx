@@ -4,6 +4,13 @@ import { clampMenu, type MenuRect } from '../utils/menuPosition';
 import { countKey, nextCountMode, seekColumn, seekViewKey } from '../utils/gridPaging';
 import { getCommitPreviewForKey, setCommitPreviewForKey } from '../utils/commitPreview';
 import { connKeyOfConn } from '../utils/safeMode';
+import {
+  buildInList,
+  buildInsertStatements,
+  buildMarkdownTable,
+  buildUpdateStatements,
+  updateRefusalMessage,
+} from '../utils/copyAs';
 import { dbHelper } from '../utils/dbHelper';
 import type { SchemaInfo, ColumnInfo, GridChange } from '../utils/dbHelper';
 import {
@@ -1161,40 +1168,72 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
 
   const copyRowAsSQL = (row: any) => {
     const cols = activeColumns.map(c => c.name);
-    const colList = cols.map(c => `\`${c}\``).join(', ');
-    // One statement per row rather than one multi-VALUES INSERT: these are pasted into an editor
-    // and edited by hand, and a row that turns out to be wrong is then deleted by deleting its line.
-    const statements = rowsToCopy(row).map(r => {
-      const valList = cols.map(c => {
-        const v = r[c];
-        if (v === null || v === undefined) return 'NULL';
-        return `'${String(v).replace(/'/g, "''")}'`;
-      }).join(', ');
-      return `INSERT INTO \`${tableName}\` (${colList}) VALUES (${valList});`;
-    });
-    copyToClipboard(statements.join('\n'));
+    copyToClipboard(buildInsertStatements(tableName, cols, rowsToCopy(row), dbType));
     setSuccessMsg(t('dataGrid.copiedRowSql'));
     setTimeout(() => setSuccessMsg(null), 2000);
   };
 
+  /**
+   * The columns an UPDATE is keyed on: every column the schema marks as part of the primary
+   * key, falling back to the name the backend reported when none of them is flagged.
+   */
+  const keyColumns = (): string[] => {
+    const flagged = columns.filter(c => c.isPrimaryKey).map(c => c.name);
+    if (flagged.length > 0) return flagged;
+    return columns.some(c => c.name === primaryKey) ? [primaryKey] : [];
+  };
+
+  const copyRowAsUpdate = (row: any) => {
+    const keys = keyColumns();
+    // The key goes into the column list even when it is hidden: it is what the WHERE needs,
+    // and `buildUpdateStatements` leaves it out of the SET either way.
+    const cols = activeColumns.map(c => c.name);
+    const withKeys = [...cols, ...keys.filter(k => !cols.includes(k))];
+    const generated = new Set(columns.filter(c => c.generated).map(c => c.name));
+    const result = buildUpdateStatements(
+      tableName,
+      withKeys,
+      rowsToCopy(row),
+      dbType,
+      keys,
+      generated,
+    );
+    if (result.refused) {
+      setErrorMsg(updateRefusalMessage(result.refused));
+      return;
+    }
+    copyToClipboard(result.sql);
+    setSuccessMsg(t('dataGrid.copiedRowUpdate'));
+    setTimeout(() => setSuccessMsg(null), 2000);
+  };
+
+  /**
+   * One column as a parenthesised value list, to paste after somebody else's `IN`.
+   *
+   * Selection-aware in the same way the row copies are: the picked rows when there is a
+   * selection, the whole column as it is currently DISPLAYED otherwise — `displayedRows`, not
+   * `rows`, or a quick search that hides half the table still copies the hidden half.
+   */
+  const copyColumnAsInList = (colName: string, row: any) => {
+    const source = selectedRowIds.size > 1 ? rowsToCopy(row) : displayedRows;
+    const result = buildInList(source.map(r => r[colName]), dbType);
+    if (result.count === 0) {
+      setErrorMsg(t('dataGrid.copyInListEmpty'));
+      return;
+    }
+    copyToClipboard(result.sql);
+    const skipped = result.nullsDropped + result.duplicatesDropped;
+    setSuccessMsg(
+      skipped > 0
+        ? t('dataGrid.copiedInListTrimmed', { n: result.count, skipped })
+        : t('dataGrid.copiedInList', { n: result.count }),
+    );
+    setTimeout(() => setSuccessMsg(null), 2500);
+  };
+
   const copyRowAsMarkdown = (row: any) => {
     const cols = activeColumns.map(c => c.name);
-    const header = `| ${cols.join(' | ')} |`;
-    const sep = `| ${cols.map(() => '---').join(' | ')} |`;
-    // Escape backslashes first, then pipes (so `|` does not split the cell), and replace newlines
-    // so multi-line text does not break Markdown table row structure.
-    const body = rowsToCopy(row).map(
-      r =>
-        `| ${cols
-          .map(c =>
-            String(r[c] ?? '')
-              .replace(/\\/g, '\\\\')
-              .replace(/\|/g, '\\|')
-              .replace(/\r?\n/g, ' '),
-          )
-          .join(' | ')} |`,
-    );
-    copyToClipboard([header, sep, ...body].join('\n'));
+    copyToClipboard(buildMarkdownTable(cols, rowsToCopy(row)));
     setSuccessMsg(t('dataGrid.copiedRowMarkdown'));
     setTimeout(() => setSuccessMsg(null), 2000);
   };
@@ -2905,11 +2944,14 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
           </button>
           <button className="context-menu-item" onClick={() => {
             setContextMenu(null);
-            const allVals = rows.map(r => r[contextMenu.colName]).filter(v => v !== null && v !== undefined).join('\n');
+            const allVals = displayedRows.map(r => r[contextMenu.colName]).filter(v => v !== null && v !== undefined).join('\n');
             copyToClipboard(allVals);
             setSuccessMsg(t('dataGrid.copiedColumn')); setTimeout(() => setSuccessMsg(null), 2000);
           }}>
             <span>📋</span> {t('dataGrid.ctxCopyColumn')}
+          </button>
+          <button className="context-menu-item" onClick={() => { const cm = contextMenu; setContextMenu(null); copyColumnAsInList(cm.colName, cm.row); }}>
+            <span>🔢</span> {t('dataGrid.ctxCopyInList')}
           </button>
           <button className="context-menu-item" onClick={() => { setContextMenu(null); setQuickLookCell({ colName: contextMenu.colName, value: contextMenu.cellValue }); }}>
             <span>🔍</span> {t('dataGrid.ctxQuickLook')}
@@ -2967,6 +3009,9 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
           </button>
           <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsSQL(contextMenu.row); }}>
             <span>🗄</span> SQL INSERT
+          </button>
+          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsUpdate(contextMenu.row); }}>
+            <span>✏️</span> {t('dataGrid.ctxCopySqlUpdate')}
           </button>
           <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsMarkdown(contextMenu.row); }}>
             <span>📝</span> Markdown Table
