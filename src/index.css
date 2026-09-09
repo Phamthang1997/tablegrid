@@ -1039,6 +1039,37 @@ select.form-input {
 }
 
 /* Global Context Menu Items */
+/* The shape of the popover the grids use as a context menu. The colours are set further up,
+   with !important so a theme rule cannot win over them; this is the geometry, which was an
+   inline style object at every call site. */
+.grid-context-menu {
+  position: fixed;
+  z-index: 99999;
+  border: 1px solid var(--win-border-strong);
+  border-radius: 8px;
+  padding: 4px 0;
+  min-width: 240px;
+  font-size: 12px;
+}
+
+/* The little uppercase label that groups a context menu into sections. It was an inline
+   style object repeated at every heading in DataGrid; a class is what it should have been by
+   the second one. */
+.context-menu-heading {
+  padding: 2px 8px 4px;
+  color: var(--win-text-disabled);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.context-menu-heading + .context-menu-heading,
+.context-menu-item + .context-menu-heading {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--win-border);
+}
+
 .context-menu-item {
   width: 100%;
   display: flex;

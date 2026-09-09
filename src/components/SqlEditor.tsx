@@ -6,6 +6,8 @@ import Editor from '@monaco-editor/react';
 // Worker factory + loader binding, shared with the Redis console (see the module's header).
 import '../sql/monacoSetup';
 import { setupSqlCompletion, langIdForDbType, LANG_IDS } from '../sql/sqlLanguage';
+import { clampMenu, type MenuRect } from '../utils/menuPosition';
+import { buildInList, buildJsonValues, buildMarkdownTable } from '../utils/copyAs';
 import { setupSqlHover, findTable, openTableTab } from '../sql/intellisense';
 import { defineSqlThemes, sqlThemeName } from '../sql/theme';
 import { SQL_EDITOR_OPTIONS } from '../sql/editorOptions';
@@ -2164,6 +2166,106 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   };
 
 
+  /**
+   * The result grid had no context menu at all: every copy lived behind the Export dropdown,
+   * which only offers whole-result formats. A query result is exactly where a cell value or a
+   * column of ids is wanted — you ran the query to get them and the next query needs them.
+   *
+   * Scoped by COLUMN and by whole result, never by row: this grid has no row selection (and no
+   * primary key, since a result can be a join), so there is no honest "these rows" to offer.
+   */
+  const [resultMenu, setResultMenu] = useState<{
+    pane: 1 | 2;
+    x: number;
+    y: number;
+    col: string;
+    value: any;
+  } | null>(null);
+
+  /**
+   * Where the menu actually goes, once it is kept inside the window.
+   *
+   * The size is a constant rather than measured: unlike the table grid's menu, which grows a
+   * row for every foreign key and media column it finds, this one is always the same eight
+   * items and two headings. Measuring it with a ref would buy nothing and cost a second
+   * render before the menu could be shown.
+   */
+  const resultMenuAt: MenuRect | null = resultMenu
+    ? clampMenu(resultMenu.x, resultMenu.y, 260, 320, window.innerWidth, window.innerHeight)
+    : null;
+
+  useEffect(() => {
+    if (!resultMenu) return;
+    const close = () => setResultMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close);
+    };
+  }, [resultMenu]);
+
+  const noteCopied = (paneId: 1 | 2, message: string) => {
+    if (paneId === 1) {
+      setStatusMsg(message);
+      setTimeout(() => setStatusMsg(null), 3000);
+    } else {
+      setStatusMsg2(message);
+      setTimeout(() => setStatusMsg2(null), 3000);
+    }
+  };
+
+  /**
+   * A column of the result as an `IN (…)` list.
+   *
+   * Over the WHOLE result rather than the page on screen: the grid pages on the client, and
+   * somebody who ran a query and asked for its ids means all of them. The row order is the
+   * sorted one, so it matches what they are looking at.
+   */
+  const copyResultColumnAs = (paneId: 1 | 2, col: string, as: 'values' | 'in' | 'json') => {
+    const rows = paneId === 1 ? sortedResults1 : sortedResults2;
+    if (as === 'in') {
+      const result = buildInList(rows.map((r) => r[col]), dbType || 'mysql');
+      if (result.count === 0) {
+        noteCopied(paneId, t('sqlEditor.copyInListEmpty'));
+        return;
+      }
+      navigator.clipboard.writeText(result.sql);
+      const skipped = result.nullsDropped + result.duplicatesDropped;
+      noteCopied(
+        paneId,
+        skipped > 0
+          ? t('sqlEditor.copiedInListTrimmed', { n: result.count, skipped })
+          : t('sqlEditor.copiedInList', { n: result.count }),
+      );
+      return;
+    }
+    if (as === 'json') {
+      navigator.clipboard.writeText(buildJsonValues([col], rows));
+      noteCopied(paneId, t('sqlEditor.copiedColumnJson', { col }));
+      return;
+    }
+    navigator.clipboard.writeText(
+      rows
+        .map((r) => (r[col] === null || r[col] === undefined ? '' : String(r[col])))
+        .join('\n'),
+    );
+    noteCopied(paneId, t('sqlEditor.copiedResultColumn', { col }));
+  };
+
+  const copyResultCell = (paneId: 1 | 2, value: any) => {
+    navigator.clipboard.writeText(value === null || value === undefined ? '' : String(value));
+    noteCopied(paneId, t('sqlEditor.copiedCellValue'));
+  };
+
+  const copyResultAsMarkdown = (paneId: 1 | 2) => {
+    const rows = paneId === 1 ? sortedResults1 : sortedResults2;
+    const cols = paneId === 1 ? columns : columns2;
+    if (rows.length === 0) return;
+    navigator.clipboard.writeText(buildMarkdownTable(cols, rows));
+    noteCopied(paneId, t('sqlEditor.copiedMarkdown'));
+  };
+
   const handleCopyAs = (format: 'table' | 'object' | 'array', paneId: 1 | 2 = 1) => {
     const curResults = paneId === 1 ? results : results2;
     const curColumns = paneId === 1 ? columns : columns2;
@@ -2695,6 +2797,96 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                   />
                 ) : (
                   <div className="grid-table-container" style={{ height: '100%' }}>
+                    {resultMenu?.pane === paneId && (
+                      <div className="grid-context-menu" onClick={(e) => e.stopPropagation()} style={resultMenuAt ?? undefined}>
+                        <div className="context-menu-heading">
+                          {t('sqlEditor.ctxResultCell', { col: resultMenu.col })}
+                        </div>
+                        <button
+                          className="context-menu-item"
+                          onClick={() => {
+                            const rm = resultMenu;
+                            setResultMenu(null);
+                            copyResultCell(rm.pane, rm.value);
+                          }}
+                        >
+                          <span>📄</span> {t('sqlEditor.ctxCopyCellValue')}
+                        </button>
+                        <button
+                          className="context-menu-item"
+                          onClick={() => {
+                            const rm = resultMenu;
+                            setResultMenu(null);
+                            copyResultColumnAs(rm.pane, rm.col, 'values');
+                          }}
+                        >
+                          <span>📋</span> {t('sqlEditor.ctxCopyColumnValues', { col: resultMenu.col })}
+                        </button>
+                        <button
+                          className="context-menu-item"
+                          onClick={() => {
+                            const rm = resultMenu;
+                            setResultMenu(null);
+                            copyResultColumnAs(rm.pane, rm.col, 'in');
+                          }}
+                        >
+                          <span>🔢</span> {t('sqlEditor.ctxCopyColumnIn', { col: resultMenu.col })}
+                        </button>
+                        <button
+                          className="context-menu-item"
+                          onClick={() => {
+                            const rm = resultMenu;
+                            setResultMenu(null);
+                            copyResultColumnAs(rm.pane, rm.col, 'json');
+                          }}
+                        >
+                          <span>📦</span> {t('sqlEditor.ctxCopyColumnJson', { col: resultMenu.col })}
+                        </button>
+                        <div className="context-menu-heading">
+                          {t('sqlEditor.ctxResultAll')}
+                        </div>
+                        <button
+                          className="context-menu-item"
+                          onClick={() => {
+                            const rm = resultMenu;
+                            setResultMenu(null);
+                            handleCopyAs('table', rm.pane);
+                          }}
+                        >
+                          <span>📋</span> {t('sqlEditor.copyAsTable')}
+                        </button>
+                        <button
+                          className="context-menu-item"
+                          onClick={() => {
+                            const rm = resultMenu;
+                            setResultMenu(null);
+                            handleCopyAs('object', rm.pane);
+                          }}
+                        >
+                          <span>📦</span> {t('sqlEditor.copyAsJsonObject')}
+                        </button>
+                        <button
+                          className="context-menu-item"
+                          onClick={() => {
+                            const rm = resultMenu;
+                            setResultMenu(null);
+                            handleCopyAs('array', rm.pane);
+                          }}
+                        >
+                          <span>📦</span> {t('sqlEditor.copyAsJsonArray')}
+                        </button>
+                        <button
+                          className="context-menu-item"
+                          onClick={() => {
+                            const rm = resultMenu;
+                            setResultMenu(null);
+                            copyResultAsMarkdown(rm.pane);
+                          }}
+                        >
+                          <span>📝</span> {t('sqlEditor.ctxCopyMarkdown')}
+                        </button>
+                      </div>
+                    )}
                     <table className="grid-table">
                       <thead>
                         <tr>
@@ -2778,6 +2970,11 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                                       : undefined
                                   }
                                   onDoubleClick={canEdit ? () => startCellEdit(paneId, rowKey, col, cellVal) : undefined}
+                                  onContextMenu={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setResultMenu({ pane: paneId, x: e.clientX, y: e.clientY, col, value: cellVal });
+                                  }}
                                 >
                                   {isEditing ? (
                                     <>

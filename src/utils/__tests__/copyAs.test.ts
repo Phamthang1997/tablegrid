@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   buildInList,
   buildInsertStatements,
+  buildJsonValues,
   buildMarkdownTable,
+  buildTsv,
   buildUpdateStatements,
 } from '../copyAs';
 
@@ -147,6 +149,41 @@ describe('buildUpdateStatements', () => {
       ['k']
     );
     expect(sql).toBe('UPDATE `t` SET `v` = 1 WHERE `k` IS NULL;');
+  });
+});
+
+describe('buildTsv', () => {
+  const rows = [{ a: 1, b: null }, { a: 2, b: 'x' }];
+
+  it('writes the header only when asked', () => {
+    expect(buildTsv(['a', 'b'], rows, true)).toBe('a\tb\n1\t\n2\tx');
+    expect(buildTsv(['a', 'b'], rows, false)).toBe('1\t\n2\tx');
+  });
+
+  it('renders null the way the caller asks, because the two grids disagree', () => {
+    // A spreadsheet wants an empty cell; a result grid wants to tell null from an empty string.
+    expect(buildTsv(['b'], [{ b: null }], false)).toBe('');
+    expect(buildTsv(['b'], [{ b: null }], false, 'NULL')).toBe('NULL');
+  });
+
+  it('flattens tabs and newlines, which would otherwise split a row or a column', () => {
+    expect(buildTsv(['v'], [{ v: 'a\tb' }], false)).toBe('a b');
+    expect(buildTsv(['v'], [{ v: 'a\r\nb' }], false)).toBe('a b');
+  });
+});
+
+describe('buildJsonValues', () => {
+  it('gives a flat array for one column — the case it exists for', () => {
+    expect(JSON.parse(buildJsonValues(['id'], [{ id: 1 }, { id: 2 }]))).toEqual([1, 2]);
+  });
+
+  it('gives an array per row for several columns', () => {
+    expect(JSON.parse(buildJsonValues(['a', 'b'], [{ a: 1, b: 'x' }]))).toEqual([[1, 'x']]);
+  });
+
+  it('writes null for a missing column rather than dropping the slot', () => {
+    expect(JSON.parse(buildJsonValues(['a', 'b'], [{ a: 1 }]))).toEqual([[1, null]]);
+    expect(JSON.parse(buildJsonValues(['a'], [{ b: 1 }]))).toEqual([null]);
   });
 });
 

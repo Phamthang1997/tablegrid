@@ -155,6 +155,49 @@ export function buildUpdateStatements(
 }
 
 /**
+ * Tab-separated, for pasting into a spreadsheet — CSV pasted into one lands in a single
+ * column.
+ *
+ * A tab or a newline inside a value would break the row/column split, so both become a
+ * space. Like the Markdown copy, this is a format for pasting rather than a lossless export.
+ *
+ * `nullAs` exists because the two grids disagree and neither default is wrong: the table grid
+ * writes an empty cell (its destination is a spreadsheet, where the text "NULL" is worse than
+ * nothing) and the SQL result grid writes NULL (where telling a null from an empty string
+ * matters). Parameterised rather than unified, so neither changes behaviour behind the
+ * user's back.
+ */
+export function buildTsv(
+  colNames: string[],
+  rows: Record<string, unknown>[],
+  withHeader: boolean,
+  nullAs: '' | 'NULL' = ''
+): string {
+  const cell = (value: unknown) =>
+    value === null || value === undefined
+      ? nullAs
+      : String(value).replace(/[\t\r\n]+/g, ' ');
+  const body = rows.map((row) => colNames.map((name) => cell(row?.[name])).join('\t'));
+  return (withHeader ? [colNames.join('\t'), ...body] : body).join('\n');
+}
+
+/**
+ * The values, without the column names: a flat array when there is one column, an array of
+ * rows when there are several.
+ *
+ * The one-column case is the point — a column of ids as a JSON array is what goes into a
+ * script or a request body, and wrapping each one in an object would be noise. It is the IN
+ * list's cousin, for somewhere that is not SQL.
+ */
+export function buildJsonValues(colNames: string[], rows: Record<string, unknown>[]): string {
+  const data =
+    colNames.length === 1
+      ? rows.map((row) => row?.[colNames[0]] ?? null)
+      : rows.map((row) => colNames.map((name) => row?.[name] ?? null));
+  return JSON.stringify(data, null, 2);
+}
+
+/**
  * A GitHub-flavoured Markdown table.
  *
  * Backslashes are escaped before pipes, or the escape added for a `|` would itself be escaped.
