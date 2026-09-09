@@ -9,7 +9,7 @@ import {
   computeDiagramBounds,
 } from '../erLayoutEngine';
 import { exportToMermaid, exportToDbml, exportToSql, generateFullDiagramSvg } from '../erExportHelper';
-import type { ERTable, ERRelationship } from '../erTypes';
+import type { ERTable, ERRelationship, ERLayoutPositions } from '../erTypes';
 
 const mockTables: ERTable[] = [
   {
@@ -67,6 +67,17 @@ const mockRelationships: ERRelationship[] = [
     targetColumn: 'store_id',
   },
 ];
+
+const boxOf = (layout: ERLayoutPositions, names: string[]) => ({
+  minX: Math.min(...names.map((name) => layout[name].x)),
+  minY: Math.min(...names.map((name) => layout[name].y)),
+  maxX: Math.max(...names.map((name) => layout[name].x + layout[name].width)),
+  maxY: Math.max(...names.map((name) => layout[name].y + layout[name].height)),
+});
+
+type Box = ReturnType<typeof boxOf>;
+const overlaps = (a: Box, b: Box) =>
+  a.minX < b.maxX && a.maxX > b.minX && a.minY < b.maxY && a.maxY > b.minY;
 
 describe('erLayoutEngine', () => {
   it('calculates correct node dimensions for different detail levels', () => {
@@ -134,19 +145,23 @@ describe('erLayoutEngine', () => {
     expect(spots.size).toBe(320);
   });
 
-  it('does not wrap a small schema, so one layer stays one column', () => {
+  it('gives one column per layer in a small schema', () => {
     const layout = computeAutoLayout(mockTables, mockRelationships, 'full');
-    const columns = new Set(Object.values(layout).map((pos) => pos.x));
     // store | customer | payment, and then the tables with no foreign key at all.
+    const columns = new Set(Object.values(layout).map((pos) => pos.x));
     expect(columns.size).toBe(4);
+    expect(layout['store'].y).toBe(layout['customer'].y);
   });
 
-  it('packs the tables with no foreign key after the flow, not into it', () => {
+  it('keeps the tables with no foreign key out of the flow entirely', () => {
     const layout = computeAutoLayout(mockTables, mockRelationships, 'full');
     // `isolated_log` has an in-degree of zero like `store` does, so it used to share layer 0
-    // with it and push the real root tables down a column they had no reason to be long.
-    expect(layout['isolated_log'].x).toBeGreaterThan(layout['payment'].x);
-    expect(layout['store'].y).toBe(layout['customer'].y);
+    // with it and stretch a column the real root tables had no reason to be in. Asserted as
+    // "outside the flow's box" rather than "to the right of it", because which side the
+    // packing puts it on is not the point.
+    const flow = boxOf(layout, ['store', 'customer', 'payment']);
+    const alone = boxOf(layout, ['isolated_log']);
+    expect(overlaps(flow, alone)).toBe(false);
   });
 
   it('breaks a circular reference instead of letting a table outrun its parents', () => {
@@ -169,9 +184,9 @@ describe('erLayoutEngine', () => {
     expect(spots.size).toBe(mockTables.length);
   });
 
-  it('keeps a module together and orders the layer by its neighbours', () => {
-    // Two disjoint chains of three. Whatever order the tables arrive in, each chain has to
-    // come out contiguous rather than interleaved with the other one.
+  it('lays out each module as its own block, layered inside it', () => {
+    // Two disjoint chains of three. They are two modules, so they get two blocks — and the
+    // left-to-right reading has to hold INSIDE each one.
     const tables: ERTable[] = [];
     const rels: ERRelationship[] = [];
     for (const group of ['a', 'b']) {
@@ -194,16 +209,17 @@ describe('erLayoutEngine', () => {
     }
 
     const layout = computeAutoLayout(tables, rels, 'full');
-    // Each chain is three layers deep, so the two heads share the first column, and so on.
-    expect(layout['a0'].x).toBe(layout['b0'].x);
-    expect(layout['a1'].x).toBe(layout['b1'].x);
+
+    // Layered within a block: each table sits right of the one it references.
     expect(layout['a0'].x).toBeLessThan(layout['a1'].x);
     expect(layout['a1'].x).toBeLessThan(layout['a2'].x);
-    // And a chain keeps the same side of its column in every layer, which is what "the
-    // module stays together" means once the layers are columns.
-    const aSide = layout['a0'].y < layout['b0'].y;
-    expect(layout['a1'].y < layout['b1'].y).toBe(aSide);
-    expect(layout['a2'].y < layout['b2'].y).toBe(aSide);
+    expect(layout['b0'].x).toBeLessThan(layout['b1'].x);
+    expect(layout['b1'].x).toBeLessThan(layout['b2'].x);
+
+    // And the two blocks do not interleave — that is the whole point of a block.
+    const a = boxOf(layout, ['a0', 'a1', 'a2']);
+    const b = boxOf(layout, ['b0', 'b1', 'b2']);
+    expect(overlaps(a, b)).toBe(false);
   });
 
   it('computes correct column socket positions', () => {
