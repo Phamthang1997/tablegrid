@@ -1088,6 +1088,7 @@ const ja: typeof en = {
 
   sqlEditor: {
     ctxResultCell: 'セル「{{col}}」',
+    ctxResultColumn: '列「{{col}}」',
     ctxResultAll: '結果全体',
     ctxCopyCellValue: 'セルの値をコピー',
     ctxCopyColumnValues: '「{{col}}」の全値をコピー',

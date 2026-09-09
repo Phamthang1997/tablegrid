@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import ReactDOM from 'react-dom';
 import { Trans, useTranslation } from 'react-i18next';
 import * as monaco from 'monaco-editor';
 import Editor from '@monaco-editor/react';
@@ -2179,7 +2180,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     x: number;
     y: number;
     col: string;
-    value: any;
+    /** Absent when the menu was opened from the column header rather than from a cell. */
+    value?: unknown;
   } | null>(null);
 
   /**
@@ -2809,96 +2811,6 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                   />
                 ) : (
                   <div className="grid-table-container" style={{ height: '100%' }}>
-                    {resultMenu?.pane === paneId && (
-                      <div className="grid-context-menu" onClick={(e) => e.stopPropagation()} style={resultMenuAt ?? undefined}>
-                        <div className="context-menu-heading">
-                          {t('sqlEditor.ctxResultCell', { col: resultMenu.col })}
-                        </div>
-                        <button
-                          className="context-menu-item"
-                          onClick={() => {
-                            const rm = resultMenu;
-                            setResultMenu(null);
-                            copyResultCell(rm.pane, rm.value);
-                          }}
-                        >
-                          <span>📄</span> {t('sqlEditor.ctxCopyCellValue')}
-                        </button>
-                        <button
-                          className="context-menu-item"
-                          onClick={() => {
-                            const rm = resultMenu;
-                            setResultMenu(null);
-                            copyResultColumnAs(rm.pane, rm.col, 'values');
-                          }}
-                        >
-                          <span>📋</span> {t('sqlEditor.ctxCopyColumnValues', { col: resultMenu.col })}
-                        </button>
-                        <button
-                          className="context-menu-item"
-                          onClick={() => {
-                            const rm = resultMenu;
-                            setResultMenu(null);
-                            copyResultColumnAs(rm.pane, rm.col, 'in');
-                          }}
-                        >
-                          <span>🔢</span> {t('sqlEditor.ctxCopyColumnIn', { col: resultMenu.col })}
-                        </button>
-                        <button
-                          className="context-menu-item"
-                          onClick={() => {
-                            const rm = resultMenu;
-                            setResultMenu(null);
-                            copyResultColumnAs(rm.pane, rm.col, 'json');
-                          }}
-                        >
-                          <span>📦</span> {t('sqlEditor.ctxCopyColumnJson', { col: resultMenu.col })}
-                        </button>
-                        <div className="context-menu-heading">
-                          {t('sqlEditor.ctxResultAll')}
-                        </div>
-                        <button
-                          className="context-menu-item"
-                          onClick={() => {
-                            const rm = resultMenu;
-                            setResultMenu(null);
-                            handleCopyAs('table', rm.pane);
-                          }}
-                        >
-                          <span>📋</span> {t('sqlEditor.copyAsTable')}
-                        </button>
-                        <button
-                          className="context-menu-item"
-                          onClick={() => {
-                            const rm = resultMenu;
-                            setResultMenu(null);
-                            handleCopyAs('object', rm.pane);
-                          }}
-                        >
-                          <span>📦</span> {t('sqlEditor.copyAsJsonObject')}
-                        </button>
-                        <button
-                          className="context-menu-item"
-                          onClick={() => {
-                            const rm = resultMenu;
-                            setResultMenu(null);
-                            handleCopyAs('array', rm.pane);
-                          }}
-                        >
-                          <span>📦</span> {t('sqlEditor.copyAsJsonArray')}
-                        </button>
-                        <button
-                          className="context-menu-item"
-                          onClick={() => {
-                            const rm = resultMenu;
-                            setResultMenu(null);
-                            copyResultAsMarkdown(rm.pane);
-                          }}
-                        >
-                          <span>📝</span> {t('sqlEditor.ctxCopyMarkdown')}
-                        </button>
-                      </div>
-                    )}
                     <table className="grid-table">
                       <thead>
                         <tr>
@@ -2928,6 +2840,11 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                               <th
                                 key={ci}
                                 onClick={() => handleTableSort(col, paneId)}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setResultMenu({ pane: paneId, x: e.clientX, y: e.clientY, col });
+                                }}
                                 style={{
                                   textAlign: isNum ? 'right' : 'left',
                                   whiteSpace: isAutoFit ? 'nowrap' : undefined,
@@ -3821,6 +3738,112 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
           </ModalFooter>
         </Modal>
       )}
+
+      {/*
+        Rendered here, at the top of the component, and through a portal -- NOT inside the pane
+        that opened it. Its first home was a child of `.grid-table-container`, which scrolls
+        (`overflow: auto`), and an `overflow` ancestor clips a `position: fixed` descendant as soon
+        as anything between the two establishes a containing block -- so the menu was measured
+        against the wrong box and then clipped away by the very grid it belonged to. `document.body`
+        is the one parent immune to that, which is why DataGrid keeps its own menu at the top level
+        as well. One instance covers both panes: `resultMenu.pane` says which one opened it.
+      */}
+      {resultMenu && typeof document !== 'undefined' &&
+        ReactDOM.createPortal(
+          <div className="grid-context-menu" onClick={(e) => e.stopPropagation()} style={resultMenuAt ?? undefined}>
+            <div className="context-menu-heading">
+              {resultMenu.value === undefined
+                ? t('sqlEditor.ctxResultColumn', { col: resultMenu.col })
+                : t('sqlEditor.ctxResultCell', { col: resultMenu.col })}
+            </div>
+            {resultMenu.value !== undefined && (
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  const rm = resultMenu;
+                  setResultMenu(null);
+                  copyResultCell(rm.pane, rm.value);
+                }}
+              >
+                <span>📄</span> {t('sqlEditor.ctxCopyCellValue')}
+              </button>
+            )}
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                copyResultColumnAs(rm.pane, rm.col, 'values');
+              }}
+            >
+              <span>📋</span> {t('sqlEditor.ctxCopyColumnValues', { col: resultMenu.col })}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                copyResultColumnAs(rm.pane, rm.col, 'in');
+              }}
+            >
+              <span>🔢</span> {t('sqlEditor.ctxCopyColumnIn', { col: resultMenu.col })}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                copyResultColumnAs(rm.pane, rm.col, 'json');
+              }}
+            >
+              <span>📦</span> {t('sqlEditor.ctxCopyColumnJson', { col: resultMenu.col })}
+            </button>
+            <div className="context-menu-heading">
+              {t('sqlEditor.ctxResultAll')}
+            </div>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                handleCopyAs('table', rm.pane);
+              }}
+            >
+              <span>📋</span> {t('sqlEditor.copyAsTable')}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                handleCopyAs('object', rm.pane);
+              }}
+            >
+              <span>📦</span> {t('sqlEditor.copyAsJsonObject')}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                handleCopyAs('array', rm.pane);
+              }}
+            >
+              <span>📦</span> {t('sqlEditor.copyAsJsonArray')}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                copyResultAsMarkdown(rm.pane);
+              }}
+            >
+              <span>📝</span> {t('sqlEditor.ctxCopyMarkdown')}
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 };

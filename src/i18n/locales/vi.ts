@@ -1091,6 +1091,7 @@ const vi: typeof en = {
 
   sqlEditor: {
     ctxResultCell: 'Ô "{{col}}"',
+    ctxResultColumn: 'CỘT "{{col}}"',
     ctxResultAll: 'TOÀN BỘ KẾT QUẢ',
     ctxCopyCellValue: 'Copy giá trị ô',
     ctxCopyColumnValues: 'Copy mọi giá trị trong "{{col}}"',

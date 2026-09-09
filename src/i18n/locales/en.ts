@@ -1100,6 +1100,7 @@ const en = {
 
   sqlEditor: {
     ctxResultCell: 'CELL "{{col}}"',
+    ctxResultColumn: 'COLUMN "{{col}}"',
     ctxResultAll: 'THE WHOLE RESULT',
     ctxCopyCellValue: 'Copy the cell value',
     ctxCopyColumnValues: 'Copy every value in "{{col}}"',
