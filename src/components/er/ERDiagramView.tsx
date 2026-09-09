@@ -487,29 +487,10 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     [visibleTables, positions, cullRect]
   );
 
-  const renderedRelationships = useMemo(
-    () =>
-      relationships.filter((rel) => {
-        if (!visibleNames.has(rel.sourceTable) || !visibleNames.has(rel.targetTable)) return false;
-        const src = positions[rel.sourceTable];
-        const tgt = positions[rel.targetTable];
-        if (!src || !tgt) return false;
-        // Two tests, because the two levels of detail cost completely different things per
-        // connector — see connectorHasVisibleEnd.
-        return lod === 'blocks'
-          ? connectorIntersects(cullRect, src, tgt)
-          : connectorHasVisibleEnd(cullRect, src, tgt);
-      }),
-    [relationships, visibleNames, positions, cullRect, lod]
-  );
-
-  const tableMap = useMemo(() => {
-    const map = new Map<string, ERTable>();
-    for (const table of visibleTables) map.set(table.name, table);
-    return map;
-  }, [visibleTables]);
-
-  /** Neighbours of each table, and the connectors touching it — both for the hover highlight. */
+  /**
+   * Neighbours of each table, and the connectors touching it. Feeds both the hover highlight
+   * and the culling exemption below, so it is declared before either.
+   */
   const hoverGraph = useMemo(() => {
     const neighbours = new Map<string, Set<string>>();
     const rels = new Map<string, string[]>();
@@ -527,6 +508,49 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     }
     return { neighbours, rels };
   }, [relationships]);
+
+  /**
+   * Connectors that culling may not drop: the ones belonging to a selected table.
+   *
+   * Selecting a table is a request to hold its relationships still, and culling by geometry
+   * broke exactly that — pan away from the selection and both ends of its connectors leave the
+   * screen, so the lines the user asked to keep were the first thing thrown out. There are only
+   * ever as many as the selection has foreign keys.
+   *
+   * Hover needs no such exemption: while hovering you are pointing at the table, so it is on
+   * screen by definition. It is also not state, so it could not take part in this memo.
+   */
+  const pinnedRelIds = useMemo(() => {
+    if (selectedTableIds.size === 0) return null;
+    const ids = new Set<string>();
+    for (const name of selectedTableIds) {
+      for (const id of hoverGraph.rels.get(name) ?? []) ids.add(id);
+    }
+    return ids;
+  }, [selectedTableIds, hoverGraph]);
+
+  const renderedRelationships = useMemo(
+    () =>
+      relationships.filter((rel) => {
+        if (!visibleNames.has(rel.sourceTable) || !visibleNames.has(rel.targetTable)) return false;
+        const src = positions[rel.sourceTable];
+        const tgt = positions[rel.targetTable];
+        if (!src || !tgt) return false;
+        if (pinnedRelIds?.has(rel.id)) return true;
+        // Two tests, because the two levels of detail cost completely different things per
+        // connector — see connectorHasVisibleEnd.
+        return lod === 'blocks'
+          ? connectorIntersects(cullRect, src, tgt)
+          : connectorHasVisibleEnd(cullRect, src, tgt);
+      }),
+    [relationships, visibleNames, positions, cullRect, lod, pinnedRelIds]
+  );
+
+  const tableMap = useMemo(() => {
+    const map = new Map<string, ERTable>();
+    for (const table of visibleTables) map.set(table.name, table);
+    return map;
+  }, [visibleTables]);
 
   /**
    * At the lowest level of detail every connector collapses into ONE path element.
