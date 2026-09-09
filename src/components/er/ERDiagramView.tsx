@@ -485,6 +485,30 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     [visibleTables]
   );
 
+  /**
+   * The positions of the tables actually in the diagram.
+   *
+   * `positions` holds more than that on purpose: `reconcileLayout` keeps the entry of a table
+   * that has vanished from the catalog, so re-adding it later lands it back where the user had
+   * put it. But anything that measures the diagram — fit-to-view, the minimap — has to ignore
+   * those, and it did not: a single stale entry far from the rest stretched the bounding box,
+   * and the whole diagram then rendered as a clump in the middle of an enormous empty canvas.
+   * A filter toggle does the same thing, so this is not only about deleted tables.
+   */
+  const visiblePositions = useMemo(() => {
+    const out: ERLayoutPositions = {};
+    for (const table of visibleTables) {
+      const pos = positions[table.name];
+      if (pos) out[table.name] = pos;
+    }
+    return out;
+  }, [visibleTables, positions]);
+  // Its own effect, because the mirror above is declared before this memo exists.
+  const visiblePositionsRef = useRef(visiblePositions);
+  useLayoutEffect(() => {
+    visiblePositionsRef.current = visiblePositions;
+  }, [visiblePositions]);
+
   const lod = useMemo(() => lodForZoom(viewport.zoom), [viewport.zoom]);
 
   const cullRect = useMemo(
@@ -635,8 +659,13 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   const fitTo = useCallback(
     (names: Iterable<string> | null, duration = TWEEN_MS) => {
       const { width, height } = dimensionsRef.current;
-      const spots = positionsRef.current;
-      const bounds = boundsOf(spots, names ?? Object.keys(spots));
+      // Named tables come from the selection, so they are real; the "everything" case has to
+      // ask the visible set rather than every key the layout happens to remember.
+      const spots = visiblePositionsRef.current;
+      const bounds = boundsOf(
+        names ? positionsRef.current : spots,
+        names ?? Object.keys(spots)
+      );
       if (!bounds) return;
       animateTo(fitViewport(bounds, width, height, 64, names ? 1.6 : 1.2), duration);
     },
@@ -1536,7 +1565,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
 
       {showMinimap && (
         <ERMinimap
-          positions={positions}
+          positions={visiblePositions}
           selectedTableIds={selectedTableIds}
           containerWidth={dimensions.width}
           containerHeight={dimensions.height}
