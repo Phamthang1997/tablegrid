@@ -2195,6 +2195,18 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     : null;
 
   useEffect(() => {
+    if (!showCopyDropdown && !showCopyDropdown2) return;
+    const close = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el?.closest('.sql-export-dropdown')) return;
+      setShowCopyDropdown(false);
+      setShowCopyDropdown2(false);
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [showCopyDropdown, showCopyDropdown2]);
+
+  useEffect(() => {
     if (!resultMenu) return;
     const close = () => setResultMenu(null);
     window.addEventListener('click', close);
@@ -3188,7 +3200,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                 <div style={{ width: '1px', height: '12px', background: 'var(--win-border)', margin: '0 4px' }} />
 
                 {/* Export/copy data, gathered into a single button below */}
-                <div style={{ position: 'relative', display: 'inline-block' }}>
+                <div className="sql-export-dropdown" style={{ position: 'relative', display: 'inline-block' }}>
                   <button
                     className="btn btn-secondary"
                     onClick={() => pSetShowCopyDropdown(!pShowCopyDropdown)}
@@ -3199,33 +3211,23 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                     <span style={{ fontSize: '7px', opacity: 0.7 }}>▼</span>
                   </button>
                   {pShowCopyDropdown && (
-                    <>
-                      <div
-                        style={{ position: 'fixed', inset: 0, zIndex: 9998 }}
-                        onClick={() => pSetShowCopyDropdown(false)}
-                      />
-                      <div style={{
-                        position: 'absolute',
-                        bottom: '26px',
-                        right: 0,
-                        background: 'var(--win-bg-popover, var(--win-bg-card))',
-                        border: '1px solid var(--win-border-strong, var(--win-border))',
-                        borderRadius: '6px',
-                        boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
-                        zIndex: 9999,
-                        minWidth: '170px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        padding: '4px 0',
-                      }}>
-                        <button className="copy-dropdown-item" onClick={() => { handleCopyAs('table', paneId); pSetShowCopyDropdown(false); }}>{t('sqlEditor.copyAsTable')}</button>
-                        <button className="copy-dropdown-item" onClick={() => { handleCopyAs('object', paneId); pSetShowCopyDropdown(false); }}>{t('sqlEditor.copyAsJsonObject')}</button>
-                        <button className="copy-dropdown-item" onClick={() => { handleCopyAs('array', paneId); pSetShowCopyDropdown(false); }}>{t('sqlEditor.copyAsJsonArray')}</button>
-                        <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
-                        <button className="copy-dropdown-item" onClick={() => { handleExportCsv(paneId); pSetShowCopyDropdown(false); }}>Export CSV</button>
-                        <button className="copy-dropdown-item" onClick={() => { handleExportJson(paneId); pSetShowCopyDropdown(false); }}>Export JSON</button>
-                      </div>
-                    </>
+                    <div style={{
+                      position: 'absolute',
+                      bottom: '26px',
+                      right: 0,
+                      background: 'var(--win-bg-popover, var(--win-bg-card))',
+                      border: '1px solid var(--win-border-strong, var(--win-border))',
+                      borderRadius: '6px',
+                      boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                      zIndex: 9999,
+                      minWidth: '170px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      padding: '4px 0',
+                    }}>
+                      <button className="copy-dropdown-item" onClick={() => { handleExportCsv(paneId); pSetShowCopyDropdown(false); }}>Export CSV</button>
+                      <button className="copy-dropdown-item" onClick={() => { handleExportJson(paneId); pSetShowCopyDropdown(false); }}>Export JSON</button>
+                    </div>
                   )}
                 </div>
               </div>
