@@ -1089,6 +1089,13 @@ const ja: typeof en = {
   sqlEditor: {
     ctxResultCell: 'セル「{{col}}」',
     ctxResultColumn: '列「{{col}}」',
+    ctxResultRows: '選択した行 ({{n}})',
+    ctxCopyRowsIn: 'SQL IN (…) — これらの行の「{{col}}」',
+    ctxCopyRowsTsv: 'これらの行をテーブル (TSV) として',
+    ctxCopyRowsMarkdown: 'これらの行を Markdown テーブルとして',
+    ctxCopyRowsJson: 'これらの行を JSON オブジェクトとして',
+    copiedRowsTsv: '{{n}} 行をテーブルとしてコピーしました。',
+    copiedRowsJson: '{{n}} 行を JSON オブジェクトとしてコピーしました。',
     ctxResultAll: '結果全体',
     ctxCopyCellValue: 'セルの値をコピー',
     ctxCopyColumnValues: '「{{col}}」の全値をコピー',

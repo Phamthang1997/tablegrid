@@ -1092,6 +1092,13 @@ const vi: typeof en = {
   sqlEditor: {
     ctxResultCell: 'Ô "{{col}}"',
     ctxResultColumn: 'CỘT "{{col}}"',
+    ctxResultRows: 'CÁC DÒNG ĐÃ CHỌN ({{n}})',
+    ctxCopyRowsIn: 'SQL IN (…) — "{{col}}" của các dòng này',
+    ctxCopyRowsTsv: 'Các dòng này dạng bảng (TSV)',
+    ctxCopyRowsMarkdown: 'Các dòng này dạng bảng Markdown',
+    ctxCopyRowsJson: 'Các dòng này dạng JSON objects',
+    copiedRowsTsv: 'Đã copy {{n}} dòng dạng bảng.',
+    copiedRowsJson: 'Đã copy {{n}} dòng dạng JSON objects.',
     ctxResultAll: 'TOÀN BỘ KẾT QUẢ',
     ctxCopyCellValue: 'Copy giá trị ô',
     ctxCopyColumnValues: 'Copy mọi giá trị trong "{{col}}"',

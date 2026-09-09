@@ -1101,6 +1101,13 @@ const en = {
   sqlEditor: {
     ctxResultCell: 'CELL "{{col}}"',
     ctxResultColumn: 'COLUMN "{{col}}"',
+    ctxResultRows: 'SELECTED ROWS ({{n}})',
+    ctxCopyRowsIn: 'SQL IN (…) — "{{col}}" of these rows',
+    ctxCopyRowsTsv: 'These rows as a table (TSV)',
+    ctxCopyRowsMarkdown: 'These rows as a Markdown table',
+    ctxCopyRowsJson: 'These rows as JSON objects',
+    copiedRowsTsv: '{{n}} rows copied as a table.',
+    copiedRowsJson: '{{n}} rows copied as JSON objects.',
     ctxResultAll: 'THE WHOLE RESULT',
     ctxCopyCellValue: 'Copy the cell value',
     ctxCopyColumnValues: 'Copy every value in "{{col}}"',
