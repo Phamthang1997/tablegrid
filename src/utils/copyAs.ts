@@ -12,7 +12,7 @@
  */
 
 import i18n from '../i18n';
-import { quoteIdent, sqlValue } from './exportHelper';
+import { csvCell, quoteIdent, sqlValue } from './exportHelper';
 
 /** Wrapped at roughly this width. A five-thousand-id list on one line is not readable anywhere. */
 const IN_LIST_WRAP = 100;
@@ -167,6 +167,24 @@ export function buildUpdateStatements(
  * matters). Parameterised rather than unified, so neither changes behaviour behind the
  * user's back.
  */
+/**
+ * Rows as CSV for the CLIPBOARD.
+ *
+ * Deliberately not `exportHelper`'s `buildCsv`, which writes a FILE and prefixes a byte-order
+ * mark so Excel reads the UTF-8 correctly. On the clipboard that BOM pastes as an invisible
+ * character at the start of the first cell, which then breaks a comparison against the value it
+ * looks identical to. The header is optional for the same reason TSV's is: pasting into an
+ * existing sheet wants rows only.
+ */
+export function buildCsvRows(
+  colNames: string[],
+  rows: Record<string, unknown>[],
+  withHeader: boolean
+): string {
+  const lines = rows.map((r) => colNames.map((c) => csvCell(r?.[c])).join(','));
+  return withHeader ? [colNames.map(csvCell).join(','), ...lines].join('\n') : lines.join('\n');
+}
+
 export function buildTsv(
   colNames: string[],
   rows: Record<string, unknown>[],

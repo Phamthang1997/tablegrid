@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildCsvRows,
   buildInList,
   buildInsertStatements,
   buildJsonValues,
@@ -149,6 +150,34 @@ describe('buildUpdateStatements', () => {
       ['k']
     );
     expect(sql).toBe('UPDATE `t` SET `v` = 1 WHERE `k` IS NULL;');
+  });
+});
+
+describe('buildCsvRows', () => {
+  const rows = [{ a: 1, b: null }, { a: 2, b: 'x' }];
+
+  it('writes the header only when asked', () => {
+    expect(buildCsvRows(['a', 'b'], rows, true)).toBe('a,b\n1,\n2,x');
+    expect(buildCsvRows(['a', 'b'], rows, false)).toBe('1,\n2,x');
+  });
+
+  it('quotes a cell holding a comma, a quote or a newline, and doubles the quote', () => {
+    const tricky = [{ a: 'x,y', b: 'say "hi"', c: 'one\ntwo' }];
+    expect(buildCsvRows(['a', 'b', 'c'], tricky, false)).toBe(
+      '"x,y","say ""hi""","one\ntwo"',
+    );
+  });
+
+  it('carries NO byte-order mark, unlike the file export', () => {
+    // A BOM on the clipboard pastes as an invisible character in the first cell, which then
+    // fails to compare equal to the value it looks identical to.
+    expect(buildCsvRows(['a'], [{ a: 1 }], true).charCodeAt(0)).not.toBe(0xfeff);
+    expect(buildCsvRows(['a'], [{ a: 1 }], true)).toBe('a\n1');
+  });
+
+  it('returns just the header for no rows, and nothing at all without one', () => {
+    expect(buildCsvRows(['a', 'b'], [], true)).toBe('a,b');
+    expect(buildCsvRows(['a', 'b'], [], false)).toBe('');
   });
 });
 

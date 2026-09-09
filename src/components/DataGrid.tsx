@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { clampMenu, type MenuRect } from '../utils/menuPosition';
+import { resolveRowClick, resolveRowContextMenu } from '../utils/rowSelection';
 import { countKey, nextCountMode, seekColumn, seekViewKey } from '../utils/gridPaging';
 import { getCommitPreviewForKey, setCommitPreviewForKey } from '../utils/commitPreview';
 import { connKeyOfConn } from '../utils/safeMode';
 import {
+  buildCsvRows,
   buildInList,
   buildInsertStatements,
   buildJsonValues,
@@ -352,7 +354,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   //
   // Keys are the same `selectionKey` the rows render with: the primary key when there is one, and
   // `__idx_<n>` when there is not. An inserted row uses its `__tempId`.
-  const [selectedRowIds, setSelectedRowIds] = useState<Set<any>>(new Set());
+  const [selectedRowIds, setSelectedRowIds] = useState<ReadonlySet<any>>(new Set());
   // Where a Shift+click measures from. Set by every plain and Ctrl click, never by Shift itself, so
   // repeated Shift+clicks grow and shrink the same range instead of walking the anchor along.
   const [anchorRowId, setAnchorRowId] = useState<any | null>(null);
@@ -1154,16 +1156,9 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     return picked.length > 0 ? picked : [clicked];
   };
 
-  const csvCell = (v: any) => {
-    if (v === null || v === undefined) return '';
-    const s = String(v);
-    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-
   const copyRowAsCSV = (row: any, withHeader: boolean) => {
     const cols = activeColumns.map(c => c.name);
-    const lines = rowsToCopy(row).map(r => cols.map(c => csvCell(r[c])).join(','));
-    copyToClipboard(withHeader ? [cols.join(','), ...lines].join('\n') : lines.join('\n'));
+    copyToClipboard(buildCsvRows(cols, rowsToCopy(row), withHeader));
     setSuccessMsg(t('dataGrid.copiedRowCsv'));
     setTimeout(() => setSuccessMsg(null), 2000);
   };
@@ -1638,15 +1633,10 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   }, [displayedRows, displayedInserts, primaryKey]);
 
   /**
-   * One click on a row, with the three behaviours every table has:
-   *
-   * - plain: select just this row;
-   * - Ctrl/Cmd: add or remove this row, leaving the rest alone;
-   * - Shift: select from the anchor to here, replacing the selection.
-   *
-   * Shift deliberately does not move the anchor, so holding Shift and clicking around resizes one
-   * range instead of chaining ranges end to end. Ctrl does move it, because the row just toggled is
-   * what the next Shift should measure from.
+   * One click on a row. Which rows that leaves selected is decided by `resolveRowClick` in
+   * `utils/rowSelection.ts`, shared with the SQL editor's result grid -- the two grids agree on
+   * nothing underneath (see that file) but must agree on this, because a gesture that works in
+   * one and not the other reads as a bug rather than as two features.
    */
   const handleRowClick = useCallback(
     (key: any, e: React.MouseEvent) => {
@@ -1654,41 +1644,25 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
       // that highlight looks wrong AND breaks Ctrl+C, which stands aside whenever text is selected
       // so that copying a highlighted cell value still works.
       if (e.shiftKey) window.getSelection()?.removeAllRanges();
-      if (e.shiftKey && anchorRowId !== null) {
-        const from = orderedRowKeys.indexOf(anchorRowId);
-        const to = orderedRowKeys.indexOf(key);
-        if (from >= 0 && to >= 0) {
-          const [lo, hi] = from <= to ? [from, to] : [to, from];
-          setSelectedRowIds(new Set(orderedRowKeys.slice(lo, hi + 1)));
-          return;
-        }
-        // The anchor scrolled out of the filtered list: fall through to a plain select rather than
-        // silently selecting nothing.
-      }
-      if (e.ctrlKey || e.metaKey) {
-        setSelectedRowIds(prev => {
-          const next = new Set(prev);
-          if (next.has(key)) next.delete(key);
-          else next.add(key);
-          return next;
-        });
-        setAnchorRowId(key);
-        return;
-      }
-      setSelectedRowId(key);
+      const next = resolveRowClick(
+        orderedRowKeys,
+        { rows: selectedRowIds, anchor: anchorRowId },
+        key,
+        { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey },
+      );
+      setSelectedRowIds(next.rows);
+      setAnchorRowId(next.anchor);
     },
-    [anchorRowId, orderedRowKeys, setSelectedRowId],
+    [anchorRowId, orderedRowKeys, selectedRowIds],
   );
 
-  /**
-   * What a right-click does to the selection: nothing, if the row it landed on is already part of
-   * it. Right-clicking inside a selection to reach "copy" must not first throw that selection away
-   * — that is the one interaction where clearing it destroys exactly what the user was about to act
-   * on. On a row outside the selection it behaves like a plain click.
-   */
+  /** Keeps a selection the right-clicked row belongs to — see `resolveRowContextMenu`. */
   const selectForContextMenu = useCallback(
     (key: any) => {
-      setSelectedRowIds(prev => (prev.has(key) ? prev : new Set([key])));
+      // Read through the updater rather than from state: this runs from a contextmenu handler that
+      // may fire before a pending selection change has been applied, and the kept set is returned
+      // by reference so an unchanged selection still costs no render.
+      setSelectedRowIds(prev => resolveRowContextMenu({ rows: prev, anchor: key }, key).rows);
       setAnchorRowId(key);
     },
     [],

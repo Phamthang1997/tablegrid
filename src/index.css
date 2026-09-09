@@ -2655,6 +2655,14 @@ select.form-input {
   position: relative;
 }
 
+/* The SQL result grid carries tabIndex={-1} so it can own Ctrl+C and Escape for its row
+   selection (a window listener would fire in every mounted query tab at once). Nothing is lost
+   by dropping the ring: the selected rows are already the visible focus state, and a scroll
+   container is not a tab stop -- only a click puts focus here. */
+.grid-table-container:focus {
+  outline: none;
+}
+
 .grid-table {
   border-collapse: collapse;
   width: max-content;

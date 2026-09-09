@@ -21,7 +21,7 @@ function downloadBlob(blob: Blob, filename: string): void {
 }
 
 // ---- CSV ----
-function csvCell(v: any): string {
+export function csvCell(v: any): string {
   if (v === null || v === undefined) return '';
   const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
