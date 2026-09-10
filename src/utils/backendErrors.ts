@@ -22,6 +22,8 @@ import i18n from '../i18n';
 /** Backend messages with no interpolation — matched whole, after trimming. */
 export const EXACT: Record<string, string> = {
   'Chưa kết nối CSDL': 'backend.notConnected',
+  // terminal/docker.rs — neither CLI is installed, so container discovery has nothing to ask.
+  'Không tìm thấy lệnh docker hoặc nerdctl trên máy': 'backend.dockerCliMissing',
   'Kết nối đang ở chế độ chỉ đọc — tắt chế độ này trước khi ghi': 'backend.connReadOnly',
   // oauth.rs — the client id is baked in at compile time and may be empty
   'Chưa cấu hình Google OAuth client id cho bản dựng này': 'backend.oauthClientMissing',
@@ -128,6 +130,10 @@ export const NORMALIZED_ALIASES = new Set(['Chưa kết nối database']);
  */
 export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   { re: /^Lỗi khi chạy lệnh SQL: ([\s\S]*?)\. Chi tiết: ([\s\S]*)$/, key: 'backend.sqlFailed' },
+  // terminal/docker.rs — the payload is the OS spawn error or docker's own stderr, which stays
+  // in its own words the way `failed[].error` does for a Redis RESTORE.
+  { re: /^Không chạy được ([^:]+): ([\s\S]*)$/, key: 'backend.dockerRunFailed' },
+  { re: /^Không liệt kê được container \(([^)]*)\): ([\s\S]*)$/, key: 'backend.dockerListFailed' },
   // database.rs — a statement's time fence (the connection's `statementTimeoutSecs`).
   { re: /^Câu lệnh đã chạy quá ([\d]+) giây và bị dừng$/, key: 'backend.statementTimeout' },
   { re: /^Lỗi tại câu lệnh:\n([\s\S]*)\n\nChi tiết: ([\s\S]*)$/, key: 'backend.sqlStatementFailed' },

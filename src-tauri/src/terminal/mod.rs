@@ -10,5 +10,6 @@
 //! { type: "closed" }                the session has closed
 //! ```
 
+pub mod docker;
 pub mod local;
 pub mod ssh;

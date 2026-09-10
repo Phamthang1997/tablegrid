@@ -163,6 +163,28 @@ export interface QueryStreamMessage {
 }
 
 // Messages the backend pushes over the Channel for the SSH Terminal (open_ssh_terminal).
+/** The container CLI found on this machine — the twin of `DockerCliInfo` in `terminal/docker.rs`. */
+export interface DockerCliInfo {
+  available: boolean;
+  cli_type: string;
+  binary_path: string;
+  version: string;
+}
+
+/** One row of `docker ps -a` — the twin of `DockerContainerInfo` in `terminal/docker.rs`. */
+export interface DockerContainerInfo {
+  id: string;
+  name: string;
+  image: string;
+  ports: string;
+  status: string;
+  running: boolean;
+  /** The published HOST port is the one the connection uses — the strongest signal. */
+  matched_host_port: boolean;
+  /** Only the container's internal port matches, i.e. same image on another published port. */
+  matched_container_port: boolean;
+}
+
 export interface SshTerminalMessage {
   type: 'data' | 'exit' | 'closed';
   bytes?: number[];
@@ -1314,6 +1336,22 @@ export const dbHelper = {
     } catch {
       /* skip */
     }
+  },
+
+  // `available: false` already carries "no CLI here", so this one answers rather than throws.
+  async getDockerCliInfo(): Promise<DockerCliInfo> {
+    try {
+      return await invoke('get_docker_cli_info');
+    } catch {
+      return { available: false, cli_type: 'none', binary_path: '', version: '' };
+    }
+  },
+
+  // Deliberately NOT wrapped in a catch that returns []: "no CLI installed", "the daemon is not
+  // running" and "there are no containers" are three different answers needing three different
+  // things from the user, and an empty array makes them one. The caller shows the reason.
+  async listDockerContainers(targetPort?: number): Promise<DockerContainerInfo[]> {
+    return await invoke('list_docker_containers', { targetPort });
   },
 
   // Finds the DB server's log file paths by asking the database itself, over the open connection.

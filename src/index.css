@@ -1007,7 +1007,6 @@ select.form-input {
 .db-rail-menu,
 .st-fk-popover,
 .sql-run-menu,
-.tp-menu,
 .ws-menu {
   background-color: var(--win-bg-popover, #ffffff) !important;
   opacity: 1 !important;
@@ -1019,7 +1018,6 @@ select.form-input {
 [data-theme='light'] .db-rail-menu,
 [data-theme='light'] .st-fk-popover,
 [data-theme='light'] .sql-run-menu,
-[data-theme='light'] .tp-menu,
 [data-theme='light'] .ws-menu {
   background-color: #ffffff !important;
   color: #0f172a !important;
@@ -1031,7 +1029,6 @@ select.form-input {
 [data-theme='dark'] .db-rail-menu,
 [data-theme='dark'] .st-fk-popover,
 [data-theme='dark'] .sql-run-menu,
-[data-theme='dark'] .tp-menu,
 [data-theme='dark'] .ws-menu {
   background-color: #1e222d !important;
   color: #f8fafc !important;
@@ -9891,7 +9888,39 @@ input.rename-input {
    The panel is always dark (#1c1c1e) even in the light theme, so its buttons use a colour scale of
    their own rather than the app's .btn (a light button on black glares).
    ===================================================================== */
-.tp-title {
+.tp-panel {
+  background: #1c1c1e;
+  flex-direction: column;
+}
+
+.tp-panel.floating-panel {
+  border: 1px solid var(--win-border, #383b44);
+  border-radius: 8px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}
+
+.tp-panel.maximized-panel {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.tp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: #26272b;
+  border-bottom: 1px solid #383b44;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.tp-header.floating-header {
+  cursor: move;
+}
+
+.tp-header .tp-title {
   display: flex;
   align-items: center;
   gap: 9px;
@@ -9899,17 +9928,24 @@ input.rename-input {
   color: #e5e5e7;
 }
 
-.tp-title-main {
+.tp-header .tp-title-icon {
+  flex-shrink: 0;
+  opacity: 0.85;
+  color: #e5e5e7;
+}
+
+.tp-header .tp-title-main {
   font-size: 12px;
   font-weight: 600;
+  color: #f3f4f6;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.tp-title-sub {
+.tp-header .tp-title-sub {
   font-size: 10.5px;
-  color: #8a8a8f;
+  color: #9ca3af;
   font-family: var(--win-font-mono);
   white-space: nowrap;
   overflow: hidden;
@@ -9927,8 +9963,8 @@ input.rename-input {
 }
 
 .tp-dot.on {
-  background: var(--mac-green);
-  color: var(--mac-green);
+  background: var(--mac-green, #30d158);
+  color: var(--mac-green, #30d158);
 }
 
 .tp-dot.off {
@@ -9939,58 +9975,88 @@ input.rename-input {
 .tp-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   position: relative;
   flex-shrink: 0;
 }
 
-.tp-btn {
-  height: 26px;
-  padding: 0 9px;
+.tp-dropdown-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.tp-btn,
+.tp-actions .tp-btn {
+  height: 24px;
+  padding: 0 8px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
   flex-shrink: 0;
-  border-radius: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
   color: #e5e5e7;
   font-family: var(--win-font-sans);
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  user-select: none;
+  transition: all 0.15s ease;
 }
 
-.tp-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.15);
+.tp-btn:hover:not(:disabled),
+.tp-actions .tp-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--win-accent, #60a5fa);
+  color: #ffffff;
 }
 
-.tp-btn:disabled {
+.tp-btn:active:not(:disabled),
+.tp-actions .tp-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.tp-btn:disabled,
+.tp-actions .tp-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.tp-btn.icon {
-  padding: 0 7px;
+.tp-btn.tp-btn-icon,
+.tp-btn.icon,
+.tp-actions .tp-btn.tp-btn-icon {
+  padding: 0 6px;
+  min-width: 24px;
+}
+
+.tp-btn.tp-btn-flex {
+  flex: 1;
+  justify-content: center;
 }
 
 /* Open (the menu or SQL box is showing) */
-.tp-btn.on {
+.tp-btn.on,
+.tp-actions .tp-btn.on {
   background: rgba(96, 165, 250, 0.22);
-  border-color: rgba(96, 165, 250, 0.55);
+  border-color: var(--win-accent, #60a5fa);
   color: #93c5fd;
 }
 
-.tp-btn.warn {
+.tp-btn.warn,
+.tp-actions .tp-btn.warn {
   background: rgba(255, 159, 10, 0.18);
   border-color: rgba(255, 159, 10, 0.5);
   color: #ffb340;
 }
 
-.tp-btn.warn:hover {
+.tp-btn.warn:hover:not(:disabled),
+.tp-actions .tp-btn.warn:hover:not(:disabled) {
   background: rgba(255, 159, 10, 0.3);
+  border-color: #ff9f0a;
+  color: #ffd60a;
 }
 
 /* ————— The SQL run box ————— */
@@ -10043,12 +10109,12 @@ input.rename-input {
    meant for a dark background -> light on light, completely invisible in tab mode. */
 .tp-menu {
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(38, 39, 43, 0.98);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  background-color: #22242a !important;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  color: #e5e5e7;
+  color: #e5e5e7 !important;
 }
 
 /* The dropdown's contents use theme variables (light in the light theme) -> forced back to dark tones */
@@ -10056,15 +10122,21 @@ input.rename-input {
 .tp-menu * {
   --win-text-primary: #e5e5e7;
   --win-text-secondary: #a1a1a6;
-  --win-text-disabled: #6b6b70;
+  --win-text-disabled: #9ca3af;
   --win-border: rgba(255, 255, 255, 0.12);
-  --win-bg-hover: rgba(255, 255, 255, 0.10);
+  --win-bg-hover: rgba(255, 255, 255, 0.08);
   --win-bg-window: rgba(0, 0, 0, 0.40);
-  --win-bg-card: rgba(38, 39, 43, 0.98);
+  --win-bg-card: #22242a;
 }
 
 .tp-menu .context-menu-item {
-  border-radius: 7px;
+  border-radius: 6px;
+  color: #e5e5e7 !important;
+}
+
+.tp-menu .context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
 }
 
 .tp-menu input {
@@ -10074,6 +10146,278 @@ input.rename-input {
   color: #e5e5e7 !important;
 }
 
+.tp-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 998;
+}
+
+.tp-setup-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 280px;
+  z-index: 999;
+  padding: 5px;
+  font-size: 11px;
+}
+
+.tp-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 9px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  color: #e5e5e7 !important;
+  font-size: 11.5px;
+  font-family: var(--win-font-sans);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.tp-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+}
+
+.tp-menu-item.danger {
+  color: #f87171 !important;
+}
+
+.tp-menu-item.danger:hover {
+  background: rgba(239, 68, 68, 0.16) !important;
+  color: #fca5a5 !important;
+}
+
+.tp-menu-note {
+  padding: 6px 9px;
+  color: #9ca3af !important;
+  font-size: 11px;
+  line-height: 1.4;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.tp-log-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 360px;
+  max-width: 80vw;
+  z-index: 999;
+  overflow: hidden;
+  font-size: 11px;
+}
+
+.tp-log-source-box {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--win-border, rgba(255, 255, 255, 0.12));
+}
+
+.tp-log-source-label {
+  color: var(--win-text-secondary, #a1a1a6);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.tp-log-source-btns {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.tp-ssh-input {
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 11px;
+  background: var(--win-bg-input, #1c1c1e);
+  color: var(--win-text-primary, #e5e5e7);
+  border: 1px solid var(--win-border, rgba(255, 255, 255, 0.14));
+  border-radius: 4px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.tp-log-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tp-log-item-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.tp-log-item-title {
+  color: var(--win-accent, #60a5fa);
+  font-size: 10px;
+}
+
+.tp-log-item-path {
+  color: var(--win-text-primary, #e5e5e7);
+  word-break: break-all;
+  line-height: 1.3;
+}
+
+.tp-folder-icon {
+  flex-shrink: 0;
+  color: var(--win-text-secondary, #a1a1a6);
+}
+
+.tp-file-icon {
+  flex-shrink: 0;
+  color: var(--win-accent, #60a5fa);
+}
+
+.tp-body {
+  flex: 1;
+  padding: 6px;
+  overflow: hidden;
+}
+
+/* Docker / Container Log Selector in TerminalPanel.
+
+   Colours come from the --win-* tokens rather than from literals: the app swaps themes over those
+   tokens, so a hardcoded hex is correct in at most one of the two themes. The select and the input
+   deliberately set only GEOMETRY -- the shared `input[type="text"], select` rule further up already
+   carries the themed background/border and has its own [data-theme='light'] override, so overriding
+   them here (with !important, as the first version did) is what broke light mode. That shared rule
+   is also why the input needs an explicit type="text": without one it matches nothing. */
+.tp-docker-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.tp-docker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--win-text-secondary);
+}
+
+.tp-docker-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: var(--win-font-mono);
+  background: var(--win-accent-glow);
+  border: 1px solid var(--win-accent);
+  color: var(--win-accent);
+}
+
+/* Why the scan found nothing. Secondary rather than danger-coloured: "Docker is not installed"
+   is a fact about the machine, not a failure the user caused. */
+.tp-docker-note {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--win-text-secondary);
+}
+
+/* The border is set here rather than left to the shared rule: this box lives inside `.tp-menu`,
+   which forces a dark palette on itself and every descendant -- but it remaps `--win-border` and
+   NOT `--win-border-strong`, which the shared input rule uses. In the light theme that token is a
+   dark translucent, i.e. invisible against the panel. */
+.tp-docker-select,
+.tp-docker-input {
+  border: 1px solid var(--win-border);
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+  border-radius: 7px;
+  box-sizing: border-box;
+}
+
+.tp-docker-select {
+  cursor: pointer;
+}
+
+.tp-docker-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tp-docker-custom-row .tp-docker-input {
+  flex: 1;
+}
+
+.tp-docker-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tp-docker-btn {
+  height: 24px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-hover);
+  color: var(--win-text-primary);
+  font-family: var(--win-font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.tp-docker-btn:hover:not(:disabled) {
+  border-color: var(--win-accent);
+  color: var(--win-accent);
+  background: var(--win-accent-glow);
+}
+
+.tp-docker-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tp-docker-btn.primary {
+  border-color: var(--win-accent);
+  background: var(--win-accent-glow);
+  color: var(--win-accent);
+  font-weight: 600;
+}
+
+.tp-docker-btn.primary:hover:not(:disabled) {
+  background: var(--win-accent);
+  border-color: var(--win-accent);
+  color: #ffffff;
+}
+
+/* The refresh icon while a scan is running.
+
+   `@keyframes spin` did not exist anywhere in this file, so `.er-loading-spinner` further down has
+   been asking for an animation that was never defined -- defining it here fixes that one too,
+   rather than adding a second keyframe beside it. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tp-spin {
+  animation: spin 0.9s linear infinite;
+}
 
 /* The app's message bar inside the terminal panel. Placed outside the xterm buffer because
    PowerShell/PSReadLine redraws its line with cursor movement and would write over anything the app
@@ -19313,7 +19657,7 @@ input.rename-input {
   flex-wrap: wrap;
 }
 
-.tp-title {
+.tp-container .tp-title {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -19335,7 +19679,7 @@ input.rename-input {
   font-family: var(--win-font-mono);
 }
 
-.tp-btn {
+.tp-container .tp-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -19354,27 +19698,27 @@ input.rename-input {
   user-select: none;
 }
 
-.tp-btn:hover:not(:disabled) {
+.tp-container .tp-btn:hover:not(:disabled) {
   border-color: var(--win-accent);
   color: var(--win-accent);
   background: var(--win-bg-hover);
 }
 
-.tp-btn:active:not(:disabled) {
+.tp-container .tp-btn:active:not(:disabled) {
   transform: translateY(1px);
 }
 
-.tp-btn:disabled {
+.tp-container .tp-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.tp-btn-primary {
+.tp-container .tp-btn-primary {
   border-color: var(--win-accent);
   color: var(--win-accent);
 }
 
-.tp-btn-primary:hover:not(:disabled) {
+.tp-container .tp-btn-primary:hover:not(:disabled) {
   background: var(--win-bg-active, var(--win-bg-hover));
 }
 
