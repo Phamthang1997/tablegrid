@@ -69,6 +69,9 @@ pub async fn redis_connect(config: Value) -> Result<Value, String> {
                 // Redis has no schemas. `None` rather than `Some("")`: `pg_schema_of` defaults to
                 // `public`, and an empty string here would end up in the frontend's scopeKey.
                 current_schema: None,
+                // The Redis branch of `get_connection_status` answers from the `caps` probed at
+                // connect, so it never fills this.
+                session_info: None,
             },
         )?;
 
@@ -171,6 +174,7 @@ pub(crate) async fn select_db_inner(
                 caps,
             }),
             current_schema: None,
+            session_info: None,
         },
     )?;
     Ok(json!({ "success": true, "connId": &*new_id, "dbIndex": index }))

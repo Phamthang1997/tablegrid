@@ -204,6 +204,7 @@ pub async fn connect_db(app: tauri::AppHandle, config: Value) -> Result<Value, S
                     db: db_name,
                     conn: crate::state::LiveConn::Sql(conn),
                     current_schema: schema.clone(),
+                    session_info: None,
                 },
             )?;
         }

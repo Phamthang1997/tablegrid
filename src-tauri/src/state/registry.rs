@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use serde_json::Value;
 
 use super::ctx::{ConnCtx, RedisCtx, ctx_of, redis_ctx_of};
-use super::entry::{ConnEntry, LiveConn, RedisConn};
+use super::entry::{ConnEntry, LiveConn, RedisConn, SessionInfo};
 use super::ids::ConnScopeId;
 use crate::database::DbConnection;
 
@@ -120,10 +120,37 @@ impl ConnRegistry {
     }
 
     /// Replaces the live handle of one entry, for an IAM token refresh that rebuilt the pool.
+    ///
+    /// Drops the cached `SessionInfo` with it. An IAM refresh reconnects to the same place and would
+    /// answer identically, but the other caller does not: a restore replaying a dump with
+    /// `USE <db>` swaps the pool for one pointing at a DIFFERENT database (see
+    /// `restore_backup`), and a kept cache would leave the status popover naming the old one.
     pub fn replace_conn(&self, id: &str, conn: DbConnection) -> Result<(), String> {
         let mut map = self.inner.lock().map_err(|e| e.to_string())?;
         if let Some(entry) = map.get_mut(id) {
             entry.conn = LiveConn::Sql(conn);
+            entry.session_info = None;
+        }
+        Ok(())
+    }
+
+    /// The cached session description of one connection, or `None` when it has not been probed yet.
+    pub fn session_info(&self, id: &str) -> Option<SessionInfo> {
+        let map = match self.inner.lock() {
+            Ok(m) => m,
+            Err(e) => e.into_inner(),
+        };
+        map.get(id).and_then(|e| e.session_info.clone())
+    }
+
+    /// Fills that cache after `get_connection_status` probed the server.
+    ///
+    /// An id that is gone is not an error: the connection may have been closed while the three
+    /// probe queries were in flight, and there is then simply nothing left to cache it on.
+    pub fn set_session_info(&self, id: &str, info: SessionInfo) -> Result<(), String> {
+        let mut map = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(entry) = map.get_mut(id) {
+            entry.session_info = Some(info);
         }
         Ok(())
     }
@@ -334,6 +361,11 @@ impl ConnRegistry {
         let mut map = self.inner.lock().map_err(|e| e.to_string())?;
         if let Some(entry) = map.get_mut(id) {
             entry.db = db;
+            // `SessionInfo::database` is what the server answers for this entry, so it is stale the
+            // moment this field moves. Its only caller pairs this with `replace_conn` above, which
+            // already clears the cache — clearing it here too costs one write and means neither of
+            // the two has to be called in the right order for the popover to stay correct.
+            entry.session_info = None;
         }
         Ok(())
     }
