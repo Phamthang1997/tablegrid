@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import ReactDOM from 'react-dom';
 import { Trans, useTranslation } from 'react-i18next';
 import * as monaco from 'monaco-editor';
 import Editor from '@monaco-editor/react';
@@ -6,6 +7,18 @@ import Editor from '@monaco-editor/react';
 // Worker factory + loader binding, shared with the Redis console (see the module's header).
 import '../sql/monacoSetup';
 import { setupSqlCompletion, langIdForDbType, LANG_IDS } from '../sql/sqlLanguage';
+import { clampMenu, type MenuRect } from '../utils/menuPosition';
+import { resolveRowClick, resolveRowContextMenu } from '../utils/rowSelection';
+import {
+  buildCsvRows,
+  buildInList,
+  buildInsertStatements,
+  buildJsonValues,
+  buildMarkdownTable,
+  buildTsv,
+  buildUpdateStatements,
+  updateRefusalMessage,
+} from '../utils/copyAs';
 import { setupSqlHover, findTable, openTableTab } from '../sql/intellisense';
 import { defineSqlThemes, sqlThemeName } from '../sql/theme';
 import { SQL_EDITOR_OPTIONS } from '../sql/editorOptions';
@@ -227,6 +240,27 @@ const EditorLoading: React.FC = () => {
 
 /** Created once: the whole point is that this element's identity never changes. */
 const EDITOR_LOADING = <EditorLoading />;
+
+/**
+ * Row selection in a result grid, keyed by the row OBJECT itself.
+ *
+ * A query result has no primary key to key a selection by — it can be a join, an aggregate or a
+ * bare `SELECT 1`. The row object is the one stable identity available, and it is a good one:
+ * `sortedResults*` sorts a COPY of the array, so sorting and paging both hand back the same
+ * objects and a selection made before a sort survives it.
+ *
+ * `of` is the result array the selection was made against. It is checked by reference during the
+ * render pass rather than cleared from an effect, because an effect would paint one frame of the
+ * previous result set`s selection over the new rows.
+ */
+interface RowSelection {
+  rows: ReadonlySet<any>;
+  /** The row a Shift+click measures its range from. */
+  anchor: any | null;
+  of: readonly any[] | null;
+}
+
+const EMPTY_ROW_SELECTION: RowSelection = { rows: new Set(), anchor: null, of: null };
 
 export const SqlEditor: React.FC<SqlEditorProps> = ({
   connId,
@@ -2164,6 +2198,274 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   };
 
 
+  const [rowSel1, setRowSel1] = useState<RowSelection>(EMPTY_ROW_SELECTION);
+  const [rowSel2, setRowSel2] = useState<RowSelection>(EMPTY_ROW_SELECTION);
+
+  /** A pane's selection, empty as soon as that pane holds a different result set. */
+  const rowSelectionOf = (paneId: 1 | 2): RowSelection => {
+    const sel = paneId === 1 ? rowSel1 : rowSel2;
+    return sel.of === (paneId === 1 ? results : results2) ? sel : EMPTY_ROW_SELECTION;
+  };
+
+  /** The selected rows in SCREEN order, so anything copied reads the way the grid looks. */
+  const selectedResultRows = (paneId: 1 | 2): any[] => {
+    const sel = rowSelectionOf(paneId);
+    if (sel.rows.size === 0) return [];
+    return (paneId === 1 ? sortedResults1 : sortedResults2).filter((r) => sel.rows.has(r));
+  };
+
+  /**
+   * Click, Ctrl+click and Shift+click, by the rules in `utils/rowSelection.ts` -- the same ones
+   * the table grid follows, since a gesture that works in one grid and not the other reads as a
+   * bug rather than as two features.
+   */
+  const handleResultRowClick = (paneId: 1 | 2, row: any, e: React.MouseEvent) => {
+    // Shift+click also drags the BROWSER's text selection across every row it spans, which reads
+    // as a second highlight competing with the real one.
+    if (e.shiftKey) window.getSelection()?.removeAllRanges();
+    const all = paneId === 1 ? sortedResults1 : sortedResults2;
+    const next = resolveRowClick(all, rowSelectionOf(paneId), row, {
+      shift: e.shiftKey,
+      ctrl: e.ctrlKey || e.metaKey,
+    });
+    (paneId === 1 ? setRowSel1 : setRowSel2)({
+      ...next,
+      of: paneId === 1 ? results : results2,
+    });
+  };
+
+  /**
+   * Ctrl/Cmd+C copies the selected rows, Escape drops the selection.
+   *
+   * Attached to the grid CONTAINER, not to `window` as the table grid's twin is, and the reason
+   * is structural: every query tab stays mounted while another is on screen (App.tsx keeps them
+   * alive so a run's results survive a tab switch), so a window listener would fire in every
+   * open query tab at once and several would race for the clipboard. A hidden tab can never
+   * hold focus, so scoping the keystroke to the focused grid rules that out by construction
+   * rather than by a flag someone has to remember to check.
+   */
+  const handleResultGridKeyDown = (paneId: 1 | 2, e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      if (rowSelectionOf(paneId).rows.size === 0) return;
+      e.preventDefault();
+      (paneId === 1 ? setRowSel1 : setRowSel2)(EMPTY_ROW_SELECTION);
+      return;
+    }
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== 'c') return;
+    // Three ways the NATIVE copy is the right one, all borrowed from the table grid: a cell
+    // editor or another field owns the keystroke, or the user has highlighted text and means
+    // that text rather than the rows it happens to sit in.
+    const el = document.activeElement;
+    if (
+      el &&
+      (el.tagName === 'INPUT' ||
+        el.tagName === 'TEXTAREA' ||
+        el.getAttribute('contenteditable') === 'true')
+    ) {
+      return;
+    }
+    if (editingCell) return;
+    if ((window.getSelection()?.toString() || '').length > 0) return;
+    if (rowSelectionOf(paneId).rows.size === 0) return;
+    e.preventDefault();
+    copySelectedRowsAs(paneId, 'tsv');
+  };
+
+  const selectResultRowForMenu = (paneId: 1 | 2, row: any) => {
+    (paneId === 1 ? setRowSel1 : setRowSel2)({
+      ...resolveRowContextMenu(rowSelectionOf(paneId), row),
+      of: paneId === 1 ? results : results2,
+    });
+  };
+
+  /**
+   * The result grid had no context menu at all: every copy lived behind the Export dropdown,
+   * which only offers whole-result formats. A query result is exactly where a cell value or a
+   * column of ids is wanted — you ran the query to get them and the next query needs them.
+   *
+   * Scoped by cell, by column, by the selected rows and by the whole result. The row scope only
+   * appears once something is selected — see `RowSelection` for what identifies a row here.
+   */
+  const [resultMenu, setResultMenu] = useState<{
+    pane: 1 | 2;
+    x: number;
+    y: number;
+    col: string;
+    /** Absent when the menu was opened from the column header rather than from a cell. */
+    value?: unknown;
+    /**
+     * The single table this result maps onto, when it does — the same gate cell editing uses
+     * (`editabilityOf`). Recorded at open time because the menu renders at the top of the
+     * component, outside the pane that knows it, and because `INSERT INTO ?` / `UPDATE ?` are
+     * not statements: without a table and a key there is nothing honest to offer.
+     */
+    target?: { table: string; primaryKey: string; columns: string[] } | null;
+  } | null>(null);
+
+  const menuSelectedRows = resultMenu ? rowSelectionOf(resultMenu.pane).rows.size : 0;
+
+  /**
+   * Where the menu actually goes, once it is kept inside the window.
+   *
+   * The height is computed from the sections it will show rather than measured: unlike the table
+   * grid's menu, which grows a row per foreign key and media column it finds, this one has only
+   * two shapes. Measuring it with a ref would cost a second render before the menu could appear.
+   */
+  const resultMenuAt: MenuRect | null = resultMenu
+    ? clampMenu(
+        resultMenu.x,
+        resultMenu.y,
+        280,
+        (menuSelectedRows > 0 ? (resultMenu.target ? 610 : 520) : 320) -
+          (resultMenu.value === undefined ? 46 : 0),
+        window.innerWidth,
+        window.innerHeight,
+      )
+    : null;
+
+  useEffect(() => {
+    if (!showCopyDropdown && !showCopyDropdown2) return;
+    const close = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el?.closest('.sql-export-dropdown')) return;
+      setShowCopyDropdown(false);
+      setShowCopyDropdown2(false);
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [showCopyDropdown, showCopyDropdown2]);
+
+  useEffect(() => {
+    if (!resultMenu) return;
+    const close = () => setResultMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close);
+    };
+  }, [resultMenu]);
+
+  const noteCopied = (paneId: 1 | 2, message: string) => {
+    if (paneId === 1) {
+      setStatusMsg(message);
+      setTimeout(() => setStatusMsg(null), 3000);
+    } else {
+      setStatusMsg2(message);
+      setTimeout(() => setStatusMsg2(null), 3000);
+    }
+  };
+
+  /**
+   * A column of the result as an `IN (…)` list, a plain value list, or a JSON array.
+   *
+   * `rows` defaults to the WHOLE result rather than the page on screen: the grid pages on the
+   * client, and somebody who ran a query and asked for its ids means all of them. It is passed
+   * explicitly to narrow the same three formats to the selected rows. Either way the order is
+   * the sorted one, so it matches what they are looking at.
+   */
+  const copyResultColumnAs = (
+    paneId: 1 | 2,
+    col: string,
+    as: 'values' | 'in' | 'json',
+    rows: any[] = paneId === 1 ? sortedResults1 : sortedResults2,
+  ) => {
+    if (as === 'in') {
+      const result = buildInList(rows.map((r) => r[col]), dbType || 'mysql');
+      if (result.count === 0) {
+        noteCopied(paneId, t('sqlEditor.copyInListEmpty'));
+        return;
+      }
+      navigator.clipboard.writeText(result.sql);
+      const skipped = result.nullsDropped + result.duplicatesDropped;
+      noteCopied(
+        paneId,
+        skipped > 0
+          ? t('sqlEditor.copiedInListTrimmed', { n: result.count, skipped })
+          : t('sqlEditor.copiedInList', { n: result.count }),
+      );
+      return;
+    }
+    if (as === 'json') {
+      navigator.clipboard.writeText(buildJsonValues([col], rows));
+      noteCopied(paneId, t('sqlEditor.copiedColumnJson', { col }));
+      return;
+    }
+    navigator.clipboard.writeText(
+      rows
+        .map((r) => (r[col] === null || r[col] === undefined ? '' : String(r[col])))
+        .join('\n'),
+    );
+    noteCopied(paneId, t('sqlEditor.copiedResultColumn', { col }));
+  };
+
+  /** The selected rows, whole: as a TSV or CSV table (spreadsheet paste) or as JSON objects. */
+  const copySelectedRowsAs = (paneId: 1 | 2, as: 'tsv' | 'csv' | 'json') => {
+    const rows = selectedResultRows(paneId);
+    if (rows.length === 0) return;
+    const cols = paneId === 1 ? columns : columns2;
+    if (as === 'tsv') {
+      navigator.clipboard.writeText(buildTsv(cols, rows, true));
+      noteCopied(paneId, t('sqlEditor.copiedRowsTsv', { n: rows.length }));
+      return;
+    }
+    if (as === 'csv') {
+      navigator.clipboard.writeText(buildCsvRows(cols, rows, true));
+      noteCopied(paneId, t('sqlEditor.copiedRowsCsv', { n: rows.length }));
+      return;
+    }
+    navigator.clipboard.writeText(JSON.stringify(rows, null, 2));
+    noteCopied(paneId, t('sqlEditor.copiedRowsJson', { n: rows.length }));
+  };
+
+  /**
+   * The selected rows as INSERT or UPDATE statements against the table the result maps onto.
+   *
+   * Only the result columns that map to a real column of that table are written: a result can
+   * carry an alias or an expression alongside them, and naming one in an INSERT's column list
+   * produces SQL the server rejects. The UPDATE builder refuses rather than emit a statement
+   * with no WHERE, and that refusal is reported instead of a silent empty clipboard.
+   */
+  const copySelectedRowsAsSql = (paneId: 1 | 2, target: { table: string; primaryKey: string; columns: string[] }, as: 'insert' | 'update') => {
+    const rows = selectedResultRows(paneId);
+    if (rows.length === 0) return;
+    if (as === 'insert') {
+      navigator.clipboard.writeText(
+        buildInsertStatements(target.table, target.columns, rows, dbType || 'mysql'),
+      );
+      noteCopied(paneId, t('sqlEditor.copiedRowsInsert', { n: rows.length }));
+      return;
+    }
+    const result = buildUpdateStatements(
+      target.table,
+      target.columns,
+      rows,
+      dbType || 'mysql',
+      [target.primaryKey],
+    );
+    if (result.refused) {
+      noteCopied(paneId, updateRefusalMessage(result.refused));
+      return;
+    }
+    navigator.clipboard.writeText(result.sql);
+    noteCopied(paneId, t('sqlEditor.copiedRowsUpdate', { n: rows.length }));
+  };
+
+  const copyResultCell = (paneId: 1 | 2, value: any) => {
+    navigator.clipboard.writeText(value === null || value === undefined ? '' : String(value));
+    noteCopied(paneId, t('sqlEditor.copiedCellValue'));
+  };
+
+  const copyResultAsMarkdown = (
+    paneId: 1 | 2,
+    rows: any[] = paneId === 1 ? sortedResults1 : sortedResults2,
+  ) => {
+    const cols = paneId === 1 ? columns : columns2;
+    if (rows.length === 0) return;
+    navigator.clipboard.writeText(buildMarkdownTable(cols, rows));
+    noteCopied(paneId, t('sqlEditor.copiedMarkdown'));
+  };
+
   const handleCopyAs = (format: 'table' | 'object' | 'array', paneId: 1 | 2 = 1) => {
     const curResults = paneId === 1 ? results : results2;
     const curColumns = paneId === 1 ? columns : columns2;
@@ -2499,6 +2801,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     const pSortCol = paneId === 1 ? sortCol1 : sortCol2;
     const pSortDir = paneId === 1 ? sortDir1 : sortDir2;
     const sortedResults = paneId === 1 ? sortedResults1 : sortedResults2;
+    const pSelectedRows = rowSelectionOf(paneId).rows;
 
     const pEditability = editabilityInMode(activeResult.query || '', pColumns);
     const pTarget = pEditability.editable ? pEditability : null;
@@ -2694,7 +2997,12 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                     title={t('sqlEditor.chartResultsTitle', 'Query Results Visualization')}
                   />
                 ) : (
-                  <div className="grid-table-container" style={{ height: '100%' }}>
+                  <div
+                    className="grid-table-container"
+                    tabIndex={-1}
+                    onKeyDown={(e) => handleResultGridKeyDown(paneId, e)}
+                    style={{ height: '100%' }}
+                  >
                     <table className="grid-table">
                       <thead>
                         <tr>
@@ -2724,6 +3032,11 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                               <th
                                 key={ci}
                                 onClick={() => handleTableSort(col, paneId)}
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setResultMenu({ pane: paneId, x: e.clientX, y: e.clientY, col, target: pTarget });
+                                }}
                                 style={{
                                   textAlign: isNum ? 'right' : 'left',
                                   whiteSpace: isAutoFit ? 'nowrap' : undefined,
@@ -2747,9 +3060,13 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                       </thead>
                       <tbody>
                         {sortedResults.slice((pPage - 1) * pPageSize, pPage * pPageSize).map((row, index) => (
-                          <tr key={index}>
+                          <tr
+                            key={index}
+                            className={pSelectedRows.has(row) ? 'selected' : undefined}
+                            onClick={(e) => handleResultRowClick(paneId, row, e)}
+                          >
                             {showRowNumbers && (
-                              <td className="grid-row-index" style={{ textAlign: 'right', paddingRight: '6px', userSelect: 'none' }}>
+                              <td className="grid-row-index" style={{ textAlign: 'right', paddingRight: '6px', userSelect: 'none', cursor: 'pointer' }}>
                                 {(pPage - 1) * pPageSize + index + 1}
                               </td>
                             )}
@@ -2778,6 +3095,12 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                                       : undefined
                                   }
                                   onDoubleClick={canEdit ? () => startCellEdit(paneId, rowKey, col, cellVal) : undefined}
+                                  onContextMenu={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    selectResultRowForMenu(paneId, row);
+                                    setResultMenu({ pane: paneId, x: e.clientX, y: e.clientY, col, value: cellVal, target: pTarget });
+                                  }}
                                 >
                                   {isEditing ? (
                                     <>
@@ -2991,7 +3314,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                 <div style={{ width: '1px', height: '12px', background: 'var(--win-border)', margin: '0 4px' }} />
 
                 {/* Export/copy data, gathered into a single button below */}
-                <div style={{ position: 'relative', display: 'inline-block' }}>
+                <div className="sql-export-dropdown" style={{ position: 'relative', display: 'inline-block' }}>
                   <button
                     className="btn btn-secondary"
                     onClick={() => pSetShowCopyDropdown(!pShowCopyDropdown)}
@@ -3002,33 +3325,23 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                     <span style={{ fontSize: '7px', opacity: 0.7 }}>▼</span>
                   </button>
                   {pShowCopyDropdown && (
-                    <>
-                      <div
-                        style={{ position: 'fixed', inset: 0, zIndex: 9998 }}
-                        onClick={() => pSetShowCopyDropdown(false)}
-                      />
-                      <div style={{
-                        position: 'absolute',
-                        bottom: '26px',
-                        right: 0,
-                        background: 'var(--win-bg-popover, var(--win-bg-card))',
-                        border: '1px solid var(--win-border-strong, var(--win-border))',
-                        borderRadius: '6px',
-                        boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
-                        zIndex: 9999,
-                        minWidth: '170px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        padding: '4px 0',
-                      }}>
-                        <button className="copy-dropdown-item" onClick={() => { handleCopyAs('table', paneId); pSetShowCopyDropdown(false); }}>{t('sqlEditor.copyAsTable')}</button>
-                        <button className="copy-dropdown-item" onClick={() => { handleCopyAs('object', paneId); pSetShowCopyDropdown(false); }}>{t('sqlEditor.copyAsJsonObject')}</button>
-                        <button className="copy-dropdown-item" onClick={() => { handleCopyAs('array', paneId); pSetShowCopyDropdown(false); }}>{t('sqlEditor.copyAsJsonArray')}</button>
-                        <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
-                        <button className="copy-dropdown-item" onClick={() => { handleExportCsv(paneId); pSetShowCopyDropdown(false); }}>Export CSV</button>
-                        <button className="copy-dropdown-item" onClick={() => { handleExportJson(paneId); pSetShowCopyDropdown(false); }}>Export JSON</button>
-                      </div>
-                    </>
+                    <div style={{
+                      position: 'absolute',
+                      bottom: '26px',
+                      right: 0,
+                      background: 'var(--win-bg-popover, var(--win-bg-card))',
+                      border: '1px solid var(--win-border-strong, var(--win-border))',
+                      borderRadius: '6px',
+                      boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                      zIndex: 9999,
+                      minWidth: '170px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      padding: '4px 0',
+                    }}>
+                      <button className="copy-dropdown-item" onClick={() => { handleExportCsv(paneId); pSetShowCopyDropdown(false); }}>Export CSV</button>
+                      <button className="copy-dropdown-item" onClick={() => { handleExportJson(paneId); pSetShowCopyDropdown(false); }}>Export JSON</button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -3056,7 +3369,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   }, [
     results, columns, allResults, activeTabIndex, loading, hasRun, errorMsg, statusMsg,
     page, pageSize, showCopyDropdown, explainResult1, activeTabType1,
-    sortCol1, sortDir1, sortedResults1, cellEdits, editingCell, editValue, editMsg,
+    sortCol1, sortDir1, sortedResults1, rowSel1, cellEdits, editingCell, editValue, editMsg,
     pane1ViewModes, showRowNumbers, autoFitColsPane1, userEditorHeight, dbType, locale, t
   ]);
 
@@ -3066,7 +3379,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   }, [
     results2, columns2, allResults2, activeTabIndex2, loading2, hasRun2, errorMsg2, statusMsg2,
     page2, pageSize2, showCopyDropdown2, explainResult2, activeTabType2,
-    sortCol2, sortDir2, sortedResults2, cellEdits, editingCell, editValue, editMsg,
+    sortCol2, sortDir2, sortedResults2, rowSel2, cellEdits, editingCell, editValue, editMsg,
     pane2ViewModes, showRowNumbers, autoFitColsPane2, userEditorHeight2, dbType, locale, t
   ]);
 
@@ -3622,6 +3935,193 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
           </ModalFooter>
         </Modal>
       )}
+
+      {/*
+        Rendered here, at the top of the component, and through a portal -- NOT inside the pane
+        that opened it. Its first home was a child of `.grid-table-container`, which scrolls
+        (`overflow: auto`), and an `overflow` ancestor clips a `position: fixed` descendant as soon
+        as anything between the two establishes a containing block -- so the menu was measured
+        against the wrong box and then clipped away by the very grid it belonged to. `document.body`
+        is the one parent immune to that, which is why DataGrid keeps its own menu at the top level
+        as well. One instance covers both panes: `resultMenu.pane` says which one opened it.
+      */}
+      {resultMenu && typeof document !== 'undefined' &&
+        ReactDOM.createPortal(
+          <div className="grid-context-menu" onClick={(e) => e.stopPropagation()} style={resultMenuAt ?? undefined}>
+            <div className="context-menu-heading">
+              {resultMenu.value === undefined
+                ? t('sqlEditor.ctxResultColumn', { col: resultMenu.col })
+                : t('sqlEditor.ctxResultCell', { col: resultMenu.col })}
+            </div>
+            {resultMenu.value !== undefined && (
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  const rm = resultMenu;
+                  setResultMenu(null);
+                  copyResultCell(rm.pane, rm.value);
+                }}
+              >
+                <span>📄</span> {t('sqlEditor.ctxCopyCellValue')}
+              </button>
+            )}
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                copyResultColumnAs(rm.pane, rm.col, 'values');
+              }}
+            >
+              <span>📋</span> {t('sqlEditor.ctxCopyColumnValues', { col: resultMenu.col })}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                copyResultColumnAs(rm.pane, rm.col, 'in');
+              }}
+            >
+              <span>🔢</span> {t('sqlEditor.ctxCopyColumnIn', { col: resultMenu.col })}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                copyResultColumnAs(rm.pane, rm.col, 'json');
+              }}
+            >
+              <span>📦</span> {t('sqlEditor.ctxCopyColumnJson', { col: resultMenu.col })}
+            </button>
+            {menuSelectedRows > 0 && (
+              <>
+                <div className="context-menu-heading">
+                  {t('sqlEditor.ctxResultRows', { n: menuSelectedRows })}
+                </div>
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    const rm = resultMenu;
+                    setResultMenu(null);
+                    copyResultColumnAs(rm.pane, rm.col, 'in', selectedResultRows(rm.pane));
+                  }}
+                >
+                  <span>🔢</span> {t('sqlEditor.ctxCopyRowsIn', { col: resultMenu.col })}
+                </button>
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    const rm = resultMenu;
+                    setResultMenu(null);
+                    copySelectedRowsAs(rm.pane, 'tsv');
+                  }}
+                >
+                  <span>📋</span> {t('sqlEditor.ctxCopyRowsTsv')}
+                </button>
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    const rm = resultMenu;
+                    setResultMenu(null);
+                    copyResultAsMarkdown(rm.pane, selectedResultRows(rm.pane));
+                  }}
+                >
+                  <span>📝</span> {t('sqlEditor.ctxCopyRowsMarkdown')}
+                </button>
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    const rm = resultMenu;
+                    setResultMenu(null);
+                    copySelectedRowsAs(rm.pane, 'csv');
+                  }}
+                >
+                  <span>📊</span> {t('sqlEditor.ctxCopyRowsCsv')}
+                </button>
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    const rm = resultMenu;
+                    setResultMenu(null);
+                    copySelectedRowsAs(rm.pane, 'json');
+                  }}
+                >
+                  <span>📦</span> {t('sqlEditor.ctxCopyRowsJson')}
+                </button>
+                {resultMenu.target && (
+                  <>
+                    <button
+                      className="context-menu-item"
+                      onClick={() => {
+                        const rm = resultMenu;
+                        setResultMenu(null);
+                        if (rm.target) copySelectedRowsAsSql(rm.pane, rm.target, 'insert');
+                      }}
+                    >
+                      <span>🗄</span> SQL INSERT
+                    </button>
+                    <button
+                      className="context-menu-item"
+                      onClick={() => {
+                        const rm = resultMenu;
+                        setResultMenu(null);
+                        if (rm.target) copySelectedRowsAsSql(rm.pane, rm.target, 'update');
+                      }}
+                    >
+                      <span>✏️</span> {t('sqlEditor.ctxCopyRowsUpdate')}
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+            <div className="context-menu-heading">
+              {t('sqlEditor.ctxResultAll')}
+            </div>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                handleCopyAs('table', rm.pane);
+              }}
+            >
+              <span>📋</span> {t('sqlEditor.copyAsTable')}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                handleCopyAs('object', rm.pane);
+              }}
+            >
+              <span>📦</span> {t('sqlEditor.copyAsJsonObject')}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                handleCopyAs('array', rm.pane);
+              }}
+            >
+              <span>📦</span> {t('sqlEditor.copyAsJsonArray')}
+            </button>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                const rm = resultMenu;
+                setResultMenu(null);
+                copyResultAsMarkdown(rm.pane);
+              }}
+            >
+              <span>📝</span> {t('sqlEditor.ctxCopyMarkdown')}
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 };

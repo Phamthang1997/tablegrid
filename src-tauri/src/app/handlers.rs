@@ -46,6 +46,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         crate::terminal::local::send_local_input,
         crate::terminal::local::resize_local_terminal,
         crate::terminal::local::close_local_terminal,
+        crate::terminal::docker::get_docker_cli_info,
+        crate::terminal::docker::list_docker_containers,
         crate::database::commit_changes,
         crate::app::ai::ai_chat,
         crate::database::restore_backup,

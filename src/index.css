@@ -1007,7 +1007,6 @@ select.form-input {
 .db-rail-menu,
 .st-fk-popover,
 .sql-run-menu,
-.tp-menu,
 .ws-menu {
   background-color: var(--win-bg-popover, #ffffff) !important;
   opacity: 1 !important;
@@ -1019,7 +1018,6 @@ select.form-input {
 [data-theme='light'] .db-rail-menu,
 [data-theme='light'] .st-fk-popover,
 [data-theme='light'] .sql-run-menu,
-[data-theme='light'] .tp-menu,
 [data-theme='light'] .ws-menu {
   background-color: #ffffff !important;
   color: #0f172a !important;
@@ -1031,7 +1029,6 @@ select.form-input {
 [data-theme='dark'] .db-rail-menu,
 [data-theme='dark'] .st-fk-popover,
 [data-theme='dark'] .sql-run-menu,
-[data-theme='dark'] .tp-menu,
 [data-theme='dark'] .ws-menu {
   background-color: #1e222d !important;
   color: #f8fafc !important;
@@ -1039,6 +1036,37 @@ select.form-input {
 }
 
 /* Global Context Menu Items */
+/* The shape of the popover the grids use as a context menu. The colours are set further up,
+   with !important so a theme rule cannot win over them; this is the geometry, which was an
+   inline style object at every call site. */
+.grid-context-menu {
+  position: fixed;
+  z-index: 99999;
+  border: 1px solid var(--win-border-strong);
+  border-radius: 8px;
+  padding: 4px 0;
+  min-width: 240px;
+  font-size: 12px;
+}
+
+/* The little uppercase label that groups a context menu into sections. It was an inline
+   style object repeated at every heading in DataGrid; a class is what it should have been by
+   the second one. */
+.context-menu-heading {
+  padding: 2px 8px 4px;
+  color: var(--win-text-disabled);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.context-menu-heading + .context-menu-heading,
+.context-menu-item + .context-menu-heading {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--win-border);
+}
+
 .context-menu-item {
   width: 100%;
   display: flex;
@@ -2622,6 +2650,14 @@ select.form-input {
   overflow: auto;
   background: var(--win-bg-window);
   position: relative;
+}
+
+/* The SQL result grid carries tabIndex={-1} so it can own Ctrl+C and Escape for its row
+   selection (a window listener would fire in every mounted query tab at once). Nothing is lost
+   by dropping the ring: the selected rows are already the visible focus state, and a scroll
+   container is not a tab stop -- only a click puts focus here. */
+.grid-table-container:focus {
+  outline: none;
 }
 
 .grid-table {
@@ -9852,7 +9888,39 @@ input.rename-input {
    The panel is always dark (#1c1c1e) even in the light theme, so its buttons use a colour scale of
    their own rather than the app's .btn (a light button on black glares).
    ===================================================================== */
-.tp-title {
+.tp-panel {
+  background: #1c1c1e;
+  flex-direction: column;
+}
+
+.tp-panel.floating-panel {
+  border: 1px solid var(--win-border, #383b44);
+  border-radius: 8px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}
+
+.tp-panel.maximized-panel {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.tp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: #26272b;
+  border-bottom: 1px solid #383b44;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.tp-header.floating-header {
+  cursor: move;
+}
+
+.tp-header .tp-title {
   display: flex;
   align-items: center;
   gap: 9px;
@@ -9860,17 +9928,24 @@ input.rename-input {
   color: #e5e5e7;
 }
 
-.tp-title-main {
+.tp-header .tp-title-icon {
+  flex-shrink: 0;
+  opacity: 0.85;
+  color: #e5e5e7;
+}
+
+.tp-header .tp-title-main {
   font-size: 12px;
   font-weight: 600;
+  color: #f3f4f6;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.tp-title-sub {
+.tp-header .tp-title-sub {
   font-size: 10.5px;
-  color: #8a8a8f;
+  color: #9ca3af;
   font-family: var(--win-font-mono);
   white-space: nowrap;
   overflow: hidden;
@@ -9888,8 +9963,8 @@ input.rename-input {
 }
 
 .tp-dot.on {
-  background: var(--mac-green);
-  color: var(--mac-green);
+  background: var(--mac-green, #30d158);
+  color: var(--mac-green, #30d158);
 }
 
 .tp-dot.off {
@@ -9900,58 +9975,88 @@ input.rename-input {
 .tp-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   position: relative;
   flex-shrink: 0;
 }
 
-.tp-btn {
-  height: 26px;
-  padding: 0 9px;
+.tp-dropdown-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.tp-btn,
+.tp-actions .tp-btn {
+  height: 24px;
+  padding: 0 8px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
   flex-shrink: 0;
-  border-radius: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
   color: #e5e5e7;
   font-family: var(--win-font-sans);
   font-size: 11.5px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  user-select: none;
+  transition: all 0.15s ease;
 }
 
-.tp-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.15);
+.tp-btn:hover:not(:disabled),
+.tp-actions .tp-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--win-accent, #60a5fa);
+  color: #ffffff;
 }
 
-.tp-btn:disabled {
+.tp-btn:active:not(:disabled),
+.tp-actions .tp-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.tp-btn:disabled,
+.tp-actions .tp-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.tp-btn.icon {
-  padding: 0 7px;
+.tp-btn.tp-btn-icon,
+.tp-btn.icon,
+.tp-actions .tp-btn.tp-btn-icon {
+  padding: 0 6px;
+  min-width: 24px;
+}
+
+.tp-btn.tp-btn-flex {
+  flex: 1;
+  justify-content: center;
 }
 
 /* Open (the menu or SQL box is showing) */
-.tp-btn.on {
+.tp-btn.on,
+.tp-actions .tp-btn.on {
   background: rgba(96, 165, 250, 0.22);
-  border-color: rgba(96, 165, 250, 0.55);
+  border-color: var(--win-accent, #60a5fa);
   color: #93c5fd;
 }
 
-.tp-btn.warn {
+.tp-btn.warn,
+.tp-actions .tp-btn.warn {
   background: rgba(255, 159, 10, 0.18);
   border-color: rgba(255, 159, 10, 0.5);
   color: #ffb340;
 }
 
-.tp-btn.warn:hover {
+.tp-btn.warn:hover:not(:disabled),
+.tp-actions .tp-btn.warn:hover:not(:disabled) {
   background: rgba(255, 159, 10, 0.3);
+  border-color: #ff9f0a;
+  color: #ffd60a;
 }
 
 /* ————— The SQL run box ————— */
@@ -10004,12 +10109,12 @@ input.rename-input {
    meant for a dark background -> light on light, completely invisible in tab mode. */
 .tp-menu {
   border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(38, 39, 43, 0.98);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  background-color: #22242a !important;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  color: #e5e5e7;
+  color: #e5e5e7 !important;
 }
 
 /* The dropdown's contents use theme variables (light in the light theme) -> forced back to dark tones */
@@ -10017,15 +10122,21 @@ input.rename-input {
 .tp-menu * {
   --win-text-primary: #e5e5e7;
   --win-text-secondary: #a1a1a6;
-  --win-text-disabled: #6b6b70;
+  --win-text-disabled: #9ca3af;
   --win-border: rgba(255, 255, 255, 0.12);
-  --win-bg-hover: rgba(255, 255, 255, 0.10);
+  --win-bg-hover: rgba(255, 255, 255, 0.08);
   --win-bg-window: rgba(0, 0, 0, 0.40);
-  --win-bg-card: rgba(38, 39, 43, 0.98);
+  --win-bg-card: #22242a;
 }
 
 .tp-menu .context-menu-item {
-  border-radius: 7px;
+  border-radius: 6px;
+  color: #e5e5e7 !important;
+}
+
+.tp-menu .context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
 }
 
 .tp-menu input {
@@ -10035,6 +10146,278 @@ input.rename-input {
   color: #e5e5e7 !important;
 }
 
+.tp-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 998;
+}
+
+.tp-setup-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 280px;
+  z-index: 999;
+  padding: 5px;
+  font-size: 11px;
+}
+
+.tp-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 9px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  color: #e5e5e7 !important;
+  font-size: 11.5px;
+  font-family: var(--win-font-sans);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.tp-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #ffffff !important;
+}
+
+.tp-menu-item.danger {
+  color: #f87171 !important;
+}
+
+.tp-menu-item.danger:hover {
+  background: rgba(239, 68, 68, 0.16) !important;
+  color: #fca5a5 !important;
+}
+
+.tp-menu-note {
+  padding: 6px 9px;
+  color: #9ca3af !important;
+  font-size: 11px;
+  line-height: 1.4;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.tp-log-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 360px;
+  max-width: 80vw;
+  z-index: 999;
+  overflow: hidden;
+  font-size: 11px;
+}
+
+.tp-log-source-box {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--win-border, rgba(255, 255, 255, 0.12));
+}
+
+.tp-log-source-label {
+  color: var(--win-text-secondary, #a1a1a6);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.tp-log-source-btns {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.tp-ssh-input {
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 11px;
+  background: var(--win-bg-input, #1c1c1e);
+  color: var(--win-text-primary, #e5e5e7);
+  border: 1px solid var(--win-border, rgba(255, 255, 255, 0.14));
+  border-radius: 4px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.tp-log-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tp-log-item-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.tp-log-item-title {
+  color: var(--win-accent, #60a5fa);
+  font-size: 10px;
+}
+
+.tp-log-item-path {
+  color: var(--win-text-primary, #e5e5e7);
+  word-break: break-all;
+  line-height: 1.3;
+}
+
+.tp-folder-icon {
+  flex-shrink: 0;
+  color: var(--win-text-secondary, #a1a1a6);
+}
+
+.tp-file-icon {
+  flex-shrink: 0;
+  color: var(--win-accent, #60a5fa);
+}
+
+.tp-body {
+  flex: 1;
+  padding: 6px;
+  overflow: hidden;
+}
+
+/* Docker / Container Log Selector in TerminalPanel.
+
+   Colours come from the --win-* tokens rather than from literals: the app swaps themes over those
+   tokens, so a hardcoded hex is correct in at most one of the two themes. The select and the input
+   deliberately set only GEOMETRY -- the shared `input[type="text"], select` rule further up already
+   carries the themed background/border and has its own [data-theme='light'] override, so overriding
+   them here (with !important, as the first version did) is what broke light mode. That shared rule
+   is also why the input needs an explicit type="text": without one it matches nothing. */
+.tp-docker-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.tp-docker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--win-text-secondary);
+}
+
+.tp-docker-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-family: var(--win-font-mono);
+  background: var(--win-accent-glow);
+  border: 1px solid var(--win-accent);
+  color: var(--win-accent);
+}
+
+/* Why the scan found nothing. Secondary rather than danger-coloured: "Docker is not installed"
+   is a fact about the machine, not a failure the user caused. */
+.tp-docker-note {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--win-text-secondary);
+}
+
+/* The border is set here rather than left to the shared rule: this box lives inside `.tp-menu`,
+   which forces a dark palette on itself and every descendant -- but it remaps `--win-border` and
+   NOT `--win-border-strong`, which the shared input rule uses. In the light theme that token is a
+   dark translucent, i.e. invisible against the panel. */
+.tp-docker-select,
+.tp-docker-input {
+  border: 1px solid var(--win-border);
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+  border-radius: 7px;
+  box-sizing: border-box;
+}
+
+.tp-docker-select {
+  cursor: pointer;
+}
+
+.tp-docker-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tp-docker-custom-row .tp-docker-input {
+  flex: 1;
+}
+
+.tp-docker-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tp-docker-btn {
+  height: 24px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-hover);
+  color: var(--win-text-primary);
+  font-family: var(--win-font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.tp-docker-btn:hover:not(:disabled) {
+  border-color: var(--win-accent);
+  color: var(--win-accent);
+  background: var(--win-accent-glow);
+}
+
+.tp-docker-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tp-docker-btn.primary {
+  border-color: var(--win-accent);
+  background: var(--win-accent-glow);
+  color: var(--win-accent);
+  font-weight: 600;
+}
+
+.tp-docker-btn.primary:hover:not(:disabled) {
+  background: var(--win-accent);
+  border-color: var(--win-accent);
+  color: #ffffff;
+}
+
+/* The refresh icon while a scan is running.
+
+   `@keyframes spin` did not exist anywhere in this file, so `.er-loading-spinner` further down has
+   been asking for an animation that was never defined -- defining it here fixes that one too,
+   rather than adding a second keyframe beside it. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tp-spin {
+  animation: spin 0.9s linear infinite;
+}
 
 /* The app's message bar inside the terminal panel. Placed outside the xterm buffer because
    PowerShell/PSReadLine redraws its line with cursor movement and would write over anything the app
@@ -17263,11 +17646,26 @@ input.rename-input {
   background-color: var(--win-bg-window);
   background-image: radial-gradient(var(--win-border) 1px, transparent 1px);
   background-size: 24px 24px;
+  /* The cursor belongs to the TOOL, not to the canvas: `grab` under the move tool promised
+     panning on a left-drag, which is what the hand tool is for. */
+  cursor: default;
+  touch-action: none;
+}
+
+.er-diagram-container.tool-hand {
   cursor: grab;
 }
 
-.er-diagram-container:active {
+.er-diagram-container.tool-hand.gesturing {
   cursor: grabbing;
+}
+
+/* Hand tool: the node and connector layers stop taking pointer events entirely. That is what
+   removes hover tracking, the accidental table drag AND the hover repaint of every card the
+   pointer crosses while panning — the three things that made panning expensive. */
+.er-diagram-container.tool-hand .er-nodes-layer,
+.er-diagram-container.tool-hand .er-rel-group {
+  pointer-events: none;
 }
 
 .er-canvas-layer {
@@ -17277,6 +17675,26 @@ input.rename-input {
   width: 100%;
   height: 100%;
   pointer-events: none;
+  transform-origin: 0 0;
+}
+
+/* `will-change` asks the compositor to keep a texture for this layer ready. On a diagram a
+   few hundred tables wide that texture is not small, so the promise is made only around the
+   moments it is collected — and it outlives the gesture by about a second, because creating
+   and destroying the layer each cost a full rasterization and wheel gestures come in bursts.
+   See `setMoving` in ERDiagramView.tsx for why this is a separate class from `.gesturing`. */
+.er-diagram-container.compositing .er-canvas-layer {
+  will-change: transform;
+}
+
+/* While a gesture runs, nothing may animate: a 0.15s box-shadow transition on a few hundred
+   cards is a repaint per frame for something nobody can perceive mid-drag. */
+.er-diagram-container.gesturing .er-table-node,
+.er-diagram-container.gesturing .er-column-row,
+.er-diagram-container.gesturing .er-rel-path,
+.er-diagram-container.gesturing .er-rel-socket-source,
+.er-diagram-container.gesturing .er-rel-socket-target {
+  transition: none !important;
 }
 
 .er-nodes-layer {
@@ -17301,8 +17719,11 @@ input.rename-input {
   display: flex;
   flex-direction: column;
   cursor: pointer;
-  transition: box-shadow 0.15s ease, border-color 0.15s ease, opacity 0.2s ease;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
   overflow: hidden;
+  /* A card never affects the layout or the paint of anything outside itself, and saying so
+     keeps a few hundred of them from invalidating each other. */
+  contain: layout paint;
 }
 
 .er-table-node:hover {
@@ -17317,14 +17738,57 @@ input.rename-input {
   z-index: 20;
 }
 
-.er-table-node.highlighted {
+/* ---------------------------------------------------------------------------------------
+   Focus: the table under the pointer, or the one clicked, plus its FK neighbourhood.
+
+   The dim is expressed as "everything, except what is lit" so that focusing writes classes
+   on the neighbourhood only — a handful of elements — instead of on every mounted card. It
+   used to arrive through React props, which made crossing a card boundary a re-render plus
+   an opacity change on the whole visible set.
+   --------------------------------------------------------------------------------------- */
+.er-diagram-container.focused .er-table-node {
+  opacity: 0.35;
+}
+
+/* A related table: readable, and outlined. The thick ring stays the SELECTED card's alone,
+   below, so a click can be told from its own neighbours. */
+.er-diagram-container.focused .er-table-node.hl {
+  opacity: 1;
   border-color: var(--win-accent);
-  box-shadow: 0 0 0 2px var(--win-accent), 0 4px 16px rgba(59, 130, 246, 0.25);
   z-index: 15;
 }
 
-.er-table-node.dimmed {
-  opacity: 0.35;
+.er-diagram-container.focused .er-table-node.hl.selected {
+  box-shadow: 0 0 0 2px var(--win-accent), 0 8px 24px rgba(59, 130, 246, 0.2);
+  z-index: 20;
+}
+
+.er-diagram-container.focused .er-rel-group {
+  opacity: 0.15;
+}
+
+.er-diagram-container.focused .er-rel-group.hl {
+  opacity: 1;
+}
+
+/* The lit connectors at the lowest level of detail, where the others are one anonymous path
+   that no class can pick out of. Written by applyHighlight, empty the rest of the time.
+
+   `non-scaling-stroke` is what makes it visible at all down there: stroke width is in user
+   units inside a scaled layer, so the 1.5px of the path below renders under a fifth of a device
+   pixel at 0.1 zoom — a haze, which is right for context and useless for "these ones". */
+.er-rel-path.focus {
+  fill: none;
+  stroke: var(--win-accent);
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+  transition: none;
+  opacity: 1;
+}
+
+/* And the crowd steps back so the accent reads against it. */
+.er-diagram-container.focused .er-rel-path.bare {
+  opacity: 0.12;
 }
 
 .er-node-header {
@@ -17404,7 +17868,9 @@ input.rename-input {
 .er-node-columns {
   display: flex;
   flex-direction: column;
-  padding: 4px 0;
+  /* 3+3 = FOOTER_HEIGHT in erLayoutEngine.ts. The node height is now set from that formula,
+     and 4px here would overflow it by 2px and clip the last row. */
+  padding: 3px 0;
 }
 
 .er-column-row {
@@ -17494,7 +17960,14 @@ input.rename-input {
 
 /* SVG Connector Lines */
 .er-svg-connectors-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Nodes can be dragged to negative coordinates, and the bezier control points reach past the
+     endpoints, so the layer must not clip to its own width/height. */
   overflow: visible;
+  /* Only the connector groups take pointer events, and only above the lowest LOD. */
+  pointer-events: none;
 }
 
 .er-rel-group {
@@ -17512,13 +17985,19 @@ input.rename-input {
   fill: none;
   stroke: var(--win-text-secondary);
   stroke-width: 1.5px;
-  stroke-dasharray: 4 2;
   transition: stroke 0.15s ease, stroke-width 0.15s ease, opacity 0.2s ease;
   opacity: 0.6;
 }
 
+/* Only added at the highest level of detail. Dashing forces the rasterizer to flatten the
+   curve and lay out every dash along it, and a 4-and-2 pattern is invisible below ~0.7 zoom
+   anyway — see the `lod` check in ERRelationshipLine.tsx. */
+.er-rel-path.dashed {
+  stroke-dasharray: 4 2;
+}
+
 .er-rel-group:hover .er-rel-path,
-.er-rel-group.highlighted .er-rel-path {
+.er-rel-group.hl .er-rel-path {
   stroke: var(--win-accent);
   stroke-width: 2.5px;
   stroke-dasharray: none;
@@ -17526,8 +18005,9 @@ input.rename-input {
   filter: drop-shadow(0 0 3px rgba(59, 130, 246, 0.4));
 }
 
-.er-rel-group.dimmed {
-  opacity: 0.15;
+/* `.hl` and the container-scoped dim above replace what used to be a per-connector prop. */
+.er-rel-group.hl {
+  opacity: 1;
 }
 
 .er-rel-socket-source,
@@ -17540,8 +18020,8 @@ input.rename-input {
 
 .er-rel-group:hover .er-rel-socket-source,
 .er-rel-group:hover .er-rel-socket-target,
-.er-rel-group.highlighted .er-rel-socket-source,
-.er-rel-group.highlighted .er-rel-socket-target {
+.er-rel-group.hl .er-rel-socket-source,
+.er-rel-group.hl .er-rel-socket-target {
   fill: var(--win-accent);
   stroke: #ffffff;
   stroke-width: 2px;
@@ -17842,31 +18322,143 @@ input.rename-input {
   position: absolute;
   bottom: 16px;
   right: 16px;
-  width: 180px;
-  height: 120px;
+  width: 208px;
+  height: 140px;
   background: var(--win-bg-card);
   border: 1px solid var(--win-border);
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
   overflow: hidden;
-  cursor: crosshair;
+  /* It pans, so it says grab — `crosshair` promised drawing something. */
+  cursor: grab;
   z-index: 90;
-  backdrop-filter: blur(8px);
+  /* Deliberately NOT backdrop-filter. It sits on top of the diagram, so a blurred backdrop
+     means reading back the pixels of a few hundred cards and connectors every time any of
+     them repaints. The card background is opaque instead. */
+  contain: paint;
+}
+
+.er-minimap-container:active {
+  cursor: grabbing;
 }
 
 .er-minimap-svg {
   display: block;
 }
 
+/* Faint on purpose: at a few hundred tables these are 2-3px each, and at 0.4 opacity in a
+   slate grey they merged into one block of mush. */
 .er-minimap-node {
   fill: var(--win-text-secondary);
-  opacity: 0.4;
+  opacity: 0.28;
 }
 
-.er-minimap-viewport {
-  fill: rgba(59, 130, 246, 0.15);
+.er-minimap-node.selected {
+  fill: var(--win-accent);
+  opacity: 1;
+}
+
+/* Everything OUTSIDE the viewport, punched out by the mask in ERMinimap.tsx. */
+.er-minimap-shade {
+  fill: var(--win-bg-window);
+  opacity: 0.62;
+}
+
+.er-minimap-frame {
+  fill: none;
   stroke: var(--win-accent);
+  stroke-width: 1px;
+  opacity: 0.9;
+}
+
+/* ---------------------------------------------------------------------------------------
+   Level of detail.
+
+   Chosen from the zoom in `erViewport.ts`, and deliberately only about what is DRAWN: the card
+   keeps the height the layout gave it at every level, so the FK sockets never move.
+   --------------------------------------------------------------------------------------- */
+
+/* `names`: one element per column row, holding its own text. */
+.er-column-row.plain {
+  display: block;
+  padding: 0 10px;
+  font-size: 11px;
+  line-height: 24px;
+  color: var(--win-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* `blocks`: the body is gone, so the header is the whole card. */
+.er-table-node.lod-blocks .er-node-header {
+  height: 100%;
+  border-bottom: none;
+}
+
+.er-table-node.lod-blocks .er-node-title {
+  font-size: 13px;
+}
+
+/* Below this zoom the shadow is a smear, but it still costs a composite for every visible card.
+   The `:not()` matters: this block sits BELOW `.er-table-node.selected` and the hover rules,
+   which carry their rings in `box-shadow` — dropping the shadow unconditionally would make a
+   selection invisible at exactly the zoom where tables are picked out of the whole map. */
+.er-table-node.lod-blocks {
+  border-radius: 4px;
+  /* Nothing here is legible enough to be worth animating between states. */
+  transition: none;
+}
+
+.er-table-node.lod-blocks:not(.selected):not(.hl) {
+  box-shadow: none;
+}
+
+/* The flattened single path that carries EVERY connector at the lowest level of detail
+   (see buildFlatConnectorPath). Transition-free: there is no state for it to animate. */
+.er-rel-path.bare {
+  fill: none;
+  stroke: var(--win-text-secondary);
   stroke-width: 1.5px;
+  transition: none;
+  opacity: 0.45;
+}
+
+/* ---------------------------------------------------------------------------------------
+   Lasso (move tool, dragging the empty canvas)
+   --------------------------------------------------------------------------------------- */
+.er-marquee {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  background: rgba(59, 130, 246, 0.1);
+  /* It lives inside the scaled layer, so the border is divided back out to stay 1px on
+     screen at every zoom. `--er-inv-zoom` is written by `applyTransform`. */
+  border: calc(1px * var(--er-inv-zoom, 1)) solid var(--win-accent);
+  z-index: 30;
+}
+
+/* ---------------------------------------------------------------------------------------
+   Tool switch
+   --------------------------------------------------------------------------------------- */
+.er-tool-group {
+  flex-shrink: 0;
+}
+
+.er-toolbar-icon-btn.active {
+  background: var(--win-accent);
+  color: #fff;
+}
+
+.er-toolbar-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.er-toolbar-icon-btn:disabled:hover {
+  background: transparent;
+  color: var(--win-text-secondary);
 }
 
 /* Loading & Empty States */
@@ -19065,7 +19657,7 @@ input.rename-input {
   flex-wrap: wrap;
 }
 
-.tp-title {
+.tp-container .tp-title {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -19087,7 +19679,7 @@ input.rename-input {
   font-family: var(--win-font-mono);
 }
 
-.tp-btn {
+.tp-container .tp-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -19106,27 +19698,27 @@ input.rename-input {
   user-select: none;
 }
 
-.tp-btn:hover:not(:disabled) {
+.tp-container .tp-btn:hover:not(:disabled) {
   border-color: var(--win-accent);
   color: var(--win-accent);
   background: var(--win-bg-hover);
 }
 
-.tp-btn:active:not(:disabled) {
+.tp-container .tp-btn:active:not(:disabled) {
   transform: translateY(1px);
 }
 
-.tp-btn:disabled {
+.tp-container .tp-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.tp-btn-primary {
+.tp-container .tp-btn-primary {
   border-color: var(--win-accent);
   color: var(--win-accent);
 }
 
-.tp-btn-primary:hover:not(:disabled) {
+.tp-container .tp-btn-primary:hover:not(:disabled) {
   background: var(--win-bg-active, var(--win-bg-hover));
 }
 

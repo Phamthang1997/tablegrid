@@ -3,7 +3,8 @@
 use serde_json::{Value, json};
 use sqlx::Row;
 
-use crate::database::DbKind;
+use crate::database::{DbConnection, DbKind};
+use crate::state::SessionInfo;
 
 #[derive(serde::Serialize)]
 pub struct ConnectionStatusInfo {
@@ -104,143 +105,15 @@ async fn mysql_status_var(pool: &sqlx::MySqlPool, sql: &'static str) -> String {
     }
 }
 
-/// Returns the current DB connection status, the connection kind (loc/ssh/ssl/rem) and the ping latency (ms).
-#[tauri::command]
-pub async fn get_connection_status(
-    // `State`/`AppState` is not imported at the top of the file — every other command in this file writes
-    // the full path, and that convention is kept.
-    conn_id: String,
-) -> Result<ConnectionStatusInfo, String> {
-    Box::pin(async move {
-    let state = crate::state::require_state()?;
-    let start = std::time::Instant::now();
-    let (conn, db_type, config, has_ssh) = {
-        // `.ok()`, not `?`: having no SQL connection is a TOLERATED state here — the Redis
-        // branch below is the answer in that case. Using `?` would turn "no SQL connection" into an error
-        // and block the Redis path too.
-        match state.connections.acquire(&conn_id).ok() {
-            Some(ctx) => (
-                Some(ctx.conn().clone()),
-                ctx.server().db_type.clone(),
-                Some(ctx.server().config()),
-                ctx.server().ssh_tunnel.is_some(),
-            ),
-            None => (None, String::new(), None, false),
-        }
-    };
-
-    let conn = match conn {
-        Some(c) => c,
-        None => {
-            // Check Redis connection
-            // The same `conn_id`, only a different kind of connection. Redis is in the registry now, so there is no
-            // more asking a global state "is there a Redis connection" — a question with no right
-            // answer once two Redis connections are open at the same time.
-            let (redis_conn, redis_config, redis_db_index, has_redis_ssh, caps) =
-                match state.connections.acquire_redis(&conn_id) {
-                    Ok(ctx) => (
-                        Some(ctx.conn()),
-                        Some(ctx.config()),
-                        ctx.db_index(),
-                        ctx.has_ssh_tunnel(),
-                        ctx.caps(),
-                    ),
-                    Err(_) => (None, None, 0, false, crate::redis_db::RedisCaps::default()),
-                };
-
-            if let Some(mut r_conn) = redis_conn {
-                let start = std::time::Instant::now();
-                let _ = redis::cmd("PING").query_async::<String>(&mut r_conn).await;
-                let latency_ms = start.elapsed().as_millis() as u64;
-
-                let host = redis_config
-                    .as_ref()
-                    .and_then(|c| c.get("host"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("localhost")
-                    .to_string();
-
-                let port = redis_config
-                    .as_ref()
-                    .and_then(|c| c.get("port"))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(6379) as u16;
-
-                let user = redis_config
-                    .as_ref()
-                    .and_then(|c| c.get("username").or_else(|| c.get("user")))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("default")
-                    .to_string();
-
-                let ssl_mode = redis_config
-                    .as_ref()
-                    .and_then(|c| c.get("sslMode"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("DISABLED");
-
-                let conn_type = if has_redis_ssh
-                    || redis_config
-                        .as_ref()
-                        .and_then(|c| c.get("useSshTunnel"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                {
-                    "ssh".to_string()
-                } else if ssl_mode != "DISABLED" {
-                    "ssl".to_string()
-                } else if host == "localhost"
-                    || host == "127.0.0.1"
-                    || host == "::1"
-                    || host.starts_with("127.")
-                {
-                    "loc".to_string()
-                } else {
-                    "rem".to_string()
-                };
-
-                let database = format!("db{}", redis_db_index);
-                let server_version = caps.version;
-
-                return Ok(ConnectionStatusInfo {
-                    is_connected: true,
-                    db_type: "redis".to_string(),
-                    conn_type,
-                    host,
-                    latency_ms,
-                    server_version,
-                    user,
-                    database,
-                    port,
-                    cipher: if ssl_mode != "DISABLED" { "TLS".to_string() } else { String::new() },
-                    tls_version: if ssl_mode != "DISABLED" { ssl_mode.to_string() } else { String::new() },
-                });
-            }
-
-            return Ok(ConnectionStatusInfo::disconnected());
-        }
-    };
-
-    match &conn.kind {
-        DbKind::Sqlite(arc) => {
-            if let Ok(conn) = arc.lock() {
-                let _ = conn.execute_batch("SELECT 1;");
-            }
-        }
-        DbKind::Postgres(pool) => {
-            let _ = sqlx::query("SELECT 1;").execute(pool).await;
-        }
-        DbKind::Mysql(pool) => {
-            let _ = sqlx::query("SELECT 1;").execute(pool).await;
-        }
-    }
-    let latency_ms = start.elapsed().as_millis() as u64;
-
-    // The session information shown in the connection popover. Every query here is
-    // "best effort": on error the field is left empty rather than breaking the whole status pill.
-    // The TLS part is separate from the version/user part because `pg_stat_ssl` does not exist on
-    // older Postgres — merged together, an old server would lose its version and user as well.
-    let (server_version, session_user, session_db, cipher, tls_version) = match &conn.kind {
+/// Probes the part of the status that does not change while the connection lives — see
+/// `SessionInfo` for why it is asked for once rather than on every poll.
+///
+/// Every query here is "best effort": on error the field is left empty rather than breaking the
+/// whole status pill. The TLS part is separate from the version/user part because `pg_stat_ssl`
+/// does not exist on older Postgres — merged together, an old server would lose its version and
+/// user as well.
+async fn probe_session_info(conn: &DbConnection) -> SessionInfo {
+    let (server_version, user, database, cipher, tls_version) = match &conn.kind {
         DbKind::Sqlite(arc) => {
             let version = arc
                 .lock()
@@ -250,7 +123,13 @@ pub async fn get_connection_status(
                         .ok()
                 })
                 .unwrap_or_default();
-            (version, String::new(), String::new(), String::new(), String::new())
+            (
+                version,
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            )
         }
         DbKind::Postgres(pool) => {
             // `current_user`/`current_database()` are of type `name`, which sqlx cannot decode
@@ -284,95 +163,265 @@ pub async fn get_connection_status(
             (version, user, db, cipher, tls)
         }
         DbKind::Mysql(pool) => {
-            let (version, user, db) = match sqlx::query(
-                "SELECT VERSION(), CURRENT_USER(), COALESCE(DATABASE(), '')",
-            )
-            .fetch_optional(pool)
-            .await
-            {
-                Ok(Some(r)) => (
-                    r.try_get::<String, _>(0).unwrap_or_default(),
-                    r.try_get::<String, _>(1).unwrap_or_default(),
-                    r.try_get::<String, _>(2).unwrap_or_default(),
-                ),
-                _ => (String::new(), String::new(), String::new()),
-            };
+            let (version, user, db) =
+                match sqlx::query("SELECT VERSION(), CURRENT_USER(), COALESCE(DATABASE(), '')")
+                    .fetch_optional(pool)
+                    .await
+                {
+                    Ok(Some(r)) => (
+                        r.try_get::<String, _>(0).unwrap_or_default(),
+                        r.try_get::<String, _>(1).unwrap_or_default(),
+                        r.try_get::<String, _>(2).unwrap_or_default(),
+                    ),
+                    _ => (String::new(), String::new(), String::new()),
+                };
             let cipher = mysql_status_var(pool, "SHOW SESSION STATUS LIKE 'Ssl_cipher'").await;
             let tls = mysql_status_var(pool, "SHOW SESSION STATUS LIKE 'Ssl_version'").await;
             (version, user, db, cipher, tls)
         }
     };
-
-    let host = config
-        .as_ref()
-        .and_then(|c| c.get("host"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("localhost")
-        .to_string();
-
-    let conn_type = if db_type == "sqlite" {
-        "loc".to_string()
-    } else if has_ssh
-        || config
-            .as_ref()
-            .and_then(|c| c.get("useSshTunnel"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    {
-        "ssh".to_string()
-    } else if config
-        .as_ref()
-        .and_then(|c| c.get("sslEnabled"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-        || config
-            .as_ref()
-            .and_then(|c| c.get("sslMode"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("DISABLED")
-            != "DISABLED"
-    {
-        "ssl".to_string()
-    } else if host == "localhost"
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host.starts_with("127.")
-    {
-        "loc".to_string()
-    } else {
-        "rem".to_string()
-    };
-
-    let port = config
-        .as_ref()
-        .and_then(|c| c.get("port"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u16;
-
-    // SQLite has no notion of a "current database" — show the file path instead.
-    let database = if session_db.is_empty() {
-        config
-            .as_ref()
-            .and_then(|c| c.get("database").or_else(|| c.get("sqlitePath")))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
-    } else {
-        session_db
-    };
-
-    Ok(ConnectionStatusInfo {
-        is_connected: true,
-        db_type,
-        conn_type,
-        host,
-        latency_ms,
+    SessionInfo {
         server_version,
-        user: session_user,
+        user,
         database,
-        port,
         cipher,
         tls_version,
+    }
+}
+
+/// Returns the current DB connection status, the connection kind (loc/ssh/ssl/rem) and the ping latency (ms).
+#[tauri::command]
+pub async fn get_connection_status(
+    // `State`/`AppState` is not imported at the top of the file — every other command in this file writes
+    // the full path, and that convention is kept.
+    conn_id: String,
+) -> Result<ConnectionStatusInfo, String> {
+    Box::pin(async move {
+        let state = crate::state::require_state()?;
+        let start = std::time::Instant::now();
+        let (conn, db_type, config, has_ssh) = {
+            // `.ok()`, not `?`: having no SQL connection is a TOLERATED state here — the Redis
+            // branch below is the answer in that case. Using `?` would turn "no SQL connection" into an error
+            // and block the Redis path too.
+            match state.connections.acquire(&conn_id).ok() {
+                Some(ctx) => (
+                    Some(ctx.conn().clone()),
+                    ctx.server().db_type.clone(),
+                    Some(ctx.server().config()),
+                    ctx.server().ssh_tunnel.is_some(),
+                ),
+                None => (None, String::new(), None, false),
+            }
+        };
+
+        let conn = match conn {
+            Some(c) => c,
+            None => {
+                // Check Redis connection
+                // The same `conn_id`, only a different kind of connection. Redis is in the registry now, so there is no
+                // more asking a global state "is there a Redis connection" — a question with no right
+                // answer once two Redis connections are open at the same time.
+                let (redis_conn, redis_config, redis_db_index, has_redis_ssh, caps) =
+                    match state.connections.acquire_redis(&conn_id) {
+                        Ok(ctx) => (
+                            Some(ctx.conn()),
+                            Some(ctx.config()),
+                            ctx.db_index(),
+                            ctx.has_ssh_tunnel(),
+                            ctx.caps(),
+                        ),
+                        Err(_) => (None, None, 0, false, crate::redis_db::RedisCaps::default()),
+                    };
+
+                if let Some(mut r_conn) = redis_conn {
+                    let start = std::time::Instant::now();
+                    let _ = redis::cmd("PING").query_async::<String>(&mut r_conn).await;
+                    let latency_ms = start.elapsed().as_millis() as u64;
+
+                    let host = redis_config
+                        .as_ref()
+                        .and_then(|c| c.get("host"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("localhost")
+                        .to_string();
+
+                    let port = redis_config
+                        .as_ref()
+                        .and_then(|c| c.get("port"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(6379) as u16;
+
+                    let user = redis_config
+                        .as_ref()
+                        .and_then(|c| c.get("username").or_else(|| c.get("user")))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("default")
+                        .to_string();
+
+                    let ssl_mode = redis_config
+                        .as_ref()
+                        .and_then(|c| c.get("sslMode"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("DISABLED");
+
+                    let conn_type = if has_redis_ssh
+                        || redis_config
+                            .as_ref()
+                            .and_then(|c| c.get("useSshTunnel"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                    {
+                        "ssh".to_string()
+                    } else if ssl_mode != "DISABLED" {
+                        "ssl".to_string()
+                    } else if host == "localhost"
+                        || host == "127.0.0.1"
+                        || host == "::1"
+                        || host.starts_with("127.")
+                    {
+                        "loc".to_string()
+                    } else {
+                        "rem".to_string()
+                    };
+
+                    let database = format!("db{}", redis_db_index);
+                    let server_version = caps.version;
+
+                    return Ok(ConnectionStatusInfo {
+                        is_connected: true,
+                        db_type: "redis".to_string(),
+                        conn_type,
+                        host,
+                        latency_ms,
+                        server_version,
+                        user,
+                        database,
+                        port,
+                        cipher: if ssl_mode != "DISABLED" {
+                            "TLS".to_string()
+                        } else {
+                            String::new()
+                        },
+                        tls_version: if ssl_mode != "DISABLED" {
+                            ssl_mode.to_string()
+                        } else {
+                            String::new()
+                        },
+                    });
+                }
+
+                return Ok(ConnectionStatusInfo::disconnected());
+            }
+        };
+
+        match &conn.kind {
+            DbKind::Sqlite(arc) => {
+                if let Ok(conn) = arc.lock() {
+                    let _ = conn.execute_batch("SELECT 1;");
+                }
+            }
+            DbKind::Postgres(pool) => {
+                let _ = sqlx::query("SELECT 1;").execute(pool).await;
+            }
+            DbKind::Mysql(pool) => {
+                let _ = sqlx::query("SELECT 1;").execute(pool).await;
+            }
+        }
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        // Everything past the latency ping is a constant of this session, so it is probed once and
+        // cached on the registry entry (`SessionInfo`): the title bar polls this command every 6
+        // seconds, and on MySQL the probe alone is three round trips.
+        let session = match state.connections.session_info(&conn_id) {
+            Some(cached) => cached,
+            None => {
+                let probed = probe_session_info(&conn).await;
+                // A failure to store is ignored: the only one reachable is a poisoned registry lock,
+                // and a status poll is the wrong place to turn that into a visible error — the next
+                // poll simply probes again.
+                let _ = state.connections.set_session_info(&conn_id, probed.clone());
+                probed
+            }
+        };
+        let SessionInfo {
+            server_version,
+            user: session_user,
+            database: session_db,
+            cipher,
+            tls_version,
+        } = session;
+
+        let host = config
+            .as_ref()
+            .and_then(|c| c.get("host"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("localhost")
+            .to_string();
+
+        let conn_type = if db_type == "sqlite" {
+            "loc".to_string()
+        } else if has_ssh
+            || config
+                .as_ref()
+                .and_then(|c| c.get("useSshTunnel"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
+            "ssh".to_string()
+        } else if config
+            .as_ref()
+            .and_then(|c| c.get("sslEnabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || config
+                .as_ref()
+                .and_then(|c| c.get("sslMode"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("DISABLED")
+                != "DISABLED"
+        {
+            "ssl".to_string()
+        } else if host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host.starts_with("127.")
+        {
+            "loc".to_string()
+        } else {
+            "rem".to_string()
+        };
+
+        let port = config
+            .as_ref()
+            .and_then(|c| c.get("port"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u16;
+
+        // SQLite has no notion of a "current database" — show the file path instead.
+        let database = if session_db.is_empty() {
+            config
+                .as_ref()
+                .and_then(|c| c.get("database").or_else(|| c.get("sqlitePath")))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        } else {
+            session_db
+        };
+
+        Ok(ConnectionStatusInfo {
+            is_connected: true,
+            db_type,
+            conn_type,
+            host,
+            latency_ms,
+            server_version,
+            user: session_user,
+            database,
+            port,
+            cipher,
+            tls_version,
+        })
     })
-}).await
+    .await
 }

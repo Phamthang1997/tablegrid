@@ -7,13 +7,122 @@ import { ERDiagramView } from './ERDiagramView';
 
 interface ERDiagramTabProps {
   connId: string;
+  /** Server identity from `utils/connKey.ts` — the localStorage scope for the saved layout. */
+  storageScope: string;
   dbName?: string;
   schema?: string;
   onOpenTable?: (tableName: string) => void;
 }
 
+interface Loaded {
+  tables: ERTable[];
+  relationships: ERRelationship[];
+}
+
+type StaleCheck = () => boolean;
+
+/**
+ * Reads the schema for the diagram.
+ *
+ * `get_full_catalog` answers in two or three queries on every dialect it knows — including
+ * SQLite, which has no `information_schema` but does expose the pragmas as table-valued
+ * functions. The per-table fallback below is what an unknown dialect (an empty answer) gets, and
+ * it is deliberately sequential: one `Promise.all` over a few hundred tables would fire that
+ * many concurrent reads at the user's database, which this app avoids everywhere else.
+ */
+async function loadDiagram(connId: string, isStale: StaleCheck): Promise<Loaded> {
+  const fullCatalog = await dbHelper.getFullCatalog(connId);
+  const rawCols = fullCatalog.columns || {};
+  const rawFks = fullCatalog.foreignKeys || {};
+  const tableNames = Object.keys(rawCols);
+
+  const tables: ERTable[] = [];
+  const relationships: ERRelationship[] = [];
+
+  if (tableNames.length > 0) {
+    for (const tableName of tableNames) {
+      const colList = rawCols[tableName] || [];
+      const cols: ERColumn[] = colList.map((col: any) => ({
+        name: col.name,
+        type: col.type,
+        isPrimaryKey: !!col.isPrimaryKey,
+        isForeignKey: false,
+        nullable: col.nullable,
+      }));
+      const byName = new Map(cols.map((col) => [col.name.toLowerCase(), col]));
+
+      for (const fk of rawFks[tableName] || []) {
+        const matching = byName.get((fk.column || '').toLowerCase());
+        if (matching) {
+          matching.isForeignKey = true;
+          matching.refTable = fk.refTable;
+          matching.refColumn = fk.refColumn;
+        }
+        relationships.push({
+          id: `${tableName}.${fk.column}->${fk.refTable}.${fk.refColumn || fk.column}`,
+          name: fk.name,
+          sourceTable: tableName,
+          sourceColumn: fk.column,
+          targetTable: fk.refTable,
+          targetColumn: fk.refColumn || fk.column,
+        });
+      }
+
+      tables.push({ id: tableName, name: tableName, columns: cols });
+    }
+    return { tables, relationships };
+  }
+
+  const dbTables = await dbHelper.getTables(connId);
+  for (const tbl of dbTables) {
+    if (isStale()) break;
+    let schema: Awaited<ReturnType<typeof dbHelper.getTableSchema>> | null = null;
+    try {
+      schema = await dbHelper.getTableSchema(connId, tbl.name);
+    } catch {
+      continue;
+    }
+    if (!schema) continue;
+
+    const fks = schema.foreignKeys || [];
+    const cols: ERColumn[] = (schema.columns || []).map((col) => {
+      const fkItem = fks.find((fk) => fk.column === col.name);
+      return {
+        name: col.name,
+        type: col.type,
+        isPrimaryKey: !!col.isPrimaryKey,
+        isForeignKey: !!fkItem,
+        refTable: fkItem?.refTable,
+        refColumn: fkItem?.refColumn,
+        nullable: col.nullable,
+      };
+    });
+
+    tables.push({
+      id: tbl.name,
+      name: tbl.name,
+      kind: tbl.type === 'view' ? 'view' : 'table',
+      columns: cols,
+    });
+
+    for (const fk of fks) {
+      relationships.push({
+        id: `${tbl.name}.${fk.column}->${fk.refTable}.${fk.refColumn || fk.column}`,
+        name: fk.name,
+        sourceTable: tbl.name,
+        sourceColumn: fk.column,
+        targetTable: fk.refTable,
+        targetColumn: fk.refColumn || fk.column,
+      });
+    }
+  }
+
+  return { tables, relationships };
+}
+
 export const ERDiagramTab: React.FC<ERDiagramTabProps> = ({
   connId,
+  storageScope,
   dbName,
   schema,
   onOpenTable,
@@ -21,253 +130,41 @@ export const ERDiagramTab: React.FC<ERDiagramTabProps> = ({
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tables, setTables] = useState<ERTable[]>([]);
-  const [relationships, setRelationships] = useState<ERRelationship[]>([]);
+  const [data, setData] = useState<Loaded>({ tables: [], relationships: [] });
 
-  const loadData = useCallback(async () => {
+  const load = useCallback(async (isStale: StaleCheck = () => false) => {
     setLoading(true);
     setError(null);
     try {
-      // 1. Try getFullCatalog first (MySQL/Postgres)
-      const fullCatalog = await dbHelper.getFullCatalog(connId);
-      const rawCols = fullCatalog.columns || {};
-      const rawFks = fullCatalog.foreignKeys || {};
-
-      const tableNames = Object.keys(rawCols);
-
-      // 2. Fallback to getTables + getTableSchema (for SQLite or empty catalog)
-      if (tableNames.length === 0) {
-        const dbTables = await dbHelper.getTables(connId);
-        const schemaPromises = dbTables.map(async (tbl) => {
-          try {
-            const sch = await dbHelper.getTableSchema(connId, tbl.name);
-            return { name: tbl.name, type: tbl.type || 'table', schema: sch };
-          } catch {
-            return { name: tbl.name, type: tbl.type || 'table', schema: null };
-          }
-        });
-
-        const resolved = await Promise.all(schemaPromises);
-        const parsedTables: ERTable[] = [];
-        const parsedRels: ERRelationship[] = [];
-
-        resolved.forEach((item) => {
-          if (!item.schema) return;
-          const cols: ERColumn[] = (item.schema.columns || []).map((col) => {
-            const isPk = !!col.isPrimaryKey;
-            const fkItem = (item.schema?.foreignKeys || []).find((fk) => fk.column === col.name);
-            return {
-              name: col.name,
-              type: col.type,
-              isPrimaryKey: isPk,
-              isForeignKey: !!fkItem,
-              refTable: fkItem?.refTable,
-              refColumn: fkItem?.refColumn,
-              nullable: col.nullable,
-            };
-          });
-
-          parsedTables.push({
-            id: item.name,
-            name: item.name,
-            kind: item.type === 'view' ? 'view' : 'table',
-            columns: cols,
-          });
-
-          (item.schema.foreignKeys || []).forEach((fk) => {
-            parsedRels.push({
-              id: `${item.name}.${fk.column}->${fk.refTable}.${fk.refColumn || fk.column}`,
-              name: fk.name,
-              sourceTable: item.name,
-              sourceColumn: fk.column,
-              targetTable: fk.refTable,
-              targetColumn: fk.refColumn || fk.column,
-            });
-          });
-        });
-
-        setTables(parsedTables);
-        setRelationships(parsedRels);
-      } else {
-        // Parse from fullCatalog
-        const parsedTables: ERTable[] = [];
-        const parsedRels: ERRelationship[] = [];
-
-        tableNames.forEach((tableName) => {
-          const colList = rawCols[tableName] || [];
-          const cols: ERColumn[] = colList.map((col: any) => ({
-            name: col.name,
-            type: col.type,
-            isPrimaryKey: !!col.isPrimaryKey,
-            isForeignKey: false,
-            nullable: col.nullable,
-          }));
-
-          const tableFks = rawFks[tableName] || [];
-          tableFks.forEach((fk: any) => {
-            const matchingCol = cols.find((c) => c.name.toLowerCase() === (fk.column || '').toLowerCase());
-            if (matchingCol) {
-              matchingCol.isForeignKey = true;
-              matchingCol.refTable = fk.refTable;
-              matchingCol.refColumn = fk.refColumn;
-            }
-
-            parsedRels.push({
-              id: `${tableName}.${fk.column}->${fk.refTable}.${fk.refColumn || fk.column}`,
-              name: fk.name,
-              sourceTable: tableName,
-              sourceColumn: fk.column,
-              targetTable: fk.refTable,
-              targetColumn: fk.refColumn || fk.column,
-            });
-          });
-
-          parsedTables.push({
-            id: tableName,
-            name: tableName,
-            columns: cols,
-          });
-        });
-
-        setTables(parsedTables);
-        setRelationships(parsedRels);
-      }
+      const next = await loadDiagram(connId, isStale);
+      if (isStale()) return;
+      setData(next);
     } catch (err: any) {
+      if (isStale()) return;
       console.error('Failed to load ER diagram data:', err);
       setError(err?.message || String(err));
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   }, [connId]);
 
   useEffect(() => {
     let active = true;
-    (async () => {
-      try {
-        const fullCatalog = await dbHelper.getFullCatalog(connId);
-        if (!active) return;
-        const rawCols = fullCatalog.columns || {};
-        const rawFks = fullCatalog.foreignKeys || {};
-        const tableNames = Object.keys(rawCols);
-
-        if (tableNames.length === 0) {
-          const dbTables = await dbHelper.getTables(connId);
-          if (!active) return;
-          const schemaPromises = dbTables.map(async (tbl) => {
-            try {
-              const sch = await dbHelper.getTableSchema(connId, tbl.name);
-              return { name: tbl.name, type: tbl.type || 'table', schema: sch };
-            } catch {
-              return { name: tbl.name, type: tbl.type || 'table', schema: null };
-            }
-          });
-
-          const resolved = await Promise.all(schemaPromises);
-          if (!active) return;
-          const parsedTables: ERTable[] = [];
-          const parsedRels: ERRelationship[] = [];
-
-          resolved.forEach((item) => {
-            if (!item.schema) return;
-            const cols: ERColumn[] = (item.schema.columns || []).map((col) => {
-              const isPk = !!col.isPrimaryKey;
-              const fkItem = (item.schema?.foreignKeys || []).find((fk) => fk.column === col.name);
-              return {
-                name: col.name,
-                type: col.type,
-                isPrimaryKey: isPk,
-                isForeignKey: !!fkItem,
-                refTable: fkItem?.refTable,
-                refColumn: fkItem?.refColumn,
-                nullable: col.nullable,
-              };
-            });
-
-            parsedTables.push({
-              id: item.name,
-              name: item.name,
-              kind: item.type === 'view' ? 'view' : 'table',
-              columns: cols,
-            });
-
-            (item.schema.foreignKeys || []).forEach((fk) => {
-              parsedRels.push({
-                id: `${item.name}.${fk.column}->${fk.refTable}.${fk.refColumn || fk.column}`,
-                name: fk.name,
-                sourceTable: item.name,
-                sourceColumn: fk.column,
-                targetTable: fk.refTable,
-                targetColumn: fk.refColumn || fk.column,
-              });
-            });
-          });
-
-          setTables(parsedTables);
-          setRelationships(parsedRels);
-        } else {
-          const parsedTables: ERTable[] = [];
-          const parsedRels: ERRelationship[] = [];
-
-          tableNames.forEach((tableName) => {
-            const colList = rawCols[tableName] || [];
-            const cols: ERColumn[] = colList.map((col: any) => ({
-              name: col.name,
-              type: col.type,
-              isPrimaryKey: !!col.isPrimaryKey,
-              isForeignKey: false,
-              nullable: col.nullable,
-            }));
-
-            const tableFks = rawFks[tableName] || [];
-            tableFks.forEach((fk: any) => {
-              const matchingCol = cols.find((c) => c.name.toLowerCase() === (fk.column || '').toLowerCase());
-              if (matchingCol) {
-                matchingCol.isForeignKey = true;
-                matchingCol.refTable = fk.refTable;
-                matchingCol.refColumn = fk.refColumn;
-              }
-
-              parsedRels.push({
-                id: `${tableName}.${fk.column}->${fk.refTable}.${fk.refColumn || fk.column}`,
-                name: fk.name,
-                sourceTable: tableName,
-                sourceColumn: fk.column,
-                targetTable: fk.refTable,
-                targetColumn: fk.refColumn || fk.column,
-              });
-            });
-
-            parsedTables.push({
-              id: tableName,
-              name: tableName,
-              columns: cols,
-            });
-          });
-
-          setTables(parsedTables);
-          setRelationships(parsedRels);
-        }
-      } catch (err: any) {
-        if (!active) return;
-        console.error('Failed to load ER diagram data:', err);
-        setError(err?.message || String(err));
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
-    })();
-
+    // set-state-in-effect: reading the schema is async IPC on mount, which is the case the rule
+    // cannot express — there is no value to derive during render and nothing but mounting can
+    // trigger the read. The flag is what keeps a reload from a stale run writing over a new one.
+    // eslint-disable-next-line react/set-state-in-effect
+    void load(() => !active);
     return () => {
       active = false;
     };
-  }, [connId]);
+  }, [load]);
 
   if (loading) {
     return (
       <div className="er-loading-container">
         <Loader2 size={24} className="er-loading-spinner" />
-        <span>{t('er.loadingSchema', 'Loading database schema & relationships...')}</span>
+        <span>{t('er.loadingSchema')}</span>
       </div>
     );
   }
@@ -276,23 +173,21 @@ export const ERDiagramTab: React.FC<ERDiagramTabProps> = ({
     return (
       <div className="er-error-container">
         <AlertCircle size={28} className="er-error-icon" />
-        <div className="er-error-title">{t('er.loadError', 'Failed to load ER Diagram')}</div>
+        <div className="er-error-title">{t('er.loadError')}</div>
         <div className="er-error-desc">{error}</div>
-        <button type="button" className="btn btn-primary" onClick={loadData}>
+        <button type="button" className="btn btn-primary" onClick={() => void load()}>
           <RefreshCw size={13} />
-          <span>{t('common.retry', 'Retry')}</span>
+          <span>{t('common.retry')}</span>
         </button>
       </div>
     );
   }
 
-  if (tables.length === 0) {
+  if (data.tables.length === 0) {
     return (
       <div className="er-empty-container">
-        <div className="er-empty-title">{t('er.emptyTitle', 'No tables found in this database')}</div>
-        <div className="er-empty-desc">
-          {t('er.emptyDesc', 'Create tables or connect to an existing database to generate the ER diagram.')}
-        </div>
+        <div className="er-empty-title">{t('er.emptyTitle')}</div>
+        <div className="er-empty-desc">{t('er.emptyDesc')}</div>
       </div>
     );
   }
@@ -301,10 +196,11 @@ export const ERDiagramTab: React.FC<ERDiagramTabProps> = ({
     <div className="er-tab-wrapper">
       <ERDiagramView
         connId={connId}
+        storageScope={storageScope}
         database={dbName}
         schema={schema}
-        tables={tables}
-        relationships={relationships}
+        tables={data.tables}
+        relationships={data.relationships}
         onOpenTable={onOpenTable}
       />
     </div>

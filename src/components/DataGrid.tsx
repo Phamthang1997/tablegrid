@@ -1,9 +1,20 @@
 import React, { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { clampMenu, type MenuRect } from '../utils/menuPosition';
+import { resolveRowClick, resolveRowContextMenu } from '../utils/rowSelection';
 import { countKey, nextCountMode, seekColumn, seekViewKey } from '../utils/gridPaging';
 import { getCommitPreviewForKey, setCommitPreviewForKey } from '../utils/commitPreview';
 import { connKeyOfConn } from '../utils/safeMode';
+import {
+  buildCsvRows,
+  buildInList,
+  buildInsertStatements,
+  buildJsonValues,
+  buildMarkdownTable,
+  buildTsv,
+  buildUpdateStatements,
+  updateRefusalMessage,
+} from '../utils/copyAs';
 import { dbHelper } from '../utils/dbHelper';
 import type { SchemaInfo, ColumnInfo, GridChange } from '../utils/dbHelper';
 import {
@@ -343,7 +354,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   //
   // Keys are the same `selectionKey` the rows render with: the primary key when there is one, and
   // `__idx_<n>` when there is not. An inserted row uses its `__tempId`.
-  const [selectedRowIds, setSelectedRowIds] = useState<Set<any>>(new Set());
+  const [selectedRowIds, setSelectedRowIds] = useState<ReadonlySet<any>>(new Set());
   // Where a Shift+click measures from. Set by every plain and Ctrl click, never by Shift itself, so
   // repeated Shift+clicks grow and shrink the same range instead of walking the anchor along.
   const [anchorRowId, setAnchorRowId] = useState<any | null>(null);
@@ -1145,56 +1156,103 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     return picked.length > 0 ? picked : [clicked];
   };
 
-  const csvCell = (v: any) => {
-    if (v === null || v === undefined) return '';
-    const s = String(v);
-    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-
   const copyRowAsCSV = (row: any, withHeader: boolean) => {
     const cols = activeColumns.map(c => c.name);
-    const lines = rowsToCopy(row).map(r => cols.map(c => csvCell(r[c])).join(','));
-    copyToClipboard(withHeader ? [cols.join(','), ...lines].join('\n') : lines.join('\n'));
+    copyToClipboard(buildCsvRows(cols, rowsToCopy(row), withHeader));
     setSuccessMsg(t('dataGrid.copiedRowCsv'));
     setTimeout(() => setSuccessMsg(null), 2000);
   };
 
   const copyRowAsSQL = (row: any) => {
     const cols = activeColumns.map(c => c.name);
-    const colList = cols.map(c => `\`${c}\``).join(', ');
-    // One statement per row rather than one multi-VALUES INSERT: these are pasted into an editor
-    // and edited by hand, and a row that turns out to be wrong is then deleted by deleting its line.
-    const statements = rowsToCopy(row).map(r => {
-      const valList = cols.map(c => {
-        const v = r[c];
-        if (v === null || v === undefined) return 'NULL';
-        return `'${String(v).replace(/'/g, "''")}'`;
-      }).join(', ');
-      return `INSERT INTO \`${tableName}\` (${colList}) VALUES (${valList});`;
-    });
-    copyToClipboard(statements.join('\n'));
+    copyToClipboard(buildInsertStatements(tableName, cols, rowsToCopy(row), dbType));
     setSuccessMsg(t('dataGrid.copiedRowSql'));
+    setTimeout(() => setSuccessMsg(null), 2000);
+  };
+
+  /**
+   * The columns an UPDATE is keyed on: every column the schema marks as part of the primary
+   * key, falling back to the name the backend reported when none of them is flagged.
+   */
+  const keyColumns = (): string[] => {
+    const flagged = columns.filter(c => c.isPrimaryKey).map(c => c.name);
+    if (flagged.length > 0) return flagged;
+    return columns.some(c => c.name === primaryKey) ? [primaryKey] : [];
+  };
+
+  const copyRowAsUpdate = (row: any) => {
+    const keys = keyColumns();
+    // The key goes into the column list even when it is hidden: it is what the WHERE needs,
+    // and `buildUpdateStatements` leaves it out of the SET either way.
+    const cols = activeColumns.map(c => c.name);
+    const withKeys = [...cols, ...keys.filter(k => !cols.includes(k))];
+    const generated = new Set(columns.filter(c => c.generated).map(c => c.name));
+    const result = buildUpdateStatements(
+      tableName,
+      withKeys,
+      rowsToCopy(row),
+      dbType,
+      keys,
+      generated,
+    );
+    if (result.refused) {
+      setErrorMsg(updateRefusalMessage(result.refused));
+      return;
+    }
+    copyToClipboard(result.sql);
+    setSuccessMsg(t('dataGrid.copiedRowUpdate'));
+    setTimeout(() => setSuccessMsg(null), 2000);
+  };
+
+  /**
+   * One column as a parenthesised value list, to paste after somebody else's `IN`.
+   *
+   * The SCOPE is a parameter rather than something guessed from the selection, and that is a
+   * correction: `selectForContextMenu` leaves at least the clicked row selected, so "is there
+   * a selection" is always true and any threshold on its size reads as arbitrary. Right-
+   * clicking outside a multi-row selection collapses it to one row, and the copy then
+   * silently switched from the rows to the whole column. Two menu entries, each saying which
+   * it is, and neither can surprise anyone.
+   *
+   * The column scope reads `displayedRows`, not `rows`: a quick search that hides half the
+   * table must not copy the hidden half.
+   */
+  const copyAsInList = (colName: string, row: any, scope: 'rows' | 'column') => {
+    const source = scope === 'rows' ? rowsToCopy(row) : displayedRows;
+    const result = buildInList(source.map(r => r[colName]), dbType);
+    if (result.count === 0) {
+      setErrorMsg(t('dataGrid.copyInListEmpty'));
+      return;
+    }
+    copyToClipboard(result.sql);
+    const skipped = result.nullsDropped + result.duplicatesDropped;
+    setSuccessMsg(
+      skipped > 0
+        ? t('dataGrid.copiedInListTrimmed', { n: result.count, skipped })
+        : t('dataGrid.copiedInList', { n: result.count }),
+    );
+    setTimeout(() => setSuccessMsg(null), 2500);
+  };
+
+  const copyRowAsTsv = (row: any) => {
+    const cols = activeColumns.map(c => c.name);
+    // With the header, unlike Ctrl+C: that one goes into a sheet that already has one, and
+    // this is picked from a menu deliberately.
+    copyToClipboard(buildTsv(cols, rowsToCopy(row), true));
+    setSuccessMsg(t('dataGrid.copiedRowsTsv', { n: rowsToCopy(row).length }));
+    setTimeout(() => setSuccessMsg(null), 2000);
+  };
+
+  const copyRowAsJsonValues = (row: any) => {
+    const cols = activeColumns.map(c => c.name);
+    copyToClipboard(buildJsonValues(cols, rowsToCopy(row)));
+    setSuccessMsg(t('dataGrid.copiedRowJsonValues'));
     setTimeout(() => setSuccessMsg(null), 2000);
   };
 
   const copyRowAsMarkdown = (row: any) => {
     const cols = activeColumns.map(c => c.name);
-    const header = `| ${cols.join(' | ')} |`;
-    const sep = `| ${cols.map(() => '---').join(' | ')} |`;
-    // Escape backslashes first, then pipes (so `|` does not split the cell), and replace newlines
-    // so multi-line text does not break Markdown table row structure.
-    const body = rowsToCopy(row).map(
-      r =>
-        `| ${cols
-          .map(c =>
-            String(r[c] ?? '')
-              .replace(/\\/g, '\\\\')
-              .replace(/\|/g, '\\|')
-              .replace(/\r?\n/g, ' '),
-          )
-          .join(' | ')} |`,
-    );
-    copyToClipboard([header, sep, ...body].join('\n'));
+    copyToClipboard(buildMarkdownTable(cols, rowsToCopy(row)));
     setSuccessMsg(t('dataGrid.copiedRowMarkdown'));
     setTimeout(() => setSuccessMsg(null), 2000);
   };
@@ -1575,15 +1633,10 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   }, [displayedRows, displayedInserts, primaryKey]);
 
   /**
-   * One click on a row, with the three behaviours every table has:
-   *
-   * - plain: select just this row;
-   * - Ctrl/Cmd: add or remove this row, leaving the rest alone;
-   * - Shift: select from the anchor to here, replacing the selection.
-   *
-   * Shift deliberately does not move the anchor, so holding Shift and clicking around resizes one
-   * range instead of chaining ranges end to end. Ctrl does move it, because the row just toggled is
-   * what the next Shift should measure from.
+   * One click on a row. Which rows that leaves selected is decided by `resolveRowClick` in
+   * `utils/rowSelection.ts`, shared with the SQL editor's result grid -- the two grids agree on
+   * nothing underneath (see that file) but must agree on this, because a gesture that works in
+   * one and not the other reads as a bug rather than as two features.
    */
   const handleRowClick = useCallback(
     (key: any, e: React.MouseEvent) => {
@@ -1591,41 +1644,25 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
       // that highlight looks wrong AND breaks Ctrl+C, which stands aside whenever text is selected
       // so that copying a highlighted cell value still works.
       if (e.shiftKey) window.getSelection()?.removeAllRanges();
-      if (e.shiftKey && anchorRowId !== null) {
-        const from = orderedRowKeys.indexOf(anchorRowId);
-        const to = orderedRowKeys.indexOf(key);
-        if (from >= 0 && to >= 0) {
-          const [lo, hi] = from <= to ? [from, to] : [to, from];
-          setSelectedRowIds(new Set(orderedRowKeys.slice(lo, hi + 1)));
-          return;
-        }
-        // The anchor scrolled out of the filtered list: fall through to a plain select rather than
-        // silently selecting nothing.
-      }
-      if (e.ctrlKey || e.metaKey) {
-        setSelectedRowIds(prev => {
-          const next = new Set(prev);
-          if (next.has(key)) next.delete(key);
-          else next.add(key);
-          return next;
-        });
-        setAnchorRowId(key);
-        return;
-      }
-      setSelectedRowId(key);
+      const next = resolveRowClick(
+        orderedRowKeys,
+        { rows: selectedRowIds, anchor: anchorRowId },
+        key,
+        { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey },
+      );
+      setSelectedRowIds(next.rows);
+      setAnchorRowId(next.anchor);
     },
-    [anchorRowId, orderedRowKeys, setSelectedRowId],
+    [anchorRowId, orderedRowKeys, selectedRowIds],
   );
 
-  /**
-   * What a right-click does to the selection: nothing, if the row it landed on is already part of
-   * it. Right-clicking inside a selection to reach "copy" must not first throw that selection away
-   * — that is the one interaction where clearing it destroys exactly what the user was about to act
-   * on. On a row outside the selection it behaves like a plain click.
-   */
+  /** Keeps a selection the right-clicked row belongs to — see `resolveRowContextMenu`. */
   const selectForContextMenu = useCallback(
     (key: any) => {
-      setSelectedRowIds(prev => (prev.has(key) ? prev : new Set([key])));
+      // Read through the updater rather than from state: this runs from a contextmenu handler that
+      // may fire before a pending selection change has been applied, and the kept set is returned
+      // by reference so an unchanged selection still costs no render.
+      setSelectedRowIds(prev => resolveRowContextMenu({ rows: prev, anchor: key }, key).rows);
       setAnchorRowId(key);
     },
     [],
@@ -2905,11 +2942,14 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
           </button>
           <button className="context-menu-item" onClick={() => {
             setContextMenu(null);
-            const allVals = rows.map(r => r[contextMenu.colName]).filter(v => v !== null && v !== undefined).join('\n');
+            const allVals = displayedRows.map(r => r[contextMenu.colName]).filter(v => v !== null && v !== undefined).join('\n');
             copyToClipboard(allVals);
             setSuccessMsg(t('dataGrid.copiedColumn')); setTimeout(() => setSuccessMsg(null), 2000);
           }}>
             <span>📋</span> {t('dataGrid.ctxCopyColumn')}
+          </button>
+          <button className="context-menu-item" onClick={() => { const cm = contextMenu; setContextMenu(null); copyAsInList(cm.colName, cm.row, 'column'); }}>
+            <span>🔢</span> {t('dataGrid.ctxCopyInListColumn')}
           </button>
           <button className="context-menu-item" onClick={() => { setContextMenu(null); setQuickLookCell({ colName: contextMenu.colName, value: contextMenu.cellValue }); }}>
             <span>🔍</span> {t('dataGrid.ctxQuickLook')}
@@ -2959,6 +2999,12 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
 
           {/* Copy row */}
           <div style={{ padding: '2px 8px 4px', color: 'var(--win-text-disabled)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{selectedRowIds.size > 1 ? t('dataGrid.ctxCopyRowsAs', { n: selectedRowIds.size }) : t('dataGrid.ctxCopyRowAs')}</div>
+          <button className="context-menu-item" onClick={() => { const cm = contextMenu; setContextMenu(null); copyAsInList(cm.colName, cm.row, 'rows'); }}>
+            <span>🔢</span> {t('dataGrid.ctxCopyInListRows', { col: contextMenu.colName })}
+          </button>
+          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsTsv(contextMenu.row); }}>
+            <span>📋</span> {t('dataGrid.ctxCopyTsv')}
+          </button>
           <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsCSV(contextMenu.row, false); }}>
             <span>📊</span> CSV
           </button>
@@ -2968,11 +3014,17 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
           <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsSQL(contextMenu.row); }}>
             <span>🗄</span> SQL INSERT
           </button>
+          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsUpdate(contextMenu.row); }}>
+            <span>✏️</span> {t('dataGrid.ctxCopySqlUpdate')}
+          </button>
           <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsMarkdown(contextMenu.row); }}>
             <span>📝</span> Markdown Table
           </button>
           <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsJson(contextMenu.row); }}>
-            <span>📦</span> {t('dataGrid.ctxJsonArray')}
+            <span>📦</span> {t('dataGrid.ctxJsonObjects')}
+          </button>
+          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsJsonValues(contextMenu.row); }}>
+            <span>📦</span> {t('dataGrid.ctxJsonValues')}
           </button>
         </div>
       )}

@@ -195,6 +195,7 @@ pub async fn open_database(conn_id: String, name: String) -> Result<Value, Strin
                 db: name.clone(),
                 conn: crate::state::LiveConn::Sql(conn),
                 current_schema: schema.clone(),
+                session_info: None,
             },
         )?;
         Ok(json!({ "success": true, "database": name, "schema": schema, "connId": &*new_id }))

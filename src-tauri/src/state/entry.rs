@@ -54,6 +54,29 @@ impl LiveConn {
     }
 }
 
+/// The part of `get_connection_status` that does not change while a connection lives: the server
+/// version, the account, the database, and the negotiated TLS cipher/protocol.
+///
+/// It is cached because the status cluster on the title bar polls that command every 6 seconds, and
+/// on MySQL producing these five fields costs three round trips (`SELECT VERSION(), CURRENT_USER(), …`
+/// plus one `SHOW SESSION STATUS` each for `Ssl_cipher` and `Ssl_version`) — three queries per
+/// connection every 6s, in the server's general log, for values that answer the same every time.
+/// The latency ping is deliberately NOT part of this: measuring it is the one thing that has to
+/// happen on every poll.
+///
+/// Cached per entry rather than per server, because `database` is one of the fields and one
+/// `ConnEntry` is one `(server, database)`. It is dropped whenever the live handle or the database
+/// underneath it is replaced — see `ConnRegistry::replace_conn` / `set_db`, the only two ways either
+/// can change without a new `conn_id` being minted.
+#[derive(Clone)]
+pub struct SessionInfo {
+    pub server_version: String,
+    pub user: String,
+    pub database: String,
+    pub cipher: String,
+    pub tls_version: String,
+}
+
 /// One open `(server, database)`.
 pub struct ConnEntry {
     /// Refuse every write on this connection.
@@ -102,4 +125,7 @@ pub struct ConnEntry {
     /// rather than becoming a command argument — see `postgres-schema-support-plan.md` §5.0; only
     /// its home moved, from one global into one entry per `(server, database)`.
     pub current_schema: Option<String>,
+    /// Server version / user / database / TLS, probed on the first `get_connection_status` and
+    /// reused by every later poll. `None` means "not probed yet, or invalidated".
+    pub session_info: Option<SessionInfo>,
 }

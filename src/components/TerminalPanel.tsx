@@ -1,11 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { X, TerminalSquare, PictureInPicture2, PanelBottom, FileSearch, ScrollText, Maximize2, Minimize2, ExternalLink, Copy, FolderOpen, RefreshCw, Play, Eraser } from 'lucide-react';
 import { dbHelper } from '../utils/dbHelper';
-import type { DbConnectionConfig, SshTerminalMessage } from '../utils/dbHelper';
+import type { DbConnectionConfig, DockerContainerInfo, SshTerminalMessage } from '../utils/dbHelper';
 import { openTerminalWindow } from '../utils/terminalWindow';
 import { ConfirmDialog } from './ConfirmDialog';
 
@@ -92,6 +92,84 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   useEffect(() => { localStorage.setItem('term_docker_container', dockerContainer); }, [dockerContainer]);
   // Clears the message bar's timer on unmount, so no setState lands after the component is gone.
   useEffect(() => () => { if (bannerTimer.current) window.clearTimeout(bannerTimer.current); }, []);
+
+  const [dockerCli, setDockerCli] = useState<'docker' | 'nerdctl'>('docker');
+  /**
+   * The full path the scan resolved, or `` when nothing was found.
+   *
+   * Kept because Rust and the SHELL look for the CLI in different places, and the gap is real:
+   * `find_docker_cli` probes Rancher Desktop's own directories (%LOCALAPPDATA%\Programs\Rancher
+   * Desktop\…, ~/.rd/bin), which are routinely absent from the shell’s PATH. Without the path,
+   * the dropdown lists every container and the button then fails with `command not found`.
+   */
+  const [dockerBinary, setDockerBinary] = useState('');
+  const [dockerContainers, setDockerContainers] = useState<DockerContainerInfo[]>([]);
+  const [scanningContainers, setScanningContainers] = useState(false);
+  const [dockerCustomMode, setDockerCustomMode] = useState(false);
+  /**
+   * Why the last scan found nothing, already translated — `null` once it found something.
+   *
+   * An auto-detect feature's whole value is the diagnosis: "install Docker", "start Docker" and
+   * "your container is stopped" are three different things to do, and an empty dropdown says none
+   * of them. `''` is not used for "no error" because a blank string reads as a message that failed
+   * to load.
+   */
+  const [dockerError, setDockerError] = useState<string | null>(null);
+  const [dockerScanned, setDockerScanned] = useState(false);
+
+  /**
+   * Is the chosen container one the scan returned?
+   *
+   * A `<select>` whose `value` matches no `<option>` shows the FIRST option while the state says
+   * something else — so the dropdown would name one container and `logs -f` would run on
+   * another. That happens two ways: a name typed in custom mode, and a name restored from
+   * localStorage for a container that no longer exists. Both are answered by keeping the typed
+   * value as a real option rather than by silently changing it.
+   */
+  const chosenIsListed = dockerContainers.some((c) => (c.name || c.id) === dockerContainer);
+
+  const scanDocker = useCallback(async () => {
+    setScanningContainers(true);
+    try {
+      const cliInfo = await dbHelper.getDockerCliInfo();
+      if (cliInfo.available && (cliInfo.cli_type === 'nerdctl' || cliInfo.cli_type === 'docker')) {
+        setDockerCli(cliInfo.cli_type);
+      }
+      setDockerBinary(cliInfo.available ? cliInfo.binary_path : '');
+      if (!cliInfo.available) {
+        setDockerContainers([]);
+        setDockerError(tRef.current('backend.dockerCliMissing'));
+        return;
+      }
+      const list = await dbHelper.listDockerContainers(config.port);
+      setDockerContainers(list);
+      setDockerError(list.length === 0 ? tRef.current('terminal.dockerNoContainers') : null);
+      // Pick the best guess, but never overrule a name the user is already pointing at: `prev` is
+      // kept whenever it names a container that came back. The list arrives best-first from Rust,
+      // so `list[0]` is the same choice the badge marks.
+      setDockerContainer(prev => {
+        if (prev.trim() && list.some(c => c.name === prev || c.id === prev)) return prev;
+        if (!prev.trim() && list.length > 0) return list[0].name || list[0].id;
+        return prev;
+      });
+    } catch (err) {
+      // `listDockerContainers` rethrows the backend's already-translated text.
+      setDockerContainers([]);
+      setDockerError(String(err));
+    } finally {
+      setScanningContainers(false);
+      setDockerScanned(true);
+    }
+    // `t` is read through `tRef`, not taken as a dependency: this callback feeds an effect, and
+    // `t` changes identity on every language switch — depending on it would re-scan (and so
+    // re-spawn docker processes) each time the user switches language.
+  }, [config.port]);
+
+  useEffect(() => {
+    if (logSource === 'docker' && logMenu) {
+      void scanDocker();
+    }
+  }, [logSource, logMenu, scanDocker]);
 
   const useSsh = !!(config.sshEnabled && config.sshHost);
 
@@ -230,31 +308,57 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   const winTail = (p: string) =>
     `$p='${psq(p)}'; $fs=[System.IO.File]::Open($p,'Open','Read','ReadWrite'); $sr=New-Object System.IO.StreamReader($fs,[System.Text.Encoding]::UTF8); [void]$fs.Seek(0,'End'); $cr=[char]13; $lf=[char]10; Write-Host '--- theo doi log (Ctrl+C de dung) ---'; while($true){ $c=$sr.ReadToEnd(); if($c.Length -gt 0){ [Console]::Out.Write($c.Replace($cr.ToString(),'').Replace($lf.ToString(),$cr.ToString()+$lf.ToString())); [Console]::Out.Flush() } else { Start-Sleep -Milliseconds 250 } }`;
 
-  // The tail/list command depends on the LOG SOURCE:
-  //  - docker: docker exec <container> tail -f/ls (the log lives inside the Linux container)
-  //  - ssh:    ssh <target> "tail -f/ls" (the log lives on the Linux VM)
-  //  - local:  run straight in the current shell (remote Linux when the terminal is SSH, or the
-  //            Windows host)
+  const isWindows = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent);
+
+  /** Escaping for a POSIX single-quoted string, the twin of `psq` above. */
+  const shq = (v: string) => v.replace(/'/g, "'\\''");
+
+  /**
+   * The docker/nerdctl command as the shell that receives it must spell it.
+   *
+   * Three cases, and the SSH one is why this cannot simply always use the resolved path: over
+   * SSH the shell runs on another machine, so a path this app probed locally names nothing there
+   * -- the bare word is the only thing that can work, and it is the remote host's own docker that
+   * should answer anyway. Locally the resolved path is what closes the gap described on
+   * `dockerBinary`. The local shell is `powershell.exe` on Windows and $SHELL elsewhere
+   * (`terminal/local.rs`), so the quoting splits on the same flag the tail command already uses,
+   * and PowerShell needs the call operator before a quoted path or it treats it as a string.
+   */
+  const dockerExe = () => {
+    if (useSsh || !dockerBinary) return dockerCli;
+    return isWindows ? `& '${psq(dockerBinary)}'` : `'${shq(dockerBinary)}'`;
+  };
+
+  // The tail and list commands depend on the LOG SOURCE:
+  // - docker: run exec on container to tail or list
+  // - ssh: run ssh to tail or list on VM
+  // - local: run straight in current shell (remote Linux when SSH, or host OS)
   const src = (): 'local' | 'ssh' | 'docker' =>
     (logSource === 'ssh' && sshTarget.trim()) ? 'ssh'
-      : (logSource === 'docker' && dockerContainer.trim()) ? 'docker'
+      : logSource === 'docker' ? 'docker'
         : 'local';
 
+  // Both builders assume a container is chosen when the source is docker; `runItem` is the only
+  // caller and refuses first. An earlier version fell back to `docker logs -f --tail 100` with no
+  // container argument, which is not a valid command -- dead code that reads like a real one is
+  // what the next caller copies.
   const tailCommand = (p: string) => {
     switch (src()) {
       case 'ssh': return `ssh ${sshTarget.trim()} "tail -f '${p}'"`;
-      case 'docker': return `docker exec ${dockerContainer.trim()} tail -f '${p}'`;
-      default: return useSsh ? `tail -f "${p}"` : winTail(p);
+      case 'docker': return `${dockerExe()} exec ${dockerContainer.trim()} tail -f '${p}'`;
+      default: return (useSsh || !isWindows) ? `tail -f "${p}"` : winTail(p);
     }
   };
 
-  // datadir is a DIRECTORY -> it cannot be tailed, so its files are listed instead.
-  const isFolder = (lp: { label: string; path: string }) => lp.label === 'datadir' || /[\\/]$/.test(lp.path);
+  // datadir or log_directory is a DIRECTORY -> it cannot be tailed, so its files are listed instead.
+  const isFolder = (lp: { label: string; path: string }) =>
+    lp.label === 'datadir' || lp.label === 'log_directory' || /[\\/]$/.test(lp.path) || /[\\/]log$/.test(lp.path);
+
   const listCommand = (p: string) => {
     switch (src()) {
       case 'ssh': return `ssh ${sshTarget.trim()} "ls -lah '${p}'"`;
-      case 'docker': return `docker exec ${dockerContainer.trim()} ls -lah '${p}'`;
-      default: return useSsh
+      case 'docker': return `${dockerExe()} exec ${dockerContainer.trim()} ls -lah '${p}'`;
+      default: return (useSsh || !isWindows)
         ? `ls -lah "${p}"`
         : `Get-ChildItem -Path '${psq(p)}' -Filter *.log | Format-Table Name,Length,LastWriteTime -AutoSize`;
     }
@@ -357,13 +461,30 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     return true;
   };
 
-  // Docker: the official MySQL/PG images log to stdout -> docker logs -f is the right way to read it.
+  // Docker: container logs via logs -f or exec sh
   const dockerLogs = () => {
-    if (!dockerContainer.trim()) return;
-    if (sendCommand(`docker logs -f ${dockerContainer.trim()}`)) setLogMenu(false);
+    const target = dockerContainer.trim();
+    if (!target) {
+      note(t('terminal.errNoContainerSelected'), 'err');
+      return;
+    }
+    if (sendCommand(`${dockerExe()} logs -f --tail 100 ${target}`)) setLogMenu(false);
+  };
+
+  const dockerShell = () => {
+    const target = dockerContainer.trim();
+    if (!target) {
+      note(t('terminal.errNoContainerSelected'), 'err');
+      return;
+    }
+    if (sendCommand(`${dockerExe()} exec -it ${target} sh`)) setLogMenu(false);
   };
 
   const runItem = (lp: { label: string; path: string }) => {
+    if (src() === 'docker' && !dockerContainer.trim()) {
+      note(t('terminal.errNoContainerSelected'), 'err');
+      return;
+    }
     if (sendCommand(isFolder(lp) ? listCommand(lp.path) : tailCommand(lp.path))) setLogMenu(false);
   };
 
@@ -467,32 +588,22 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
   return (
     <div
+      className={`tp-panel ${floating && !maximized ? 'floating-panel' : ''}`}
       style={{
         ...rootStyle,
-        background: '#1c1c1e',
-        border: floating && !maximized ? '1px solid var(--win-border, #383b44)' : 'none',
-        borderRadius: floating && !maximized ? '8px' : 0,
-        boxShadow: floating && !maximized ? '0 12px 48px rgba(0,0,0,0.5)' : 'none',
-        flexDirection: 'column',
-        // floating is always visible (flex); docked only while its tab is active
         display: floating ? 'flex' : (active ? 'flex' : 'none'),
       }}
     >
       <div
+        className={`tp-header ${floating ? 'floating-header' : ''}`}
         onMouseDown={startDrag}
-        style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '6px 10px', background: '#26272b',
-          borderBottom: '1px solid #383b44', flexShrink: 0,
-          cursor: floating ? 'move' : 'default', userSelect: 'none',
-        }}
       >
         {/* The heading: adds a session light (green = running, red = closed) and puts the name and
             address on two rows, so a narrow window is not cramped. */}
         <div className="tp-title">
-          <TerminalSquare size={15} style={{ flexShrink: 0, opacity: 0.8 }} />
+          <TerminalSquare size={15} className="tp-title-icon" />
           <span className={`tp-dot ${alive ? 'on' : 'off'}`} title={alive ? t('terminal.sessionAlive') : t('terminal.sessionDead')} />
-          <div style={{ minWidth: 0 }}>
+          <div>
             <div className="tp-title-main">{title}{profileName ? ` — ${profileName}` : ''}</div>
             <div className="tp-title-sub">{subtitle}</div>
           </div>
@@ -515,17 +626,16 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               title={t('terminal.runSqlTitle')}
             >
               <Play size={12} />
-              <span>SQL</span>
+              <span>{t('terminal.sqlBtn')}</span>
             </button>
           )}
 
           {/* Enabling logging (MySQL/Postgres only) */}
           {config.type !== 'sqlite' && (
-            <div style={{ position: 'relative' }}>
+            <div className="tp-dropdown-wrap">
               <button
                 className="tp-btn"
                 onClick={() => { setSetupMenu(m => !m); setLogMenu(false); }}
-                style={{ padding: '2px 6px', display: 'flex', alignItems: 'center', gap: '4px' }}
                 title={t('terminal.setupLogTitle')}
               >
                 <ScrollText size={13} />
@@ -533,19 +643,18 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               </button>
               {setupMenu && (
                 <>
-                  <div style={{ position: 'fixed', inset: 0, zIndex: 998 }} onClick={() => setSetupMenu(false)} />
-                  <div className="tp-menu" style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, minWidth: '280px', zIndex: 999, padding: '5px', fontSize: '11px' }}>
+                  <div className="tp-backdrop" onClick={() => setSetupMenu(false)} />
+                  <div className="tp-menu tp-setup-menu">
                     {setupItems.map((it, i) => (
                       <button
                         key={i}
-                        className="context-menu-item"
+                        className={`context-menu-item tp-menu-item ${it.danger ? 'danger' : ''}`}
                         onClick={it.onClick}
-                        style={{ display: 'flex', alignItems: 'center', width: '100%', padding: '6px 8px', background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', color: it.danger ? '#ef4444' : 'var(--win-text-primary)' }}
                       >
                         {it.label}
                       </button>
                     ))}
-                    <div style={{ padding: '6px 8px', color: 'var(--win-text-disabled)', lineHeight: 1.35, borderTop: '1px solid var(--win-border)' }}>
+                    <div className="tp-menu-note">
                       {t('terminal.setupLogNote')}
                     </div>
                   </div>
@@ -554,11 +663,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
             </div>
           )}
           {/* scan log */}
-          <div style={{ position: 'relative' }}>
+          <div className="tp-dropdown-wrap">
             <button
               className="tp-btn"
               onClick={handleDetectLog}
-              style={{ padding: '2px 6px', display: 'flex', alignItems: 'center', gap: '4px' }}
               title={t('terminal.findLogsTitle')}
             >
               <FileSearch size={13} />
@@ -566,18 +674,17 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
             </button>
             {logMenu && (
               <>
-                <div style={{ position: 'fixed', inset: 0, zIndex: 998 }} onClick={() => setLogMenu(false)} />
-                <div className="tp-menu" style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, width: '360px', maxWidth: '80vw', zIndex: 999, overflow: 'hidden', fontSize: '11px' }}>
+                <div className="tp-backdrop" onClick={() => setLogMenu(false)} />
+                <div className="tp-menu tp-log-menu">
                   {/* The log source: Local / SSH (VM) / Docker */}
-                  <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--win-border)' }}>
-                    <div style={{ color: 'var(--win-text-secondary)', fontWeight: 600, marginBottom: '6px' }}>{t('terminal.logSource')}</div>
-                    <div style={{ display: 'flex', gap: '4px', marginBottom: '6px' }}>
+                  <div className="tp-log-source-box">
+                    <div className="tp-log-source-label">{t('terminal.logSource')}</div>
+                    <div className="tp-log-source-btns">
                       {(['local', 'ssh', 'docker'] as const).map(m => (
                         <button
                           key={m}
                           onClick={() => setLogSource(m)}
-                          className={`tp-btn ${logSource === m ? 'on' : ''}`}
-                          style={{ flex: 1, justifyContent: 'center' }}
+                          className={`tp-btn tp-btn-flex ${logSource === m ? 'on' : ''}`}
                         >
                           {m === 'local' ? 'Local' : m === 'ssh' ? 'SSH (VM)' : 'Docker'}
                         </button>
@@ -587,21 +694,112 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                       <input
                         value={sshTarget}
                         onChange={(e) => setSshTarget(e.target.value)}
-                        placeholder="vd: dev@localhost -p 2222"
-                        style={{ width: '100%', padding: '4px 6px', fontSize: '11px', background: 'var(--win-bg-input, #1c1c1e)', color: 'var(--win-text-primary)', border: '1px solid var(--win-border)', borderRadius: '4px', outline: 'none', boxSizing: 'border-box' }}
+                        placeholder={t('terminal.sshPlaceholder')}
+                        className="tp-ssh-input"
                       />
                     )}
                     {logSource === 'docker' && (
-                      <div style={{ display: 'flex', gap: '4px' }}>
-                        <input
-                          value={dockerContainer}
-                          onChange={(e) => setDockerContainer(e.target.value)}
-                          placeholder={t('terminal.dockerContainerPlaceholder')}
-                          style={{ flex: 1, padding: '4px 6px', fontSize: '11px', background: 'var(--win-bg-input, #1c1c1e)', color: 'var(--win-text-primary)', border: '1px solid var(--win-border)', borderRadius: '4px', outline: 'none', boxSizing: 'border-box' }}
-                        />
-                        <button className="tp-btn" onClick={dockerLogs} disabled={!dockerContainer.trim()} style={{ padding: '2px 8px', whiteSpace: 'nowrap' }} title="docker logs -f (log ra stdout)">
-                          logs -f
-                        </button>
+                      <div className="tp-docker-box">
+                        <div className="tp-docker-header">
+                          <span
+                            className="tp-docker-badge"
+                            title={dockerBinary || undefined}
+                          >
+                            {t('terminal.dockerCliLabel', { cli: dockerCli })}
+                          </span>
+                          <button
+                            type="button"
+                            className="tp-docker-btn"
+                            onClick={() => void scanDocker()}
+                            disabled={scanningContainers}
+                            title={t('terminal.dockerScan')}
+                          >
+                            <RefreshCw size={11} className={scanningContainers ? 'tp-spin' : ''} />
+                            <span>{scanningContainers ? t('terminal.dockerScanning') : t('terminal.dockerScan')}</span>
+                          </button>
+                        </div>
+
+                        {!dockerCustomMode && dockerContainers.length > 0 ? (
+                          <select
+                            className="tp-docker-select"
+                            value={dockerContainer}
+                            onChange={(e) => {
+                              if (e.target.value === '__custom__') {
+                                setDockerCustomMode(true);
+                              } else {
+                                setDockerContainer(e.target.value);
+                              }
+                            }}
+                          >
+                            {dockerContainer && !chosenIsListed && (
+                              <option value={dockerContainer}>
+                                {`${dockerContainer} — ${t('terminal.dockerNotListed')}`}
+                              </option>
+                            )}
+                            {dockerContainers.map((c) => (
+                              <option key={c.id} value={c.name || c.id}>
+                                {c.matched_host_port
+                                  ? `[${t('terminal.dockerMatchedBadge')}] `
+                                  : c.matched_container_port
+                                    ? `[${t('terminal.dockerMatchedImageBadge')}] `
+                                    : ''}
+                                {c.running ? '' : `[${t('terminal.dockerStopped')}] `}
+                                {c.name || c.id} ({c.image})
+                              </option>
+                            ))}
+                            <option value="__custom__">
+                              {`✎ ${t('terminal.dockerCustomInput')}`}
+                            </option>
+                          </select>
+                        ) : (
+                          <div className="tp-docker-custom-row">
+                            <input
+                              type="text"
+                              className="tp-docker-input"
+                              value={dockerContainer}
+                              onChange={(e) => setDockerContainer(e.target.value)}
+                              placeholder={t('terminal.dockerContainerPlaceholder')}
+                            />
+                            {dockerContainers.length > 0 && (
+                              <button
+                                type="button"
+                                className="tp-docker-btn"
+                                onClick={() => setDockerCustomMode(false)}
+                                title={t('terminal.dockerSelectContainer')}
+                              >
+                                📋
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {/* The reason, not just an empty dropdown — see `dockerError`. */}
+                        {dockerScanned && !scanningContainers && dockerError && (
+                          <div className="tp-docker-note">{dockerError}</div>
+                        )}
+
+                        <div className="tp-docker-actions">
+                          <button
+                            type="button"
+                            className="tp-docker-btn primary"
+                            onClick={dockerLogs}
+                            disabled={!dockerContainer.trim()}
+                            title={t('terminal.dockerStreamLogs')}
+                          >
+                            <Play size={11} />
+                            <span>{t('terminal.dockerStreamLogs')}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="tp-docker-btn"
+                            onClick={dockerShell}
+                            disabled={!dockerContainer.trim()}
+                            title={t('terminal.dockerShell')}
+                          >
+                            <TerminalSquare size={11} />
+                            <span>{t('terminal.dockerShell')}</span>
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -617,22 +815,20 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                         return (
                           <div
                             key={i}
-                            className="context-menu-item"
-                            style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '6px 8px', borderRadius: '6px', cursor: 'pointer' }}
+                            className="context-menu-item tp-log-item"
                             onClick={() => runItem(lp)}
                             title={folder ? t('terminal.listInFolder', { path: lp.path }) : t('terminal.tailPath', { path: lp.path })}
                           >
-                            {folder ? <FolderOpen size={14} style={{ flexShrink: 0, color: 'var(--win-text-secondary)' }} /> : <FileSearch size={14} style={{ flexShrink: 0, color: 'var(--win-accent)' }} />}
-                            <div style={{ minWidth: 0, flex: 1 }}>
-                              <div style={{ color: 'var(--win-accent)', fontSize: '10px' }}>
+                            {folder ? <FolderOpen size={14} className="tp-folder-icon" /> : <FileSearch size={14} className="tp-file-icon" />}
+                            <div className="tp-log-item-info">
+                              <div className="tp-log-item-title">
                                 {lp.label}{folder ? t('terminal.folderSuffix') : ''}
                               </div>
-                              <div style={{ color: 'var(--win-text-primary)', wordBreak: 'break-all', lineHeight: 1.3 }}>{lp.path}</div>
+                              <div className="tp-log-item-path">{lp.path}</div>
                             </div>
                             <button
-                              className="tp-btn"
+                              className="tp-btn tp-btn-icon"
                               onClick={(e) => { e.stopPropagation(); copyPath(lp.path); }}
-                              style={{ flexShrink: 0 }}
                               title={t('terminal.copyPath')}
                             >
                               <Copy size={12} />
@@ -663,32 +859,29 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
           {!inOwnWindow && (
             <button
-              className="tp-btn"
+              className="tp-btn tp-btn-icon"
               onClick={() => openTerminalWindow(config, profileName)}
-              style={{ padding: '2px 6px', display: 'flex', alignItems: 'center' }}
               title={t('terminal.openInOwnWindow')}
             >
-              <ExternalLink size={14} />
+              <ExternalLink size={13} />
             </button>
           )}
           {floating && (
             <button
-              className="tp-btn"
+              className="tp-btn tp-btn-icon"
               onClick={() => setMaximized(m => !m)}
-              style={{ padding: '2px 6px', display: 'flex', alignItems: 'center' }}
               title={maximized ? t('terminal.restoreWindow') : t('terminal.fullScreen')}
             >
-              {maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
             </button>
           )}
           {onToggleFloat && (
             <button
-              className="tp-btn"
+              className="tp-btn tp-btn-icon"
               onClick={onToggleFloat}
-              style={{ padding: '2px 6px', display: 'flex', alignItems: 'center' }}
               title={floating ? t('terminal.dockToTab') : t('terminal.popOut')}
             >
-              {floating ? <PanelBottom size={14} /> : <PictureInPicture2 size={14} />}
+              {floating ? <PanelBottom size={13} /> : <PictureInPicture2 size={13} />}
             </button>
           )}
 
@@ -743,7 +936,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
         </div>
       )}
 
-      <div ref={containerRef} style={{ flex: 1, padding: '6px', overflow: 'hidden' }} />
+      <div ref={containerRef} className="tp-body" />
 
       {/* Enable-logging confirmation — the question comes from the menu entry itself
           (one wording per log kind). */}
