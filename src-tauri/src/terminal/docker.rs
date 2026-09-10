@@ -62,6 +62,9 @@ static CLI_CACHE: Mutex<Option<DockerCli>> = Mutex::new(None);
 
 /// Builds a `Command` that opens no console window on Windows.
 fn silent_command(program: &str) -> Command {
+    // The binding is only mutated by the Windows block below, so every other target sees an
+    // `unused_mut` here. Gated rather than blanket-allowed: on Windows the lint still applies.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = Command::new(program);
     #[cfg(windows)]
     {
