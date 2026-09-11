@@ -1,4 +1,15 @@
-# 🚀 TABLEGRID
+
+<p align="center">
+  <img
+    width="256"
+    height="256"
+    alt="image"
+    src="https://github.com/user-attachments/assets/f2093374-71cd-495f-9b58-0c3a39da5292"
+  />
+</p>
+
+<h1 align="center">TABLEGRID</h1>
+
 
 <div align="center">
 
@@ -11,64 +22,74 @@
 
 **A modern, blazingly fast, and elegant database management client & SQL editor for PostgreSQL, MySQL, MariaDB, SQLite, and Redis with built-in MCP Server & AI Copilot.**
 
+<img width="2879" height="1799" alt="image" src="https://github.com/user-attachments/assets/2590e228-fd6a-4a85-8aec-9b8464dcb37c" />
 </div>
 
 ---
 
-**TABLEGRID** is a high-performance, cross-platform desktop application built with **Tauri v2 + Rust** on the backend and **React 19 + TypeScript + Vite + Monaco Editor** on the frontend. It provides a fluid, intuitive, and feature-packed experience designed for developers, data engineers, and database administrators.
+**TABLEGRID** is a fast, cross-platform database workspace built with **Tauri v2 + Rust** and **React 19 + TypeScript**.
+
+It combines database management, Redis tooling, SQL editing, AI assistance, migrations, monitoring, and security in one modern desktop app.
 
 ---
 
 ## ✨ Key Features
 
-### 🗄️ 1. Multi-Database & Redis Support
-- **PostgreSQL**: Native async driver support for advanced data types (`UUID`, `JSONB`, `NUMERIC`, `TIMESTAMPTZ`, Arrays, Composite types).
-- **MySQL & MariaDB**: Native protocol integration for MySQL 8+ and MariaDB (including Sequence management).
-- **SQLite**: Fast local SQLite file inspection, schema editing, and query execution.
-- **Redis Key-Value & Stream Browser**:
-  - Tree and flat key views with prefix filtering, TTL editor, and real-time type inspection (`String`, `Hash`, `List`, `Set`, `ZSet`, `Stream`).
-  - **Redis CLI Console**: Embedded interactive command console with syntax highlighting and auto-completion.
-  - **Redis Stream Panel**: Field/Value inspector with range loading and live entries.
-  - **SlowLog & Metrics Dashboard**: Server latency monitor, `INFO` statistics, and client transfer tools.
-  - Database index switching (`db0` – `db15`).
+### 🗄️ Multi-Database & Redis
 
-### 🤖 2. Embedded Model Context Protocol (MCP) Server
-- **Built-in Local MCP Server**: Exposes database metadata, schema catalogs, and safe read queries to external AI clients (Claude Desktop, Cursor, Windsurf, Antigravity).
-- **Enterprise Security**: Constant-time SHA-256 Bearer Token verification and strict HTTP Origin/Host filtering against DNS rebinding.
+* PostgreSQL, MySQL, MariaDB, SQLite, and Redis.
+* Redis key browser, CLI console, Streams, SlowLog, metrics, TTL editing, and DB switching.
 
-### 🧠 3. AI Assistant & SQL Copilot
-- **Multi-Provider AI Integration**: Direct support for **Ollama** (Local LLMs), **Google Gemini**, **OpenAI**, **Anthropic Claude**, and **OpenRouter**.
-- **Context-Aware SQL Generation**: Automatically injects current database schema and active table structures into the prompt context for accurate query generation.
-- **Live Streaming & 1-Click Execution**: Real-time markdown chat streaming with instant "Run in Editor" or "Insert into Script" actions.
+### 🤖 Built-In MCP Server
 
-### 📝 4. Monaco SQL Editor Engine
-- **Schema-Aware Autocomplete**: Context-aware completion for table names, columns, SQL keywords, and stored functions.
-- **Query Parameters Modal**: Automatically detects `:param`, `$1`, and `?` placeholders and prompts with typed input dialogs.
-- **Visual Split Views**: Single pane, Vertical split, or Horizontal split with drag-to-resize.
-- **1-Click SQL Formatting**: Built-in Beautify and Minify formatters.
+* Expose database schema and safe read queries to AI clients such as Claude Desktop, Cursor, Windsurf, and Antigravity.
+* Secure Bearer Token authentication and Origin/Host validation.
 
-### 📊 5. Visual EXPLAIN & Plan Analyzer
-- **Plan Diagram Flowchart**: Interactive visual node flowchart with color-coded cost severity (*Green / Amber / Red*).
-- **Tree & Raw Views**: Expandable/collapsible hierarchy showing node cost, startup cost, estimated rows, and index conditions.
-- **Multiple Modes**: Supports `EXPLAIN (Estimated)`, `EXPLAIN ANALYZE (Actual Execution)`, and `JSON` format inspection.
+### 🧠 AI SQL Copilot
 
-### ⚡ 6. Data Management, Migration & Comparison
-- **High-Performance Data Grid**: Virtualized row rendering, inline cell editing, sorting, column filters, and smart pagination.
-- **Data Generator (Mocking)**: Generates realistic mock data (Names, Emails, Dates, Regex patterns, Foreign Key constraints).
-- **Database Compare & Sync**: Visual structure and data comparison between two databases with auto-generated sync DDL/DML scripts.
-- **Schema Migration**: Create snapshot checkpoints, track structural changes, and export migration scripts.
-- **Dump Backup & Restore**: Full database backup and restore supporting compressed `.sql.gz` files.
+* Supports **Ollama, Gemini, OpenAI, Claude, and OpenRouter**.
+* Schema-aware SQL generation with streaming responses and one-click execution.
 
-### 🔒 7. Enterprise Security & Transaction Controls
-- **Transaction Isolation Panel**: Switch isolation levels (`Read Committed`, `Repeatable Read`, `Serializable`) with live elapsed time tracking and uncommitted close protection.
-- **Safe Mode**: Read-Only lock mode to prevent accidental mutations on Production databases.
-- **OS Keyring Integration**: Credentials safely encrypted in Windows Credential Manager, macOS Keychain, or Linux Secret Service.
-- **SSH Tunneling (Russh)**: Connect to private databases via bastion hosts with pure-Rust SSH port forwarding.
+### 📝 Monaco SQL Editor
 
-### 🎨 8. Liquid Glass Design & Internationalization
-- **Liquid Glass Theme**: Modern UI aesthetics inspired by macOS Sequoia and VisionOS with Dark and Light mode support.
-- **Multi-Language (i18n)**: English and Vietnamese language support with instant switching.
-- **Multi-Connection Rail (DbRail)**: Sidebar rail for managing multiple open connections concurrently with environment color tags.
+* Schema-aware autocomplete.
+* Query parameter detection.
+* Split editor views.
+* SQL Beautify & Minify.
+
+### 📊 Visual EXPLAIN
+
+* Interactive query plan flowcharts.
+* Cost highlighting, Tree View, Raw View, and `EXPLAIN ANALYZE`.
+
+### ⚡ Data Tools
+
+* Virtualized data grid with inline editing, filtering, sorting, and pagination.
+* Mock data generator.
+* Database Compare & Sync.
+* Schema migrations.
+* Backup & Restore with `.sql.gz`.
+
+### 🔒 Security & Transactions
+
+* Read-Only Safe Mode.
+* Transaction isolation controls.
+* OS Keyring credential storage.
+* SSH tunneling with pure-Rust `russh`.
+
+### 🎨 Modern UI
+
+* Liquid Glass-inspired Dark & Light themes.
+* English & Vietnamese.
+* Multi-connection DbRail with environment color tags.
+
+---
+
+**Database Client · Redis Browser · SQL IDE · AI Copilot · MCP Server · Query Analyzer · Migration Tool**
+
+All in one fast, native desktop app.
+
+
 
 ---
 
