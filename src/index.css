@@ -149,12 +149,32 @@
   --win-status-deleted-border: #ef4444;
 }
 
+/* The window material is frosted ONCE, on `body`, and everything above it only tints.
+ *
+ * `backdrop-filter` makes the compositor keep a snapshot texture of everything behind the
+ * element, *per element*. Measured on this app with one ER tab open, killing every
+ * `backdrop-filter` from the console dropped the WebView2 GPU process from 449.9MB to 350.9MB
+ * — **~99MB**, and that is a floor, because DevTools was open (and costs GPU) in the second
+ * reading. For comparison the whole ER card bitmap cache is capped at 64MB.
+ *
+ * `body` has to keep it. Every `--win-bg-*` token is an `rgba()` at 0.70-0.88 and the WebView is
+ * transparent over the window material Tauri installs (`app/setup.rs`), so this blur is not
+ * decoration: it is the only thing frosting what sits behind the window. Removing it does not
+ * flatten the look, it makes the app SEE-THROUGH — the desktop behind it reads sharply through
+ * the sidebar. That was tried, and that is what happened.
+ *
+ * `.sidebar`, `.tab-bar`, `.card` and `.connection-card` had their own copies, and those are the
+ * ~99MB: they stack on top of a `body` that has already frosted the same backdrop, so each was
+ * keeping a second snapshot texture to blur an image that was blurred a moment earlier. They
+ * still carry their translucent `--win-bg-*` fill, so they still tint — the material underneath
+ * is simply `body`'s rather than their own. `.cm-side`/`.cm-main`/… further down this file were
+ * cleaned up for the same reason already.
+ *
+ * What else keeps a blur is everything that floats over real page content — modals, dropdowns,
+ * popovers, context menus. There the backdrop genuinely differs from `body`'s.
+ */
 body,
-.sidebar,
-.tab-bar,
 .modal-content,
-.card,
-.connection-card,
 .title-bar-dropdown {
   backdrop-filter: blur(40px) saturate(210%);
   -webkit-backdrop-filter: blur(40px) saturate(210%);
