@@ -100,16 +100,6 @@ const ObjectName: React.FC<{ name: string }> = ({ name }) => {
  * border and shadow — outside the scope of this change.
  */
 
-const CHEVRON_STYLE: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  width: '14px',
-  height: '14px',
-  cursor: 'pointer',
-  opacity: 0.8,
-};
-const NAME_STYLE: React.CSSProperties = { fontWeight: 400, flex: 1, minWidth: 0 };
 
 /**
  * How many rows of a block are rendered before the user scrolls.
@@ -179,98 +169,6 @@ function useChunkedList<T>(items: T[], minCount: number) {
  * NUL, so `tables\0a b` can never collide with anything.
  */
 const rowKey = (section: ObjectSection, name: string) => `${section}${String.fromCharCode(0)}${name}`;
-const COLS_WRAP_STYLE: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  paddingLeft: '14px',
-  margin: '2px 0 4px',
-};
-/** Header row of a group node (Fields / Indexes / Foreign Keys / Checks / Triggers). */
-const GROUP_ROW_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: '6px',
-  padding: '2px 6px',
-  fontSize: '11.5px',
-  fontWeight: 500,
-  borderRadius: '4px',
-  cursor: 'pointer',
-  color: 'var(--win-text-secondary)',
-};
-/** Members of a group sit one level deeper than their header. */
-const GROUP_ITEMS_STYLE: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  paddingLeft: '14px',
-};
-/** Box listing object names in the Truncate/Drop dialogs. Those two dialogs used to name no
- *  table at all — with a multi-selection that is information the user must have. */
-const NAME_LIST_LABEL_STYLE: React.CSSProperties = {
-  fontSize: '12px',
-  fontWeight: 500,
-  color: 'var(--win-text-primary)',
-  marginBottom: '6px',
-};
-const NAME_LIST_BOX_STYLE: React.CSSProperties = {
-  maxHeight: '140px',
-  overflowY: 'auto',
-  padding: '8px 10px',
-  borderRadius: '6px',
-  border: '1px solid var(--win-border)',
-  background: 'var(--win-bg-hover)',
-  fontFamily: 'var(--win-font-mono)',
-  fontSize: '11.5px',
-  lineHeight: 1.6,
-  whiteSpace: 'pre-line',
-  color: 'var(--win-text-primary)',
-};
-const GROUP_COUNT_STYLE: React.CSSProperties = {
-  fontSize: '10px',
-  color: 'var(--win-text-disabled)',
-  flexShrink: 0,
-};
-const COLS_HINT_STYLE: React.CSSProperties = {
-  fontSize: '10.5px',
-  color: 'var(--win-text-disabled)',
-  padding: '2px 6px',
-};
-const COL_ROW_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  padding: '2px 6px',
-  fontSize: '11.5px',
-  borderRadius: '4px',
-  color: 'var(--win-text-primary)',
-};
-const COL_LEFT_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: '6px',
-  minWidth: 0,
-  flex: 1,
-};
-const COL_KEY_SLOT_STYLE: React.CSSProperties = {
-  width: '12px',
-  display: 'inline-flex',
-  justifyContent: 'center',
-  flexShrink: 0,
-};
-const COL_KEY_ICON_STYLE: React.CSSProperties = { flexShrink: 0 };
-const COL_KEY_SPACER_STYLE: React.CSSProperties = { width: '11px' };
-const COL_NAME_STYLE: React.CSSProperties = {
-  fontFamily: 'var(--win-font-mono)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-};
-const COL_TYPE_STYLE: React.CSSProperties = {
-  fontFamily: 'var(--win-font-mono)',
-  fontSize: '10.5px',
-  color: 'var(--win-text-disabled)',
-  marginLeft: '8px',
-  flexShrink: 0,
-};
 
 /**
  * The four segmented tabs at the top of the sidebar. The constant table holds translation KEYS, not
@@ -298,11 +196,11 @@ interface GroupNodeProps {
 /** Header of one group inside an expanded table. The members are rendered by the
  *  caller (only when open) so a closed group costs nothing to build. */
 const GroupNode: React.FC<GroupNodeProps> = ({ open, icon, label, count, onToggle }) => (
-  <div style={GROUP_ROW_STYLE} onClick={onToggle} title={label}>
-    <span style={CHEVRON_STYLE}>{open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}</span>
+  <div className="sb-group-row" onClick={onToggle} title={label}>
+    <span className="sb-chevron">{open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}</span>
     {icon}
-    <span style={NAME_STYLE}>{label}</span>
-    {count !== undefined && <span style={GROUP_COUNT_STYLE}>{count}</span>}
+    <span className="sb-group-label">{label}</span>
+    {count !== undefined && <span className="sb-group-count">{count}</span>}
   </div>
 );
 
@@ -345,16 +243,16 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
     }
   };
 
-  const emptyHint = <div style={COLS_HINT_STYLE}>{t('sidebar.groupEmpty')}</div>;
-  const loadingHint = <div style={COLS_HINT_STYLE}>{t('sidebar.groupLoading')}</div>;
+  const emptyHint = <div className="sb-cols-hint">{t('sidebar.groupEmpty')}</div>;
+  const loadingHint = <div className="sb-cols-hint">{t('sidebar.groupLoading')}</div>;
 
   const detailRow = (key: string, icon: React.ReactNode, name: string, meta: string, title: string) => (
-    <div key={key} style={COL_ROW_STYLE} title={title}>
-      <div style={COL_LEFT_STYLE}>
-        <span style={COL_KEY_SLOT_STYLE}>{icon}</span>
-        <span style={COL_NAME_STYLE}>{name}</span>
+    <div key={key} className="sb-col-row" title={title}>
+      <div className="sb-col-left">
+        <span className="sb-col-key">{icon}</span>
+        <span className="sb-col-name">{name}</span>
       </div>
-      {meta && <span style={COL_TYPE_STYLE}>{meta}</span>}
+      {meta && <span className="sb-col-type">{meta}</span>}
     </div>
   );
 
@@ -368,27 +266,27 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
         onToggle={() => toggle('fields')}
       />
       {open.fields && (
-        <div style={GROUP_ITEMS_STYLE}>
+        <div className="sb-group-items">
           {schema.columns.length === 0
-            ? <div style={COLS_HINT_STYLE}>{t('sidebar.noColumns')}</div>
+            ? <div className="sb-cols-hint">{t('sidebar.noColumns')}</div>
             : schema.columns.map((col) => (
               <div
                 key={col.name}
-                style={COL_ROW_STYLE}
+                className="sb-col-row"
                 title={`${col.name} (${col.type}) ${col.isPrimaryKey ? '[PK]' : ''}`}
               >
-                <div style={COL_LEFT_STYLE}>
-                  <span style={COL_KEY_SLOT_STYLE}>
+                <div className="sb-col-left">
+                  <span className="sb-col-key">
                     {col.isPrimaryKey ? (
-                      <Key size={11} color="#f59e0b" style={COL_KEY_ICON_STYLE} />
+                      <Key size={11} color="#f59e0b" className="sb-col-key-icon" />
                     ) : (
-                      <span style={COL_KEY_SPACER_STYLE} />
+                      <span className="sb-col-key-spacer" />
                     )}
                   </span>
-                  <span style={COL_NAME_STYLE}>{col.name}</span>
+                  <span className="sb-col-name">{col.name}</span>
                 </div>
 
-                <span style={COL_TYPE_STYLE}>{col.type}</span>
+                <span className="sb-col-type">{col.type}</span>
               </div>
             ))}
         </div>
@@ -402,12 +300,12 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
         onToggle={() => toggle('indexes')}
       />
       {open.indexes && (
-        <div style={GROUP_ITEMS_STYLE}>
+        <div className="sb-group-items">
           {schema.indexes.length === 0
             ? emptyHint
             : schema.indexes.map((idx) => detailRow(
               idx.name,
-              <ArrowDownAZ size={11} style={COL_KEY_ICON_STYLE} />,
+              <ArrowDownAZ size={11} className="sb-col-key-icon" />,
               idx.name,
               idx.columns,
               `${idx.name} (${idx.columns})${idx.unique ? ' [UNIQUE]' : ''}`,
@@ -423,12 +321,12 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
         onToggle={() => toggle('fks')}
       />
       {open.fks && (
-        <div style={GROUP_ITEMS_STYLE}>
+        <div className="sb-group-items">
           {schema.foreignKeys.length === 0
             ? emptyHint
             : schema.foreignKeys.map((fk, i) => detailRow(
               `${fk.name || fk.column}_${i}`,
-              <Link2 size={11} style={COL_KEY_ICON_STYLE} />,
+              <Link2 size={11} className="sb-col-key-icon" />,
               fk.name || fk.column,
               `${fk.refTable}.${fk.refColumn}`,
               `${fk.column} -> ${fk.refTable}.${fk.refColumn}`,
@@ -444,14 +342,14 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
         onToggle={() => toggle('checks')}
       />
       {open.checks && (
-        <div style={GROUP_ITEMS_STYLE}>
+        <div className="sb-group-items">
           {loadingExtra.checks || checks === null
             ? loadingHint
             : checks.length === 0
               ? emptyHint
               : checks.map((c, i) => detailRow(
                 `${c.name}_${i}`,
-                <CheckCircle2 size={11} color="#22c55e" style={COL_KEY_ICON_STYLE} />,
+                <CheckCircle2 size={11} color="#22c55e" className="sb-col-key-icon" />,
                 c.name,
                 c.expression,
                 `${c.name}: ${c.expression}`,
@@ -467,14 +365,14 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
         onToggle={() => toggle('triggers')}
       />
       {open.triggers && (
-        <div style={GROUP_ITEMS_STYLE}>
+        <div className="sb-group-items">
           {loadingExtra.triggers || triggers === null
             ? loadingHint
             : triggers.length === 0
               ? emptyHint
               : triggers.map((tr, i) => detailRow(
                 `${tr.name}_${i}`,
-                <Zap size={11} color="#f59e0b" style={COL_KEY_ICON_STYLE} />,
+                <Zap size={11} color="#f59e0b" className="sb-col-key-icon" />,
                 tr.name,
                 `${tr.timing} ${tr.event}`.trim(),
                 `${tr.name} (${tr.timing} ${tr.event})`,
@@ -580,7 +478,7 @@ const ObjectItem = memo(function ObjectItem({
         title={t('sidebar.tableItemHint', { name: item.name })}
       >
         {!isView && (
-          <span onClick={(e) => onToggleExpand(item.name, isExpanded, e, item.schema)} style={CHEVRON_STYLE}>
+          <span onClick={(e) => onToggleExpand(item.name, isExpanded, e, item.schema)} className="sb-chevron">
             {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
           </span>
         )}
@@ -599,11 +497,11 @@ const ObjectItem = memo(function ObjectItem({
       </div>
 
       {isExpanded && !isView && (
-        <div style={COLS_WRAP_STYLE}>
+        <div className="sb-cols-wrap">
           {isLoadingCols ? (
-            <div style={COLS_HINT_STYLE}>{t('sidebar.loadingColumns')}</div>
+            <div className="sb-cols-hint">{t('sidebar.loadingColumns')}</div>
           ) : !schema ? (
-            <div style={COLS_HINT_STYLE}>{t('sidebar.noColumns')}</div>
+            <div className="sb-cols-hint">{t('sidebar.noColumns')}</div>
           ) : (
             <TableDetailTree connId={connId} tableName={item.name} schema={schema} />
           )}
@@ -2552,7 +2450,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           zIndex: 99999,
           minWidth: '170px',
         };
-        const itemStyle: React.CSSProperties = { padding: '6px 12px', fontSize: '11px', cursor: 'pointer' };
 
         /**
          * Menu for a multi-selection. Only what genuinely runs in bulk: opening a tab,
@@ -2578,8 +2475,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setContextMenu(null);
                   navigator.clipboard?.writeText(names.join(', '));
                 }}
-                style={{ ...itemStyle, color: 'var(--win-text-primary)' }}
-                className="sidebar-context-item"
+                className="sidebar-context-item sb-ctx-item"
               >
                 {t('sidebar.ctxCopyNames')}
               </div>
@@ -2591,8 +2487,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     if (blockedByReadOnly()) return;
                     setTruncateModal({ names, restartIdentity: false, disableFkCheck: false, cascade: false });
                   }}
-                  style={{ ...itemStyle, color: 'var(--st-warn)' }}
-                  className="sidebar-context-item"
+                  className="sidebar-context-item sb-ctx-item warn"
                 >
                   {t('sidebar.ctxTruncateSelected', { n: names.length })}
                 </div>
@@ -2604,8 +2499,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   if (blockedByReadOnly()) return;
                   setDropModal({ names, isView, ignoreFkCheck: false, cascade: false, schema: contextMenu.schema });
                 }}
-                style={{ ...itemStyle, color: 'var(--win-accent)' }}
-                className="sidebar-context-item"
+                className="sidebar-context-item sb-ctx-item accent"
               >
                 {t('sidebar.ctxDropSelected', { n: names.length })}
               </div>
@@ -3080,10 +2974,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <ModalBody style={{ gap: '16px', padding: '16px 20px' }}>
             <div>
-              <div style={NAME_LIST_LABEL_STYLE}>
+              <div className="sb-namelist-label">
                 {t('sidebar.truncateModalObjects', { n: truncateModal.names.length })}
               </div>
-              <div style={NAME_LIST_BOX_STYLE}>{truncateModal.names.join('\n')}</div>
+              <div className="sb-namelist-box">{truncateModal.names.join('\n')}</div>
             </div>
 
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', userSelect: 'none' }}>
@@ -3174,10 +3068,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <ModalBody style={{ gap: '16px', padding: '16px 20px' }}>
             <div>
-              <div style={NAME_LIST_LABEL_STYLE}>
+              <div className="sb-namelist-label">
                 {t('sidebar.dropModalObjects', { n: dropModal.names.length })}
               </div>
-              <div style={NAME_LIST_BOX_STYLE}>{dropModal.names.join('\n')}</div>
+              <div className="sb-namelist-box">{dropModal.names.join('\n')}</div>
             </div>
 
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', userSelect: 'none' }}>

@@ -1992,6 +1992,163 @@ select.form-input {
   font-weight: 600;
 }
 
+/* ---------------------------------------------------------------------------------------
+   The expanded-row detail tree (Fields / Indexes / Foreign Keys / Checks / Triggers), and the
+   name list the Truncate/Drop dialogs show.
+
+   These were sixteen module-level `React.CSSProperties` objects in Sidebar.tsx. Every one was
+   fully static, which is the line CLAUDE.md draws: inline style is for a value the render
+   computes, and a constant is not one. Moving them also drops a `style` attribute from every
+   element of a tree that renders one row per column of an expanded table.
+   --------------------------------------------------------------------------------------- */
+/* Rows of the MULTI-SELECTION context menu.
+ *
+ * A new class rather than declarations added to `.sidebar-context-item`: that class has 17 call
+ * sites across the app and no base rule of its own, each one setting its own geometry inline, so
+ * giving it one here would change all of them. The three tones are modifiers because the colour
+ * is the only thing that varied between the rows — it was a spread over a shared object literal. */
+.sb-ctx-item {
+  padding: 6px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--win-text-primary);
+}
+
+.sb-ctx-item.warn {
+  color: var(--st-warn);
+}
+
+.sb-ctx-item.accent {
+  color: var(--win-accent);
+}
+
+.sb-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.sb-cols-wrap {
+  display: flex;
+  flex-direction: column;
+  padding-left: 14px;
+  margin: 2px 0 4px;
+}
+
+/* Header row of a group node. */
+.sb-group-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--win-text-secondary);
+}
+
+.sb-group-label {
+  font-weight: 400;
+  flex: 1;
+  min-width: 0;
+}
+
+.sb-group-count {
+  font-size: 10px;
+  color: var(--win-text-disabled);
+  flex-shrink: 0;
+}
+
+/* Members of a group sit one level deeper than their header. */
+.sb-group-items {
+  display: flex;
+  flex-direction: column;
+  padding-left: 14px;
+}
+
+.sb-cols-hint {
+  font-size: 10.5px;
+  color: var(--win-text-disabled);
+  padding: 2px 6px;
+}
+
+.sb-col-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px;
+  font-size: 11.5px;
+  border-radius: 4px;
+  color: var(--win-text-primary);
+}
+
+.sb-col-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* A fixed slot so a row with a key icon and one without still line their names up. */
+.sb-col-key {
+  width: 12px;
+  display: inline-flex;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sb-col-key-icon {
+  flex-shrink: 0;
+}
+
+.sb-col-key-spacer {
+  width: 11px;
+}
+
+.sb-col-name {
+  font-family: var(--win-font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-col-type {
+  font-family: var(--win-font-mono);
+  font-size: 10.5px;
+  color: var(--win-text-disabled);
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+/* Box listing object names in the Truncate/Drop dialogs. Those two used to name no table at all —
+   with a multi-selection that is information the user must have. */
+.sb-namelist-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--win-text-primary);
+  margin-bottom: 6px;
+}
+
+.sb-namelist-box {
+  max-height: 140px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-hover);
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-line;
+  color: var(--win-text-primary);
+}
+
 .sidebar-item {
   padding: 6px 8px;
   border-radius: 4px;
