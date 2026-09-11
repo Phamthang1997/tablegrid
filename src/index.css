@@ -17660,372 +17660,30 @@ input.rename-input {
   cursor: grabbing;
 }
 
-/* Hand tool: the node and connector layers stop taking pointer events entirely. That is what
-   removes hover tracking, the accidental table drag AND the hover repaint of every card the
-   pointer crosses while panning — the three things that made panning expensive. */
-.er-diagram-container.tool-hand .er-nodes-layer,
-.er-diagram-container.tool-hand .er-rel-group {
-  pointer-events: none;
-}
-
-.er-canvas-layer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  transform-origin: 0 0;
-}
-
-/* `will-change` asks the compositor to keep a texture for this layer ready. On a diagram a
-   few hundred tables wide that texture is not small, so the promise is made only around the
-   moments it is collected — and it outlives the gesture by about a second, because creating
-   and destroying the layer each cost a full rasterization and wheel gestures come in bursts.
-   See `setMoving` in ERDiagramView.tsx for why this is a separate class from `.gesturing`. */
-.er-diagram-container.compositing .er-canvas-layer {
-  will-change: transform;
-}
-
-/* While a gesture runs, nothing may animate: a 0.15s box-shadow transition on a few hundred
-   cards is a repaint per frame for something nobody can perceive mid-drag. */
-.er-diagram-container.gesturing .er-table-node,
-.er-diagram-container.gesturing .er-column-row,
-.er-diagram-container.gesturing .er-rel-path,
-.er-diagram-container.gesturing .er-rel-socket-source,
-.er-diagram-container.gesturing .er-rel-socket-target {
-  transition: none !important;
-}
-
-.er-nodes-layer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  pointer-events: auto;
-}
-
-/* Table Node Card */
-.er-table-node {
-  position: absolute;
-  top: 0;
-  left: 0;
-  background: var(--win-bg-card);
-  border: 1px solid var(--win-border);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05);
-  font-family: var(--win-font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
-  font-size: 11.5px;
-  color: var(--win-text-primary);
-  display: flex;
-  flex-direction: column;
+/* The collapse chevron is a hit box on the canvas rather than a <button>, so the cursor is the
+   only thing left saying it is clickable. Written by the hover path in ERDiagramView. */
+.er-diagram-container.over-chevron {
   cursor: pointer;
-  transition: box-shadow 0.15s ease, border-color 0.15s ease;
-  overflow: hidden;
-  /* A card never affects the layout or the paint of anything outside itself, and saying so
-     keeps a few hundred of them from invalidating each other. */
-  contain: layout paint;
 }
 
-.er-table-node:hover {
-  border-color: var(--win-accent);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--win-accent);
-  z-index: 10;
-}
+/* The diagram itself: ONE canvas, painted by `erScene.ts`.
 
-.er-table-node.selected {
-  border-color: var(--win-accent);
-  box-shadow: 0 0 0 2px var(--win-accent), 0 8px 24px rgba(59, 130, 246, 0.2);
-  z-index: 20;
-}
+   It takes no pointer events. The container owns every gesture and answers "what is under the
+   cursor" from geometry (`hitTestCards` / `hitTestRelationships`), so the toolbar and the
+   minimap stacked above it keep receiving their clicks the ordinary way.
 
-/* ---------------------------------------------------------------------------------------
-   Focus: the table under the pointer, or the one clicked, plus its FK neighbourhood.
-
-   The dim is expressed as "everything, except what is lit" so that focusing writes classes
-   on the neighbourhood only — a handful of elements — instead of on every mounted card. It
-   used to arrive through React props, which made crossing a card boundary a re-render plus
-   an opacity change on the whole visible set.
-   --------------------------------------------------------------------------------------- */
-.er-diagram-container.focused .er-table-node {
-  opacity: 0.35;
-}
-
-/* A related table: readable, and outlined. The thick ring stays the SELECTED card's alone,
-   below, so a click can be told from its own neighbours. */
-.er-diagram-container.focused .er-table-node.hl {
-  opacity: 1;
-  border-color: var(--win-accent);
-  z-index: 15;
-}
-
-.er-diagram-container.focused .er-table-node.hl.selected {
-  box-shadow: 0 0 0 2px var(--win-accent), 0 8px 24px rgba(59, 130, 246, 0.2);
-  z-index: 20;
-}
-
-.er-diagram-container.focused .er-rel-group {
-  opacity: 0.15;
-}
-
-.er-diagram-container.focused .er-rel-group.hl {
-  opacity: 1;
-}
-
-/* The lit connectors at the lowest level of detail, where the others are one anonymous path
-   that no class can pick out of. Written by applyHighlight, empty the rest of the time.
-
-   `non-scaling-stroke` is what makes it visible at all down there: stroke width is in user
-   units inside a scaled layer, so the 1.5px of the path below renders under a fifth of a device
-   pixel at 0.1 zoom — a haze, which is right for context and useless for "these ones". */
-.er-rel-path.focus {
-  fill: none;
-  stroke: var(--win-accent);
-  stroke-width: 2px;
-  vector-effect: non-scaling-stroke;
-  transition: none;
-  opacity: 1;
-}
-
-/* And the crowd steps back so the accent reads against it. */
-.er-diagram-container.focused .er-rel-path.bare {
-  opacity: 0.12;
-}
-
-.er-node-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  background: var(--win-bg-hover, rgba(0, 0, 0, 0.03));
-  border-bottom: 1px solid var(--win-border);
-  gap: 8px;
-}
-
-.er-node-header.view-header {
-  background: rgba(168, 85, 247, 0.08);
-  border-bottom-color: rgba(168, 85, 247, 0.2);
-}
-
-.er-node-title-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex: 1;
-}
-
-.er-icon-table {
-  color: var(--win-accent);
-  flex-shrink: 0;
-}
-
-.er-icon-view {
-  color: #a855f7;
-  flex-shrink: 0;
-}
-
-.er-node-title {
-  font-weight: 600;
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.er-node-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.er-node-col-count {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--win-text-secondary);
-  background: var(--win-bg-window);
-  border: 1px solid var(--win-border);
-  border-radius: 10px;
-  padding: 1px 6px;
-}
-
-.er-node-collapse-btn {
-  background: transparent;
-  border: none;
-  color: var(--win-text-secondary);
-  cursor: pointer;
-  padding: 2px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.er-node-collapse-btn:hover {
-  color: var(--win-text-primary);
-  background: var(--win-bg-hover);
-}
-
-.er-node-columns {
-  display: flex;
-  flex-direction: column;
-  /* 3+3 = FOOTER_HEIGHT in erLayoutEngine.ts. The node height is now set from that formula,
-     and 4px here would overflow it by 2px and clip the last row. */
-  padding: 3px 0;
-}
-
-.er-column-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 24px;
-  padding: 0 10px;
-  transition: background 0.1s ease;
-  position: relative;
-}
-
-.er-column-row:hover {
-  background: var(--win-bg-hover);
-}
-
-.er-column-row.pk-row {
-  background: rgba(245, 158, 11, 0.05);
-}
-
-.er-column-row.fk-row {
-  background: rgba(59, 130, 246, 0.04);
-}
-
-.er-col-left {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex: 1;
-}
-
-.er-badge-pk {
-  color: #f59e0b;
-  flex-shrink: 0;
-}
-
-.er-badge-fk {
-  color: #3b82f6;
-  flex-shrink: 0;
-}
-
-.er-col-bullet {
-  color: var(--win-text-disabled);
-  font-size: 10px;
-  line-height: 1;
-}
-
-.er-col-name {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--win-text-primary);
-}
-
-.er-col-name.bold {
-  font-weight: 600;
-}
-
-.er-col-right {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  margin-left: 8px;
-}
-
-.er-col-type {
-  font-size: 10.5px;
-  font-family: var(--win-font-mono, monospace);
-  color: var(--win-text-secondary);
-}
-
-.er-col-req-dot {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #ef4444;
-}
-
-.er-col-more {
-  padding: 4px 10px;
-  font-size: 10.5px;
-  font-style: italic;
-  color: var(--win-text-secondary);
-}
-
-/* SVG Connector Lines */
-.er-svg-connectors-layer {
+   There is no transformed layer here any more, and that absence is the point: the viewport
+   lives in the canvas transform, so nothing needs `will-change: transform` and a zoom no
+   longer re-rasterizes a DOM subtree once per frame. The several hundred rules that used to
+   style cards, column rows and connectors are gone with it — a card is drawn by
+   `erCardRenderer.ts` into a bitmap, and its colours come from `erTheme.ts`, which reads the
+   same `--win-*` tokens this file defines. Changing a token still changes the diagram; adding
+   a rule for `.er-table-node` no longer does anything. */
+.er-canvas {
   position: absolute;
   top: 0;
   left: 0;
-  /* Nodes can be dragged to negative coordinates, and the bezier control points reach past the
-     endpoints, so the layer must not clip to its own width/height. */
-  overflow: visible;
-  /* Only the connector groups take pointer events, and only above the lowest LOD. */
   pointer-events: none;
-}
-
-.er-rel-group {
-  cursor: pointer;
-  pointer-events: auto;
-}
-
-.er-rel-hitbox {
-  fill: none;
-  stroke: transparent;
-  stroke-width: 14px;
-}
-
-.er-rel-path {
-  fill: none;
-  stroke: var(--win-text-secondary);
-  stroke-width: 1.5px;
-  transition: stroke 0.15s ease, stroke-width 0.15s ease, opacity 0.2s ease;
-  opacity: 0.6;
-}
-
-/* Only added at the highest level of detail. Dashing forces the rasterizer to flatten the
-   curve and lay out every dash along it, and a 4-and-2 pattern is invisible below ~0.7 zoom
-   anyway — see the `lod` check in ERRelationshipLine.tsx. */
-.er-rel-path.dashed {
-  stroke-dasharray: 4 2;
-}
-
-.er-rel-group:hover .er-rel-path,
-.er-rel-group.hl .er-rel-path {
-  stroke: var(--win-accent);
-  stroke-width: 2.5px;
-  stroke-dasharray: none;
-  opacity: 1;
-  filter: drop-shadow(0 0 3px rgba(59, 130, 246, 0.4));
-}
-
-/* `.hl` and the container-scoped dim above replace what used to be a per-connector prop. */
-.er-rel-group.hl {
-  opacity: 1;
-}
-
-.er-rel-socket-source,
-.er-rel-socket-target {
-  fill: var(--win-bg-card);
-  stroke: var(--win-text-secondary);
-  stroke-width: 1.5px;
-  transition: all 0.15s ease;
-}
-
-.er-rel-group:hover .er-rel-socket-source,
-.er-rel-group:hover .er-rel-socket-target,
-.er-rel-group.hl .er-rel-socket-source,
-.er-rel-group.hl .er-rel-socket-target {
-  fill: var(--win-accent);
-  stroke: #ffffff;
-  stroke-width: 2px;
-  r: 4.5px;
 }
 
 /* Floating Toolbar */
@@ -18372,77 +18030,12 @@ input.rename-input {
 }
 
 /* ---------------------------------------------------------------------------------------
-   Level of detail.
-
-   Chosen from the zoom in `erViewport.ts`, and deliberately only about what is DRAWN: the card
-   keeps the height the layout gave it at every level, so the FK sockets never move.
-   --------------------------------------------------------------------------------------- */
-
-/* `names`: one element per column row, holding its own text. */
-.er-column-row.plain {
-  display: block;
-  padding: 0 10px;
-  font-size: 11px;
-  line-height: 24px;
-  color: var(--win-text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* `blocks`: the body is gone, so the header is the whole card. */
-.er-table-node.lod-blocks .er-node-header {
-  height: 100%;
-  border-bottom: none;
-}
-
-.er-table-node.lod-blocks .er-node-title {
-  font-size: 13px;
-}
-
-/* Below this zoom the shadow is a smear, but it still costs a composite for every visible card.
-   The `:not()` matters: this block sits BELOW `.er-table-node.selected` and the hover rules,
-   which carry their rings in `box-shadow` — dropping the shadow unconditionally would make a
-   selection invisible at exactly the zoom where tables are picked out of the whole map. */
-.er-table-node.lod-blocks {
-  border-radius: 4px;
-  /* Nothing here is legible enough to be worth animating between states. */
-  transition: none;
-}
-
-.er-table-node.lod-blocks:not(.selected):not(.hl) {
-  box-shadow: none;
-}
-
-/* The flattened single path that carries EVERY connector at the lowest level of detail
-   (see buildFlatConnectorPath). Transition-free: there is no state for it to animate. */
-.er-rel-path.bare {
-  fill: none;
-  stroke: var(--win-text-secondary);
-  stroke-width: 1.5px;
-  transition: none;
-  opacity: 0.45;
-}
-
-/* ---------------------------------------------------------------------------------------
-   Lasso (move tool, dragging the empty canvas)
-   --------------------------------------------------------------------------------------- */
-.er-marquee {
-  position: absolute;
-  top: 0;
-  left: 0;
-  pointer-events: none;
-  background: rgba(59, 130, 246, 0.1);
-  /* It lives inside the scaled layer, so the border is divided back out to stay 1px on
-     screen at every zoom. `--er-inv-zoom` is written by `applyTransform`. */
-  border: calc(1px * var(--er-inv-zoom, 1)) solid var(--win-accent);
-  z-index: 30;
-}
-
-/* ---------------------------------------------------------------------------------------
    Tool switch
    --------------------------------------------------------------------------------------- */
 .er-tool-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
 }
 
@@ -18459,6 +18052,38 @@ input.rename-input {
 .er-toolbar-icon-btn:disabled:hover {
   background: transparent;
   color: var(--win-text-secondary);
+}
+
+/* ---------------------------------------------------------------------------------------
+   The tool switch.
+
+   Each button carries its OWN outline instead of the two sharing one `.er-btn-group` box, so
+   the pair reads as part of the same row of controls as `Full` / `Keys only` / `Compact` —
+   every other thing on that toolbar is an individually outlined 26px pill. The active one is
+   outlined in the accent rather than filled solid, matching `.er-toolbar-btn.active`: both are
+   mode switches, so they should say "selected" the same way.
+
+   These three rules MUST stay below `.er-toolbar-icon-btn.active` above. That selector has the
+   same specificity as `.er-tool-btn.active`, so source order is the only thing turning the
+   solid accent fill off — the same trap as `.tp-details .tp-row` in the Properties pane.
+   --------------------------------------------------------------------------------------- */
+.er-tool-btn {
+  width: 26px;
+  background: var(--win-bg-window);
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+}
+
+.er-tool-btn:hover {
+  background: var(--win-bg-hover);
+  border-color: var(--win-accent);
+  color: var(--win-text-primary);
+}
+
+.er-tool-btn.active {
+  background: var(--win-bg-hover);
+  border-color: var(--win-accent);
+  color: var(--win-accent);
 }
 
 /* Loading & Empty States */

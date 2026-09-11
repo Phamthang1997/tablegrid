@@ -2,10 +2,9 @@
  * Viewport math for the ER canvas: zoom clamping, cursor-anchored zoom, world/screen
  * conversion, level-of-detail thresholds and the culling rectangle.
  *
- * Everything here is pure so it can be unit-tested, because the interactive layer above it
- * (`ERDiagramView`) deliberately bypasses React while a gesture is in flight — a bug in this
- * math shows up as content in the wrong place, which is much harder to see in a profiler than
- * a slow render.
+ * Everything here is pure so it can be unit-tested, because the layer above it paints to a
+ * canvas rather than to the DOM — a bug in this math shows up as content in the wrong place,
+ * and there is no element inspector to find it with.
  */
 
 import type { ERLayoutPositions, ERNodePosition, ERViewport } from './erTypes';
@@ -20,30 +19,18 @@ export const ZOOM_MIN = 0.02;
 export const ZOOM_MAX = 3;
 
 /**
- * How much of the diagram is kept mounted outside the visible area, as a fraction of the
- * viewport on EACH side. It is what buys the right to skip React while panning: the live
- * transform can run ahead of the last committed viewport by this much and still find every
- * node it needs already in the DOM.
- *
- * **Per side, so it enters the cost squared** — the mounted area is `(1 + 2 * margin)²`
- * screens. That is what made 0.75 a mistake: 6.25 screens of DOM, which at a third of the
- * way zoomed out covers a whole 300-table diagram, so culling mounted everything and the
- * only thing still saving the frame was the level of detail. 0.25 is 2.25 screens.
- *
- * It has to stay above `needsRecommit`'s drift budget (half of this), which is the distance
- * the live transform is allowed to run before React catches up. Lowering it further trades
- * mounted DOM for more frequent commits; the DOM is the more expensive half, because it is
- * paid on every paint rather than once per commit.
- */
-export const CULL_MARGIN = 0.25;
-
-/**
  * Level of detail, chosen from the zoom alone.
  *
  * The point is not only speed: at 0.3 zoom an 11.5px type name renders at 3.5px, so `full`
- * spends ~10 DOM nodes per column row on something nobody can read. The heights do NOT change
- * between levels — a node keeps the size `calculateNodeDimensions` gave it — so switching
- * level can never move a table or an FK line.
+ * measures and draws two strings per column row for something nobody can read. The heights do
+ * NOT change between levels — a node keeps the size `calculateNodeDimensions` gave it — so
+ * switching level can never move a table or an FK line.
+ *
+ * What a level costs moved when the cards became bitmaps: it is now paid once per card per
+ * raster generation rather than once per frame, so the thresholds are chosen purely for
+ * legibility. `blocks` is the exception that is still about speed — it is the only level that
+ * is NOT cached (see `erCardRenderer`), because it is the one where fit-to-view can put
+ * thousands of cards on screen at once.
  *
  *  - `full`   — everything: icons, column names, types, NOT NULL dots. Starts at the zoom
  *               where the 11.5px type text still renders at 8px, the usual floor for legible
@@ -107,13 +94,18 @@ export function zoomAtPoint(vp: ERViewport, factor: number, px: number, py: numb
 
 /**
  * The world rectangle that is on screen, grown by `margin` viewports on each side.
- * `margin` is what culling renders beyond the visible edge.
+ *
+ * The margin defaults to nothing, and that default is the shape of the renderer: the frame is
+ * redrawn from scratch, so there is no reason to reach past the edge. It was 0.25 viewports
+ * when cards were React components that had to stay mounted while the live transform ran ahead
+ * of the last commit — and it entered the cost SQUARED, since the area is `(1 + 2 * margin)²`
+ * screens.
  */
 export function visibleWorldRect(
   vp: ERViewport,
   width: number,
   height: number,
-  margin: number = CULL_MARGIN
+  margin: number = 0
 ): ERRect {
   const worldW = width / vp.zoom;
   const worldH = height / vp.zoom;
@@ -199,27 +191,28 @@ export function segmentIntersectsRect(
  * Whether a connector between two cards can be seen in `rect`.
  *
  * It tests the LINE, not the bounding box of the two cards. That distinction is the whole
- * point and it was measured: on a 1200-table diagram at 85% zoom, 21 cards are mounted and
+ * point and it was measured: on a 1200-table diagram at 85% zoom, 21 cards are on screen and
  * the box test passed **all 2398** connectors, because a connector between two tables half a
- * diagram apart has a box that overlaps every viewport. Rendering all of them is a few
- * thousand SVG elements for the sake of a handful of visible lines.
+ * diagram apart has a box that overlaps every viewport.
+ *
+ * It is the right test at `blocks` only. See `connectorHasVisibleEnd` below for the one used
+ * at the zoomed-in levels, and why the two differ.
  *
  * Conservative by construction: the drawn curve stays within the centre-to-centre segment
  * grown by half a card plus the bezier reach, so nothing visible is ever culled.
  */
 /**
- * Whether either end of the connector is itself on screen.
+ * Whether either END of the connector is itself on screen.
  *
- * The test used at the zoomed-in levels, where each connector is its own `<g>` with a hitbox, a
- * stroke and (at `full`) markers and socket dots — six elements and two marker instances each.
- * `connectorIntersects` below is geometrically honest but at a couple of thousand tables it
- * still passes several hundred long diagonals whose two ends are both off screen, and such a
- * line carries no information: you cannot see what it joins or follow it anywhere. Measured on a
- * 2500-table diagram at 85% zoom: 42 cards mounted, and the line test passed 600 connectors
- * against this one's few dozen.
+ * The test used at the zoomed-in levels. `connectorIntersects` is geometrically honest and at a
+ * working zoom it keeps far more than is useful: measured on this app's own diagram at zoom
+ * 1.00, **176** connectors passed the segment test against 7 visible cards — meaning ~140 dashed
+ * lines crossing the view with both ends, both sockets and the arrow head off screen. Such a line
+ * says nothing (you cannot see what it joins) and at `full` it costs two socket resolutions, a
+ * curve, two arcs and an arrow head.
  *
- * At `blocks` the whole layer is a single path, so the honest test is used there instead and the
- * long diagonals stay — zoomed out they are the shape of the graph, and they are nearly free.
+ * At `blocks` the honest test is used instead and those diagonals stay, because zoomed out they
+ * ARE the shape of the graph — and at that level a connector is two points in a batched path.
  */
 export function connectorHasVisibleEnd(
   rect: ERRect,
@@ -246,28 +239,6 @@ export function connectorIntersects(
     b.x + b.width / 2,
     b.y + b.height / 2
   );
-}
-
-/**
- * Whether the last committed viewport is too far from the live one to keep reusing its culled
- * set and its LOD level. Panning is allowed to drift up to HALF the cull margin before React is
- * involved at all, which leaves the other half as slack for the frame the re-render takes; zoom
- * is checked as a ratio because a fixed epsilon means something completely different at 0.1
- * than at 2.
- */
-export function needsRecommit(
-  committed: ERViewport,
-  live: ERViewport,
-  width: number,
-  height: number
-): boolean {
-  if (lodForZoom(committed.zoom) !== lodForZoom(live.zoom)) return true;
-  const ratio = live.zoom / committed.zoom;
-  if (ratio > 1.2 || ratio < 1 / 1.2) return true;
-  const driftX = Math.abs(live.x - committed.x) / live.zoom;
-  const driftY = Math.abs(live.y - committed.y) / live.zoom;
-  const budget = CULL_MARGIN / 2;
-  return driftX > (width / live.zoom) * budget || driftY > (height / live.zoom) * budget;
 }
 
 /** Viewport that fits `bounds` into `width`x`height` with `padding` screen pixels of margin. */

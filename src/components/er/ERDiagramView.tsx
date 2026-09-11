@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import type {
   ERTable,
   ERRelationship,
@@ -10,31 +11,29 @@ import type {
   ERViewportListener,
 } from './erTypes';
 import {
-  buildFlatConnectorPath,
   computeAutoLayout,
   calculateNodeDimensions,
-  computeBezierPath,
-  connectorSockets,
+  visibleColumnsOf,
+  HEADER_HEIGHT,
+  ROW_HEIGHT,
 } from './erLayoutEngine';
 import {
-  CULL_MARGIN,
   boundsOf,
   clampZoom,
   fitViewport,
   lerpViewport,
   lodForZoom,
   marqueeHits,
-  needsRecommit,
   rectFromCorners,
-  connectorHasVisibleEnd,
-  connectorIntersects,
-  rectIntersectsNode,
   screenToWorld,
   visibleWorldRect,
   zoomAtPoint,
 } from './erViewport';
-import type { ERLodLevel } from './erViewport';
 import { erLayoutKey, loadSavedLayout, saveCurrentLayout } from './erPersistence';
+import { ERCardCache, chevronHitBox, quantizeRasterScale } from './erCardRenderer';
+import { erPalette, invalidateErPalette } from './erTheme';
+import { drawScene, hitTestCards, hitTestRelationships, resolveRelationships } from './erScene';
+import type { ERResolvedRelationship } from './erScene';
 import {
   exportToMermaid,
   exportToDbml,
@@ -43,8 +42,6 @@ import {
   exportDiagramToPng,
 } from './erExportHelper';
 import { pickSaveFilePath, saveExportFileAtPath } from '../../utils/fileSave';
-import { ERTableNode } from './ERTableNode';
-import { ERRelationshipLine } from './ERRelationshipLine';
 import { ERToolbar } from './ERToolbar';
 import { ERMinimap } from './ERMinimap';
 
@@ -62,19 +59,54 @@ export interface ERDiagramViewProps {
 
 const INITIAL_VIEWPORT: ERViewport = { x: 40, y: 40, zoom: 1 };
 
-/**
- * On the container while anything is selected or hovered: what dims everything not carrying
- * HL_CLASS. Expressed as "everything, except what is lit" so that focusing writes classes on
- * the neighbourhood only, instead of on every mounted card.
- */
-const FOCUSED_CLASS = 'focused';
-const HL_CLASS = 'hl';
-
 const TWEEN_MS = 260;
-/** How long after the last wheel event the viewport is committed to React (LOD + culling). */
+/** How long after the last wheel event the raster scale is allowed to follow the zoom. */
 const WHEEL_SETTLE_MS = 110;
-/** How long the compositor hint outlives the gesture, so bursts share one layer. */
-const COMPOSITING_LINGER_MS = 900;
+
+/**
+ * How many card bitmaps one frame may render.
+ *
+ * Sized so the worst frame stays well inside a 60Hz budget on a slow machine: a card render is
+ * a few hundred microseconds, so 16 of them is a few milliseconds. Anything above the budget is
+ * drawn as a skeleton and finished on the next frame — see `fillBudget` in `erScene`.
+ */
+const CARD_FILL_BUDGET = 16;
+/**
+ * How many times in a row a frame may ask for another one to finish filling cards.
+ *
+ * The budget alone guarantees progress only while the cache can hold what is on screen. If it
+ * ever cannot — a pathological zoom with hundreds of huge cards visible — this stops the
+ * repaint loop from spinning forever, at the cost of leaving a few skeletons until the next
+ * real interaction.
+ */
+const MAX_FILL_PASSES = 8;
+
+/** Pointer slop, in SCREEN pixels, for grabbing a connector. */
+const REL_HIT_SCREEN_TOLERANCE = 7;
+
+/**
+ * Frame timing, behind `window.__erPerfDebug = true` in DevTools.
+ *
+ * Same idea as `window.__sqlCompletionDebug`: the answer to "why does this feel heavy" is a
+ * number, and guessing at it costs more than measuring. Reported once a second as ONE flat
+ * string — DevTools collapses objects behind `Array(4)`, and the fields worth reading are
+ * exactly the ones that get collapsed. Everything here is dead code when the flag is off.
+ */
+const PERF_REPORT_MS = 1000;
+
+interface PerfWindow {
+  __erPerfDebug?: boolean;
+}
+
+interface FrameStats {
+  frames: number;
+  total: number;
+  worst: number;
+  since: number;
+  cards: number;
+  connectors: number;
+  rendered: number;
+}
 
 interface LayoutState {
   /** localStorage identity — a different one means a different diagram. */
@@ -171,6 +203,9 @@ type Gesture =
       startX: number;
       startY: number;
       moved: boolean;
+      /** Positions as they were at pointerdown, so each frame is an absolute offset. */
+      origin: ERLayoutPositions;
+      names: string[];
     }
   | {
       kind: 'marquee';
@@ -189,60 +224,30 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   relationships,
   onOpenTable,
 }) => {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const marqueeRef = useRef<HTMLDivElement>(null);
-  /**
-   * The lit connectors at the lowest level of detail.
-   *
-   * There, every connector is one flattened `<path>` with no identity of its own, so there is
-   * nothing for `applyHighlight` to add a class to — a selected table's foreign keys were
-   * simply lost in the crowd. This second path carries only the focused ones and is written
-   * the same imperative way, so it costs a `setAttribute` rather than a render.
-   */
-  const focusPathRef = useRef<SVGPathElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
-  /**
-   * Marks the window in which the transform is being written continuously — a pointer
-   * gesture, a wheel, or a tween.
-   *
-   * TWO classes, because the two things they carry want different lifetimes.
-   *
-   * `gesturing` is exactly the gesture: it switches off the card transitions and picks the
-   * grabbing cursor, so it has to end when the gesture does.
-   *
-   * `compositing` carries `will-change: transform`, which is what gets the canvas its own
-   * compositor layer — moving it is then a composite instead of a repaint of every card.
-   * Creating and destroying that layer costs a full rasterization each way, and wheel
-   * gestures arrive in bursts, so tying it to the gesture meant paying for a raster per
-   * burst. It lingers instead, long enough for consecutive bursts to share one layer, and
-   * not so long that a diagram-sized texture is held for the life of the tab.
-   */
-  const compositingRef = useRef<number | null>(null);
+  // `t` gets a new identity on every language switch, and the paint path must not depend on
+  // it: the tooltip is the only place the renderer uses a translated string.
+  const tRef = useRef(t);
+  useLayoutEffect(() => {
+    tRef.current = t;
+  }, [t]);
+
+  /** Toggles the grabbing cursor. Nothing else depends on it any more: the old `compositing`
+   *  class carried `will-change: transform` for a layer that no longer exists. */
   const setMoving = useCallback((active: boolean) => {
-    const el = containerRef.current;
-    if (!el) return;
-    el.classList.toggle('gesturing', active);
-    if (compositingRef.current !== null) window.clearTimeout(compositingRef.current);
-    if (active) {
-      el.classList.add('compositing');
-      compositingRef.current = null;
-      return;
-    }
-    compositingRef.current = window.setTimeout(() => {
-      compositingRef.current = null;
-      containerRef.current?.classList.remove('compositing');
-    }, COMPOSITING_LINGER_MS);
+    containerRef.current?.classList.toggle('gesturing', active);
   }, []);
 
   /**
    * The container's position in the window, cached.
    *
-   * `getBoundingClientRect()` forces a synchronous layout, and the frame before it wrote
-   * `style.transform` onto the canvas — so reading it inside a wheel or pointermove handler is
-   * write/read/write/read layout thrashing over a tree of a couple of thousand elements. It was
-   * measured: DevTools flags it as a forced reflow. The rectangle only moves when the window or
-   * the panel does, so it is read once per gesture and once per wheel burst instead.
+   * `getBoundingClientRect()` forces a synchronous layout, so reading it inside a wheel or
+   * pointermove handler is layout thrashing. The rectangle only moves when the window or the
+   * panel does, so it is read once per gesture and once per wheel burst instead.
    */
   const originRef = useRef({ left: 0, top: 0 });
   const refreshOrigin = useCallback(() => {
@@ -261,37 +266,28 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   const [showIsolated, setShowIsolated] = useState(true);
   const [showMinimap, setShowMinimap] = useState(true);
   const [selectedTableIds, setSelectedTableIds] = useState<Set<string>>(() => new Set());
-  // Hover is NOT state. Crossing a card boundary used to re-render the canvas and change the
-  // opacity of every mounted card, with a 0.2s transition — a twelve-frame animation over a
-  // few dozen elements per pointer movement. It is now a handful of classList writes.
+  // Hover is NOT state: it changes on every pointer move across a card boundary, and the whole
+  // picture is repainted from refs anyway.
   const hoveredTableRef = useRef<string | null>(null);
   const hoveredRelRef = useRef<string | null>(null);
-  const litElementsRef = useRef<Element[]>([]);
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
   const [dimensions, setDimensions] = useState({ width: 1200, height: 800 });
 
-  // Mirrors of state that pointer handlers and rAF jobs read. They exist so those callbacks
-  // can stay stable across renders — a new handler identity per render would defeat the memo
-  // on every card. They are filled from a layout effect rather than during render (the
-  // react/refs rule forbids the latter), which still lands before the browser can deliver the
-  // next event.
   const dimensionsRef = useRef({ width: 1200, height: 800 });
   const positionsRef = useRef<ERLayoutPositions>({});
   const selectedRef = useRef<Set<string>>(new Set());
   const toolRef = useRef<ERTool>('select');
+  // Declared up here with the other mirrors because the sync effect below has to ask whether a
+  // drag is in flight before it overwrites `positionsRef`.
+  const gestureRef = useRef<Gesture | null>(null);
 
   // ---------------------------------------------------------------------------------------
   // Viewport
   //
-  // Two copies on purpose. `viewportRef` is the live one: a gesture writes it and pushes the
-  // transform straight onto the DOM node, so panning a 300-table diagram costs one style write
-  // per frame instead of a React render of every card. `viewport` state is a SNAPSHOT, committed
-  // only when the live one has drifted far enough to change what must be mounted (culling) or how
-  // much of each card is drawn (LOD) — see `needsRecommit`.
+  // ONE copy now. The HTML renderer needed a second, committed one to decide what React should
+  // keep mounted; nothing is mounted any more, so a gesture writes this and asks for a frame.
   // ---------------------------------------------------------------------------------------
   const viewportRef = useRef<ERViewport>({ ...INITIAL_VIEWPORT });
-  const committedRef = useRef<ERViewport>({ ...INITIAL_VIEWPORT });
-  const [viewport, setViewport] = useState<ERViewport>(INITIAL_VIEWPORT);
 
   const liveSubsRef = useRef<Set<ERViewportListener>>(new Set());
   const subscribeViewport = useCallback((fn: ERViewportListener) => {
@@ -302,62 +298,143 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     };
   }, []);
 
-  const applyTransform = useCallback(() => {
-    const vp = viewportRef.current;
-    const el = canvasRef.current;
-    if (el) {
-      // Transform only. Nothing else may be written here — a custom property, for instance,
-      // inherits and would invalidate style for every descendant on every frame.
-      el.style.transform = `translate3d(${vp.x}px, ${vp.y}px, 0) scale(${vp.zoom})`;
-    }
-    for (const fn of liveSubsRef.current) fn(vp);
-  }, []);
+  // ---------------------------------------------------------------------------------------
+  // Painting
+  // ---------------------------------------------------------------------------------------
+  const cacheRef = useRef<ERCardCache | null>(null);
+  if (cacheRef.current === null) cacheRef.current = new ERCardCache();
 
-  // Re-assert the live transform after every render: React does not own that style, so any
-  // unrelated re-render (a hover, a selection) would otherwise leave the DOM holding whatever
-  // the last commit wrote and the diagram would jump back mid-pan.
-  useLayoutEffect(() => {
-    applyTransform();
+  const dprRef = useRef(1);
+  /**
+   * The scale card bitmaps are rendered at.
+   *
+   * Deliberately NOT the live zoom: it is re-quantized when a gesture settles, so a wheel burst
+   * re-uses the bitmaps it already has and the cards go slightly soft for a moment rather than
+   * every visible card re-rendering on every frame. This is the single decision that makes
+   * zooming cheap — see the note at the top of `erCardRenderer`.
+   */
+  const rasterScaleRef = useRef(1);
+  const marqueeRef = useRef<{ minX: number; minY: number; maxX: number; maxY: number } | null>(
+    null
+  );
+  const litRef = useRef<{ nodes: Set<string>; rels: Set<string> }>({
+    nodes: new Set(),
+    rels: new Set(),
   });
 
-  const commitViewport = useCallback(() => {
-    committedRef.current = { ...viewportRef.current };
-    setViewport(committedRef.current);
-  }, []);
+  /** Everything the painter reads that lives in React state, mirrored for the frame loop. */
+  const sceneRef = useRef({
+    tables: [] as ERTable[],
+    tableMap: new Map<string, ERTable>(),
+    relationships: [] as ERResolvedRelationship[],
+    detailLevel: 'full' as ERDetailLevel,
+  });
 
-  const maybeCommitViewport = useCallback(() => {
+  const fillPassRef = useRef(0);
+  const perfRef = useRef<FrameStats>({
+    frames: 0,
+    total: 0,
+    worst: 0,
+    since: 0,
+    cards: 0,
+    connectors: 0,
+    rendered: 0,
+  });
+
+  /** Paints one frame. Returns false when cards were left as skeletons — see `CARD_FILL_BUDGET`. */
+  const paint = useCallback((): boolean => {
+    const canvas = canvasRef.current;
+    const ctx = ctxRef.current;
+    if (!canvas || !ctx) return true;
+
+    const measuring = (window as PerfWindow).__erPerfDebug === true;
+    const started = measuring ? performance.now() : 0;
+
+    const scene = sceneRef.current;
     const { width, height } = dimensionsRef.current;
-    if (needsRecommit(committedRef.current, viewportRef.current, width, height)) commitViewport();
-  }, [commitViewport]);
+    const result = drawScene({
+      ctx,
+      dpr: dprRef.current,
+      width,
+      height,
+      viewport: viewportRef.current,
+      tables: scene.tables,
+      tableMap: scene.tableMap,
+      positions: positionsRef.current,
+      relationships: scene.relationships,
+      detailLevel: scene.detailLevel,
+      selected: selectedRef.current,
+      litNodes: litRef.current.nodes,
+      litRels: litRef.current.rels,
+      cache: cacheRef.current!,
+      palette: erPalette(),
+      rasterScale: rasterScaleRef.current,
+      marquee: marqueeRef.current,
+      fillBudget: CARD_FILL_BUDGET,
+    });
 
-  // One rAF slot: a later job replaces the pending one, so a burst of pointermove events
-  // produces exactly one update per frame.
-  const frameRef = useRef<number | null>(null);
-  const jobRef = useRef<(() => void) | null>(null);
-  const runPending = useCallback(() => {
-    const next = jobRef.current;
-    jobRef.current = null;
-    next?.();
+    for (const fn of liveSubsRef.current) fn(viewportRef.current);
+
+    if (measuring) {
+      const elapsed = performance.now() - started;
+      const perf = perfRef.current;
+      if (perf.since === 0) perf.since = started;
+      perf.frames += 1;
+      perf.total += elapsed;
+      perf.worst = Math.max(perf.worst, elapsed);
+      perf.cards = result.cards;
+      perf.connectors = result.connectors;
+      perf.rendered += result.rendered;
+      if (started - perf.since >= PERF_REPORT_MS) {
+        const cache = cacheRef.current!;
+        console.log(
+          `[er-perf] ${perf.frames} frames | avg ${(perf.total / perf.frames).toFixed(2)}ms | ` +
+            `worst ${perf.worst.toFixed(2)}ms | cards ${perf.cards} | ` +
+            `connectors ${perf.connectors} | bitmaps rendered ${perf.rendered} | ` +
+            `cache ${cache.count} cards / ${(cache.byteSize / 1048576).toFixed(1)}MB | ` +
+            `zoom ${viewportRef.current.zoom.toFixed(2)} | raster ${rasterScaleRef.current}`
+        );
+        perf.frames = 0;
+        perf.total = 0;
+        perf.worst = 0;
+        perf.rendered = 0;
+        perf.since = started;
+      }
+    }
+
+    return result.complete;
   }, []);
-  const schedule = useCallback(
-    (job: () => void) => {
-      jobRef.current = job;
+
+  // One rAF slot: a burst of pointermove events produces exactly one frame. The callback is a
+  // NAMED function expression so an incomplete frame can queue the next one itself — that is
+  // the fill budget's other half, and routing it through a ref only to satisfy the closure
+  // would hide it.
+  const frameRef = useRef<number | null>(null);
+  const requestDraw = useCallback(
+    function scheduleFrame(): void {
       if (frameRef.current !== null) return;
       frameRef.current = requestAnimationFrame(() => {
         frameRef.current = null;
-        runPending();
+        if (paint()) {
+          fillPassRef.current = 0;
+          return;
+        }
+        if (fillPassRef.current >= MAX_FILL_PASSES) return;
+        fillPassRef.current += 1;
+        scheduleFrame();
       });
     },
-    [runPending]
+    [paint]
   );
-  /** Runs a queued frame now. The pointer can come up between two frames, and the position
-   *  written to localStorage has to be the one on screen, not the previous frame's. */
+
+  /** Draws now rather than next frame. The pointer can come up between two frames, and what is
+   *  written to localStorage has to be what is on screen. */
   const flush = useCallback(() => {
     if (frameRef.current === null) return;
     cancelAnimationFrame(frameRef.current);
     frameRef.current = null;
-    runPending();
-  }, [runPending]);
+    paint();
+  }, [paint]);
 
   const settleRef = useRef<number | null>(null);
   const scheduleSettle = useCallback(() => {
@@ -365,9 +442,13 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     settleRef.current = window.setTimeout(() => {
       settleRef.current = null;
       setMoving(false);
-      commitViewport();
+      const next = quantizeRasterScale(viewportRef.current.zoom, dprRef.current);
+      if (next !== rasterScaleRef.current) {
+        rasterScaleRef.current = next;
+        requestDraw();
+      }
     }, WHEEL_SETTLE_MS);
-  }, [commitViewport, setMoving]);
+  }, [requestDraw, setMoving]);
 
   const tweenRef = useRef<number | null>(null);
   const cancelTween = useCallback(() => {
@@ -386,23 +467,21 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       const from = { ...viewportRef.current };
       const start = performance.now();
       const step = (now: number) => {
-        const t = Math.min((now - start) / duration, 1);
-        viewportRef.current = lerpViewport(from, target, t);
-        applyTransform();
-        if (t < 1) {
-          maybeCommitViewport();
+        const time = Math.min((now - start) / duration, 1);
+        viewportRef.current = lerpViewport(from, target, time);
+        paint();
+        if (time < 1) {
           tweenRef.current = requestAnimationFrame(step);
         } else {
           tweenRef.current = null;
-          // A pointer gesture that interrupted the tween called `cancelTween` first, so this
-          // branch can only run when nothing else is moving the canvas.
           setMoving(false);
-          commitViewport();
+          rasterScaleRef.current = quantizeRasterScale(viewportRef.current.zoom, dprRef.current);
+          requestDraw();
         }
       };
       tweenRef.current = requestAnimationFrame(step);
     },
-    [applyTransform, cancelTween, commitViewport, maybeCommitViewport, setMoving]
+    [cancelTween, paint, requestDraw, setMoving]
   );
 
   useEffect(
@@ -410,7 +489,6 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
       if (tweenRef.current !== null) cancelAnimationFrame(tweenRef.current);
       if (settleRef.current !== null) window.clearTimeout(settleRef.current);
-      if (compositingRef.current !== null) window.clearTimeout(compositingRef.current);
     },
     []
   );
@@ -439,22 +517,6 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
 
   const positions = layout.positions;
 
-  useLayoutEffect(() => {
-    dimensionsRef.current = dimensions;
-    positionsRef.current = positions;
-    selectedRef.current = selectedTableIds;
-    toolRef.current = effectiveTool;
-  }, [dimensions, positions, selectedTableIds, effectiveTool]);
-
-  // What building the focus path needs. Mirrored rather than closed over, so
-  // `applyHighlight` keeps one identity and the layout effect that calls it needs no deps.
-  const connectorCtxRef = useRef({
-    byId: new Map<string, ERRelationship>(),
-    lod: 'full' as ERLodLevel,
-    detailLevel: 'full' as ERDetailLevel,
-    tables: new Map<string, ERTable>(),
-  });
-
   useEffect(() => {
     if (layout.persist) saveCurrentLayout(layout.key, layout.positions);
   }, [layout]);
@@ -464,7 +526,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   }, []);
 
   // ---------------------------------------------------------------------------------------
-  // Filtering, culling and level of detail
+  // Filtering
   // ---------------------------------------------------------------------------------------
   const visibleTables = useMemo(() => {
     let list = tables;
@@ -485,15 +547,33 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     [visibleTables]
   );
 
+  const tableMap = useMemo(() => {
+    const map = new Map<string, ERTable>();
+    for (const table of visibleTables) map.set(table.name, table);
+    return map;
+  }, [visibleTables]);
+
+  /**
+   * Connectors whose two ends are both in the diagram, with those two tables already looked up.
+   *
+   * Resolved HERE rather than in the frame loop, because the frame loop runs sixty times a
+   * second and this answer only changes when the catalog or a filter does — at 5000 foreign
+   * keys, doing it per frame is 20,000 `Map.get` calls for nothing. Geometric culling stays per
+   * frame, in `drawScene`; this only drops what a filter toggle removed.
+   */
+  const visibleRelationships = useMemo(
+    () => resolveRelationships(relationships, tableMap),
+    [relationships, tableMap]
+  );
+
   /**
    * The positions of the tables actually in the diagram.
    *
    * `positions` holds more than that on purpose: `reconcileLayout` keeps the entry of a table
    * that has vanished from the catalog, so re-adding it later lands it back where the user had
    * put it. But anything that measures the diagram — fit-to-view, the minimap — has to ignore
-   * those, and it did not: a single stale entry far from the rest stretched the bounding box,
-   * and the whole diagram then rendered as a clump in the middle of an enormous empty canvas.
-   * A filter toggle does the same thing, so this is not only about deleted tables.
+   * those, or a single stale entry far from the rest stretches the bounding box and the whole
+   * diagram renders as a clump in the middle of an enormous empty canvas.
    */
   const visiblePositions = useMemo(() => {
     const out: ERLayoutPositions = {};
@@ -503,36 +583,10 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     }
     return out;
   }, [visibleTables, positions]);
-  // Its own effect, because the mirror above is declared before this memo exists.
   const visiblePositionsRef = useRef(visiblePositions);
-  useLayoutEffect(() => {
-    visiblePositionsRef.current = visiblePositions;
-  }, [visiblePositions]);
-
-  const lod = useMemo(() => lodForZoom(viewport.zoom), [viewport.zoom]);
-
-  const cullRect = useMemo(
-    () => visibleWorldRect(viewport, dimensions.width, dimensions.height, CULL_MARGIN),
-    [viewport, dimensions]
-  );
 
   /**
-   * Only the tables near the viewport are mounted. This is what makes panning a large diagram
-   * possible at all: without it every re-render reconciles a few hundred cards and a few
-   * thousand column rows, and with it the DOM holds roughly what fits on screen plus a margin.
-   */
-  const renderedTables = useMemo(
-    () =>
-      visibleTables.filter((table) => {
-        const pos = positions[table.name];
-        return !!pos && rectIntersectsNode(cullRect, pos);
-      }),
-    [visibleTables, positions, cullRect]
-  );
-
-  /**
-   * Neighbours of each table, and the connectors touching it. Feeds both the hover highlight
-   * and the culling exemption below, so it is declared before either.
+   * Neighbours of each table, and the connectors touching it. Feeds the focus highlight.
    */
   const hoverGraph = useMemo(() => {
     const neighbours = new Map<string, Set<string>>();
@@ -551,96 +605,116 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     }
     return { neighbours, rels };
   }, [relationships]);
+  const hoverGraphRef = useRef(hoverGraph);
 
   /**
-   * Connectors that culling may not drop: the ones belonging to a selected table.
+   * Which tables and connectors are lit, from the selection and what the pointer is over.
    *
-   * Selecting a table is a request to hold its relationships still, and culling by geometry
-   * broke exactly that — pan away from the selection and both ends of its connectors leave the
-   * screen, so the lines the user asked to keep were the first thing thrown out. There are only
-   * ever as many as the selection has foreign keys.
-   *
-   * Hover needs no such exemption: while hovering you are pointing at the table, so it is on
-   * screen by definition. It is also not state, so it could not take part in this memo.
+   * Sets rather than DOM classes: the old renderer wrote `hl` onto mounted elements and had to
+   * re-assert it after every commit, because culling remounted cards without it. The painter
+   * reads these two sets and dims everything else with `globalAlpha`.
    */
-  const pinnedRelIds = useMemo(() => {
-    if (selectedTableIds.size === 0) return null;
-    const ids = new Set<string>();
-    for (const name of selectedTableIds) {
-      for (const id of hoverGraph.rels.get(name) ?? []) ids.add(id);
-    }
-    return ids;
-  }, [selectedTableIds, hoverGraph]);
+  const recomputeLit = useCallback(() => {
+    const nodes = new Set<string>();
+    const rels = new Set<string>();
+    const graph = hoverGraphRef.current;
 
-  const renderedRelationships = useMemo(
-    () =>
-      relationships.filter((rel) => {
-        if (!visibleNames.has(rel.sourceTable) || !visibleNames.has(rel.targetTable)) return false;
-        const src = positions[rel.sourceTable];
-        const tgt = positions[rel.targetTable];
-        if (!src || !tgt) return false;
-        if (pinnedRelIds?.has(rel.id)) return true;
-        // Two tests, because the two levels of detail cost completely different things per
-        // connector — see connectorHasVisibleEnd.
-        return lod === 'blocks'
-          ? connectorIntersects(cullRect, src, tgt)
-          : connectorHasVisibleEnd(cullRect, src, tgt);
-      }),
-    [relationships, visibleNames, positions, cullRect, lod, pinnedRelIds]
-  );
-
-  const tableMap = useMemo(() => {
-    const map = new Map<string, ERTable>();
-    for (const table of visibleTables) map.set(table.name, table);
-    return map;
-  }, [visibleTables]);
-
-  /**
-   * At the lowest level of detail every connector collapses into ONE path element.
-   *
-   * This is the case culling cannot touch: fit-to-view on a few hundred tables puts every
-   * card and every connector on screen at once, so the only way to spend less is to draw the
-   * same picture with fewer objects. Nothing is lost — at that zoom a connector cannot be
-   * hovered, highlighted or dimmed on its own.
-   */
-  const flatConnectorPath = useMemo(() => {
-    if (lod !== 'blocks') return '';
-    return buildFlatConnectorPath(renderedRelationships, positions, tableMap, detailLevel);
-  }, [lod, renderedRelationships, positions, tableMap, detailLevel]);
-
-  /**
-   * The connector layer follows the culling rectangle rather than covering the diagram.
-   *
-   * It used to be sized to the whole thing, which on a few hundred tables is an element of
-   * 11000x7000 sitting inside the layer the compositor has to keep a texture for. The
-   * `viewBox` matches the box one-to-one, so the connectors keep their world coordinates and
-   * nothing inside needs translating.
-   *
-   * Snapped to a grid so panning does not change the geometry on every commit, and padded
-   * past the cull rect by more than the bezier reach (`relationshipBox`), so a curve whose
-   * endpoints are just off screen is not clipped at the edge.
-   */
-  const relationshipsById = useMemo(
-    () => new Map(relationships.map((rel) => [rel.id, rel])),
-    [relationships]
-  );
-
-  useLayoutEffect(() => {
-    connectorCtxRef.current = { byId: relationshipsById, lod, detailLevel, tables: tableMap };
-  }, [relationshipsById, lod, detailLevel, tableMap]);
-
-  const connectorBox = useMemo(() => {
-    const SNAP = 512;
-    const PAD = 512;
-    const x = Math.floor((cullRect.minX - PAD) / SNAP) * SNAP;
-    const y = Math.floor((cullRect.minY - PAD) / SNAP) * SNAP;
-    return {
-      x,
-      y,
-      width: Math.ceil((cullRect.maxX + PAD) / SNAP) * SNAP - x,
-      height: Math.ceil((cullRect.maxY + PAD) / SNAP) * SNAP - y,
+    const lightNeighbourhood = (name: string) => {
+      nodes.add(name);
+      for (const other of graph.neighbours.get(name) ?? []) nodes.add(other);
+      for (const relId of graph.rels.get(name) ?? []) rels.add(relId);
     };
-  }, [cullRect]);
+
+    // SELECTION lights the same neighbourhood as hover, and keeps it: the point of clicking a
+    // table is to hold its relationships still while you read them, which hover cannot do. The
+    // two are a union rather than a priority, so hovering around does not throw away the
+    // selection.
+    for (const name of selectedRef.current) lightNeighbourhood(name);
+
+    const hoveredTable = hoveredTableRef.current;
+    const hoveredRel = hoveredRelRef.current;
+    if (hoveredTable !== null) lightNeighbourhood(hoveredTable);
+    else if (hoveredRel !== null) rels.add(hoveredRel);
+
+    litRef.current = { nodes, rels };
+  }, []);
+
+  // Every mirror the frame loop reads, refreshed after each render, then one repaint. This
+  // replaces both of the old "re-assert after every commit" effects (the transform and the
+  // highlight classes) — React owns none of the picture now, so there is one place to sync.
+  useLayoutEffect(() => {
+    dimensionsRef.current = dimensions;
+    // A node drag writes `positionsRef` itself on every frame and only tells React on release,
+    // so a render that lands mid-drag — a selection change, a resize, the parent re-rendering —
+    // must not put the pre-drag positions back under the pointer.
+    if (gestureRef.current?.kind !== 'node') positionsRef.current = positions;
+    selectedRef.current = selectedTableIds;
+    toolRef.current = effectiveTool;
+    visiblePositionsRef.current = visiblePositions;
+    hoverGraphRef.current = hoverGraph;
+    sceneRef.current = {
+      tables: visibleTables,
+      tableMap,
+      relationships: visibleRelationships,
+      detailLevel,
+    };
+    recomputeLit();
+    requestDraw();
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // Canvas sizing, theme and fonts
+  // ---------------------------------------------------------------------------------------
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    dprRef.current = dpr;
+    const pixelWidth = Math.max(1, Math.round(dimensions.width * dpr));
+    const pixelHeight = Math.max(1, Math.round(dimensions.height * dpr));
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+    }
+    if (!ctxRef.current) ctxRef.current = canvas.getContext('2d');
+    rasterScaleRef.current = quantizeRasterScale(viewportRef.current.zoom, dpr);
+  }, [dimensions]);
+
+  /**
+   * A theme switch changes every colour a bitmap was baked with.
+   *
+   * `erPalette()` keys itself on the `data-theme` attribute, so the cache keys change on their
+   * own and the old bitmaps simply stop being asked for — but they still hold their bytes, so
+   * the cache is cleared outright rather than left to be evicted one card at a time.
+   */
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      cacheRef.current?.clear();
+      requestDraw();
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    return () => observer.disconnect();
+  }, [requestDraw]);
+
+  /**
+   * Until the bundled fonts finish loading, `fillText` draws the fallback family — and a card
+   * bitmap baked then would keep those metrics for the life of the tab.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    document.fonts?.ready.then(() => {
+      if (cancelled) return;
+      invalidateErPalette();
+      cacheRef.current?.clear();
+      requestDraw();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [requestDraw]);
 
   // ---------------------------------------------------------------------------------------
   // Viewport commands
@@ -662,10 +736,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       // Named tables come from the selection, so they are real; the "everything" case has to
       // ask the visible set rather than every key the layout happens to remember.
       const spots = visiblePositionsRef.current;
-      const bounds = boundsOf(
-        names ? positionsRef.current : spots,
-        names ?? Object.keys(spots)
-      );
+      const bounds = boundsOf(names ? positionsRef.current : spots, names ?? Object.keys(spots));
       if (!bounds) return;
       animateTo(fitViewport(bounds, width, height, 64, names ? 1.6 : 1.2), duration);
     },
@@ -700,12 +771,8 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
         firstMeasure = false;
         // Opening a few hundred tables at 100% shows three cards in the top-left corner. Fit
         // once, the way every canvas tool does — this moves the viewport, never the nodes, so
-        // a hand-arranged layout is untouched.
-        //
-        // Instant, not eased: the eased version zoomed from 100% out to the fitted zoom, and
-        // on the way it crossed both culling and level-of-detail boundaries, so opening the
-        // tab paid for several whole re-renders at progressively heavier settings. An eased
-        // move helps you keep your place, and on open there is no place to keep.
+        // a hand-arranged layout is untouched. Instant rather than eased: on open there is no
+        // place to keep.
         fitTo(null, 0);
       }
     };
@@ -762,234 +829,132 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   const handleToggleIsolated = useCallback(() => setShowIsolated((prev) => !prev), []);
   const handleToggleMinimap = useCallback(() => setShowMinimap((prev) => !prev), []);
 
-  /**
-   * Lights the selected and hovered tables, their FK neighbours and the connectors between
-   * them, by writing classes onto the DOM. `.focused` on the container is what dims
-   * everything else, so the number of writes is the size of the neighbourhood rather than
-   * the size of the diagram.
-   *
-   * Re-applied after every render as well (the effect right below), because culling mounts
-   * and unmounts cards and a freshly mounted one arrives without the class.
-   */
-  const applyHighlight = useCallback(() => {
-    const container = containerRef.current;
-    if (!container) return;
+  const handleToggleCollapse = useCallback((tableName: string) => {
+    setCollapsedMap((prev) => ({ ...prev, [tableName]: !prev[tableName] }));
+  }, []);
 
-    for (const el of litElementsRef.current) el.classList.remove(HL_CLASS);
-    litElementsRef.current = [];
+  // ---------------------------------------------------------------------------------------
+  // Hit testing
+  //
+  // Geometry against the same numbers the frame was drawn from. The HTML renderer asked
+  // `document.elementFromPoint`, which forces a layout and hit-tests every connector's 14px
+  // hitbox stroke — on every pointer move.
+  // ---------------------------------------------------------------------------------------
+  const worldAt = useCallback((clientX: number, clientY: number) => {
+    const origin = originRef.current;
+    return screenToWorld(viewportRef.current, clientX - origin.left, clientY - origin.top);
+  }, []);
 
-    // Which names to light, then ONE pass over what is mounted. Building
-    // `[data-er-node="…"]` selectors from table and constraint names would have to escape them
-    // first — they are user data, not identifiers — and only saves a walk over a set that
-    // culling already keeps down to what is roughly on screen.
-    const litNodes = new Set<string>();
-    const litRels = new Set<string>();
-
-    const lightNeighbourhood = (name: string) => {
-      litNodes.add(name);
-      for (const other of hoverGraph.neighbours.get(name) ?? []) litNodes.add(other);
-      for (const relId of hoverGraph.rels.get(name) ?? []) litRels.add(relId);
-    };
-
-    // SELECTION lights the same neighbourhood as hover, and keeps it: the point of clicking a
-    // table is to hold its relationships still while you read them, which hover cannot do
-    // because it ends the moment the pointer moves away. The two are a union rather than a
-    // priority, so hovering around does not throw away what is selected.
-    for (const name of selectedRef.current) lightNeighbourhood(name);
-
-    const hoveredTable = hoveredTableRef.current;
-    const hoveredRel = hoveredRelRef.current;
-    if (hoveredTable !== null) lightNeighbourhood(hoveredTable);
-    else if (hoveredRel !== null) litRels.add(hoveredRel);
-
-    const focused = litNodes.size > 0 || litRels.size > 0;
-    container.classList.toggle(FOCUSED_CLASS, focused);
-    if (!focused) {
-      focusPathRef.current?.setAttribute('d', '');
-      return;
-    }
-
-    const lit: Element[] = [];
-    for (const el of container.querySelectorAll<HTMLElement>('[data-er-node]')) {
-      const name = el.dataset.erNode;
-      if (name && litNodes.has(name)) {
-        el.classList.add(HL_CLASS);
-        lit.push(el);
-      }
-    }
-    for (const el of container.querySelectorAll('[data-er-rel]')) {
-      const id = el.getAttribute('data-er-rel');
-      if (id && litRels.has(id)) {
-        el.classList.add(HL_CLASS);
-        lit.push(el);
-      }
-    }
-
-    litElementsRef.current = lit;
-
-    // At `blocks` the classes above found no connector to light, because there is only the
-    // one flattened path. Draw the lit ones again into a path of their own.
-    const focusEl = focusPathRef.current;
-    const ctx = connectorCtxRef.current;
-    if (focusEl && ctx.lod === 'blocks') {
-      const focusRels: ERRelationship[] = [];
-      for (const id of litRels) {
-        const rel = ctx.byId.get(id);
-        if (rel) focusRels.push(rel);
-      }
-      focusEl.setAttribute(
-        'd',
-        buildFlatConnectorPath(focusRels, positionsRef.current, ctx.tables, ctx.detailLevel)
-      );
-    }
-  }, [hoverGraph]);
-
-  // Culling remounts cards as the viewport moves, and React knows nothing about these classes,
-  // so they have to be re-asserted after EVERY commit — hence no dependency array, the same as
-  // the transform effect above. With nothing hovered this returns after one classList.toggle.
-  useLayoutEffect(() => {
-    applyHighlight();
-  });
-
-  /**
-   * Everything a node drag needs, resolved once when the drag starts.
-   *
-   * Dragging was the last path that went through React on every frame: one `setPositions` per
-   * pointer move re-rendered the whole culled set and recomputed every connector, and at the
-   * zooms where a hundred-odd cards are mounted that is the expensive kind of frame. What a drag
-   * actually changes is bounded — the cards under the pointer and the connectors touching them —
-   * so it moves them itself and lets React see the result once, on release.
-   *
-   * Resolving the elements up front is also what keeps the drag consistent: the level of detail
-   * and the connector list cannot change mid-gesture, because nothing commits during one.
-   */
-  interface DragPlan {
-    /** Private mutable copy. Unmoved entries keep their identity, so the memos still bail out. */
-    live: ERLayoutPositions;
-    cards: { name: string; el: HTMLElement; startX: number; startY: number }[];
-    edges: {
-      rel: ERRelationship;
-      sourceTable: ERTable;
-      targetTable: ERTable;
-      hitbox: SVGPathElement | null;
-      path: SVGPathElement | null;
-      sourceDot: SVGCircleElement | null;
-      targetDot: SVGCircleElement | null;
-    }[];
-    /** At the lowest level of detail every connector is one path, rebuilt whole. */
-    flat: { el: SVGPathElement; rels: ERRelationship[] } | null;
-    tables: Map<string, ERTable>;
-    detailLevel: ERDetailLevel;
-  }
-
-  const dragPlanRef = useRef<DragPlan | null>(null);
-
-  const buildDragPlan = useCallback(
-    (names: Set<string>): DragPlan | null => {
-      const container = containerRef.current;
-      if (!container) return null;
-
-      const live: ERLayoutPositions = { ...positionsRef.current };
-      const cards: DragPlan['cards'] = [];
-      for (const el of container.querySelectorAll<HTMLElement>('[data-er-node]')) {
-        const name = el.dataset.erNode;
-        const pos = name ? live[name] : undefined;
-        if (!name || !pos || !names.has(name)) continue;
-        cards.push({ name, el, startX: pos.x, startY: pos.y });
-      }
-
-      const wanted = new Set<string>();
-      for (const name of names) {
-        for (const id of hoverGraph.rels.get(name) ?? []) wanted.add(id);
-      }
-      const byId = new Map(renderedRelationships.map((rel) => [rel.id, rel]));
-
-      const edges: DragPlan['edges'] = [];
-      for (const group of container.querySelectorAll('[data-er-rel]')) {
-        const id = group.getAttribute('data-er-rel');
-        const rel = id ? byId.get(id) : undefined;
-        if (!rel || !wanted.has(rel.id)) continue;
-        const sourceTable = tableMap.get(rel.sourceTable);
-        const targetTable = tableMap.get(rel.targetTable);
-        if (!sourceTable || !targetTable) continue;
-        edges.push({
-          rel,
-          sourceTable,
-          targetTable,
-          hitbox: group.querySelector<SVGPathElement>('.er-rel-hitbox'),
-          path: group.querySelector<SVGPathElement>('.er-rel-path'),
-          sourceDot: group.querySelector<SVGCircleElement>('.er-rel-socket-source'),
-          targetDot: group.querySelector<SVGCircleElement>('.er-rel-socket-target'),
-        });
-      }
-
-      const flatEl = container.querySelector<SVGPathElement>('.er-rel-path.bare');
-      return {
-        live,
-        cards,
-        edges,
-        flat: flatEl ? { el: flatEl, rels: renderedRelationships } : null,
-        tables: tableMap,
-        detailLevel,
-      };
+  const tableAt = useCallback(
+    (clientX: number, clientY: number): string | null => {
+      const world = worldAt(clientX, clientY);
+      return hitTestCards(sceneRef.current.tables, positionsRef.current, world.x, world.y);
     },
-    [detailLevel, hoverGraph, renderedRelationships, tableMap]
+    [worldAt]
   );
 
-  const applyDragFrame = useCallback((dx: number, dy: number) => {
-    const plan = dragPlanRef.current;
-    if (!plan) return;
-
-    for (const card of plan.cards) {
-      const x = Math.round(card.startX + dx);
-      const y = Math.round(card.startY + dy);
-      const pos = plan.live[card.name];
-      if (pos) plan.live[card.name] = { ...pos, x, y };
-      card.el.style.transform = `translate3d(${x}px, ${y}px, 0)`;
-    }
-
-    for (const edge of plan.edges) {
-      const sourcePos = plan.live[edge.rel.sourceTable];
-      const targetPos = plan.live[edge.rel.targetTable];
-      if (!sourcePos || !targetPos) continue;
-      const { source, target } = connectorSockets(
-        edge.rel,
-        edge.sourceTable,
-        edge.targetTable,
-        sourcePos,
-        targetPos,
-        plan.detailLevel
+  /**
+   * Whether a world point lands on a card's collapse chevron.
+   *
+   * The chevron was a real `<button>` in the HTML card, so it came with a cursor and a hover
+   * tint for free. On the canvas it is a box in the header, and the one part of that affordance
+   * worth rebuilding is the cursor — without it a clickable target looks like the rest of the
+   * card.
+   */
+  const chevronAt = useCallback(
+    (clientX: number, clientY: number, tableName: string | null): boolean => {
+      if (!tableName || lodForZoom(viewportRef.current.zoom) === 'blocks') return false;
+      const pos = positionsRef.current[tableName];
+      if (!pos) return false;
+      const world = worldAt(clientX, clientY);
+      const box = chevronHitBox(pos);
+      return (
+        world.x >= box.x &&
+        world.x <= box.x + box.width &&
+        world.y >= box.y &&
+        world.y <= box.y + box.height
       );
-      const d = computeBezierPath(source, target);
-      edge.hitbox?.setAttribute('d', d);
-      edge.path?.setAttribute('d', d);
-      edge.sourceDot?.setAttribute('cx', String(source.x));
-      edge.sourceDot?.setAttribute('cy', String(source.y));
-      edge.targetDot?.setAttribute('cx', String(target.x));
-      edge.targetDot?.setAttribute('cy', String(target.y));
-    }
+    },
+    [worldAt]
+  );
 
-    if (plan.flat) {
-      plan.flat.el.setAttribute(
-        'd',
-        buildFlatConnectorPath(plan.flat.rels, plan.live, plan.tables, plan.detailLevel)
+  const relationshipAt = useCallback(
+    (clientX: number, clientY: number): string | null => {
+      const world = worldAt(clientX, clientY);
+      const scene = sceneRef.current;
+      const { width, height } = dimensionsRef.current;
+      return hitTestRelationships(
+        scene.relationships,
+        positionsRef.current,
+        scene.detailLevel,
+        world.x,
+        world.y,
+        REL_HIT_SCREEN_TOLERANCE / viewportRef.current.zoom,
+        // Culled to the screen, because resolving a connector's sockets is O(columns) — see
+        // the note on `hitTestRelationships`.
+        visibleWorldRect(viewportRef.current, width, height)
       );
-    }
-  }, []);
+    },
+    [worldAt]
+  );
+
+  /**
+   * The `title` the pointer should show.
+   *
+   * The HTML card put a `title` on every row, which is one attribute per column per mounted
+   * card. One string, recomputed only when the pointer reaches a different row, carries the
+   * same information — and it is the only place this renderer needs a translation.
+   *
+   * It goes on the CONTAINER, not on the canvas: the canvas takes no pointer events, so it is
+   * never the element under the cursor and a `title` on it would never be shown.
+   */
+  const tooltipKeyRef = useRef('');
+  const updateTooltip = useCallback(
+    (clientX: number, clientY: number, tableName: string | null) => {
+      const host = containerRef.current;
+      if (!host) return;
+      let title = '';
+      let key = '';
+
+      if (tableName) {
+        const table = sceneRef.current.tableMap.get(tableName);
+        const pos = positionsRef.current[tableName];
+        key = tableName;
+        title = tableName;
+        if (table && pos && !pos.isCollapsed && lodForZoom(viewportRef.current.zoom) !== 'blocks') {
+          const world = worldAt(clientX, clientY);
+          const index = Math.floor((world.y - pos.y - HEADER_HEIGHT) / ROW_HEIGHT);
+          const columns = visibleColumnsOf(table, sceneRef.current.detailLevel);
+          const col = index >= 0 ? columns[index] : undefined;
+          if (col) {
+            key = `${tableName}.${col.name}`;
+            title = col.refTable
+              ? tRef.current('er.fkColumnHint', {
+                  column: col.name,
+                  target: `${col.refTable}.${col.refColumn || col.name}`,
+                })
+              : col.comment || `${col.name} ${col.type}`;
+          }
+        }
+      }
+
+      if (key === tooltipKeyRef.current) return;
+      tooltipKeyRef.current = key;
+      host.title = title;
+    },
+    [worldAt]
+  );
 
   const setHovered = useCallback(
     (table: string | null, rel: string | null) => {
       if (hoveredTableRef.current === table && hoveredRelRef.current === rel) return;
       hoveredTableRef.current = table;
       hoveredRelRef.current = rel;
-      applyHighlight();
+      recomputeLit();
+      requestDraw();
     },
-    [applyHighlight]
+    [recomputeLit, requestDraw]
   );
-
-  const handleToggleCollapse = useCallback((tableName: string) => {
-    setCollapsedMap((prev) => ({ ...prev, [tableName]: !prev[tableName] }));
-  }, []);
 
   // ---------------------------------------------------------------------------------------
   // Wheel: pan, or zoom anchored at the cursor
@@ -1019,8 +984,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
           e.clientY - origin.top
         );
       } else {
-        const scale =
-          e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? dimensionsRef.current.height : 1;
+        const scale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? dimensionsRef.current.height : 1;
         viewportRef.current = {
           ...viewportRef.current,
           x: viewportRef.current.x - e.deltaX * scale,
@@ -1029,66 +993,31 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       }
 
       setMoving(true);
-      schedule(() => {
-        applyTransform();
-        maybeCommitViewport();
-      });
+      requestDraw();
       scheduleSettle();
     };
 
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [
-    applyTransform,
-    cancelTween,
-    maybeCommitViewport,
-    refreshOrigin,
-    schedule,
-    scheduleSettle,
-    setMoving,
-  ]);
+  }, [cancelTween, refreshOrigin, requestDraw, scheduleSettle, setMoving]);
 
   // ---------------------------------------------------------------------------------------
-  // Pointer gestures
+  // Pointer gestures (`gestureRef` is declared with the other mirrors, further up)
   // ---------------------------------------------------------------------------------------
-  const gestureRef = useRef<Gesture | null>(null);
-
-
-  const showMarquee = useCallback((rect: { x: number; y: number; w: number; h: number } | null) => {
-    const el = marqueeRef.current;
-    if (!el) return;
-    if (!rect) {
-      el.hidden = true;
-      return;
-    }
-    el.hidden = false;
-    el.style.transform = `translate3d(${rect.x}px, ${rect.y}px, 0)`;
-    el.style.width = `${rect.w}px`;
-    el.style.height = `${rect.h}px`;
-    // Kept on the marquee itself rather than on the scaled layer: it inherits, and on the
-    // layer it would re-style every card and connector underneath. This element has no
-    // descendants, and it only changes while a lasso is actually being drawn.
-    el.style.setProperty('--er-inv-zoom', String(1 / viewportRef.current.zoom));
-  }, []);
-
   const endGesture = useCallback(() => {
     const gesture = gestureRef.current;
     gestureRef.current = null;
     setMoving(false);
-    showMarquee(null);
-
-    const plan = dragPlanRef.current;
-    dragPlanRef.current = null;
+    marqueeRef.current = null;
 
     if (!gesture) return;
-    if (gesture.kind === 'pan') {
-      commitViewport();
-    } else if (gesture.kind === 'node' && gesture.moved && plan) {
-      // The cards and connectors are already where they belong; this is React catching up,
-      // once, with the positions to persist.
-      setPositions(plan.live, true);
+    if (gesture.kind === 'node' && gesture.moved) {
+      // The cards are already where they belong; this is React catching up, once, with the
+      // positions to persist.
+      setPositions(positionsRef.current, true);
     }
-  }, [commitViewport, setMoving, setPositions, showMarquee]);
+    requestDraw();
+  }, [requestDraw, setMoving, setPositions]);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -1105,9 +1034,14 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       refreshOrigin();
       // Middle-drag pans in either tool; the tool only decides the left button.
       const wantsPan = e.button === 1 || toolRef.current === 'hand';
-      const nodeName = wantsPan
-        ? null
-        : (target.closest('[data-er-node]') as HTMLElement | null)?.dataset.erNode ?? null;
+      const nodeName = wantsPan ? null : tableAt(e.clientX, e.clientY);
+
+      // Tested BEFORE the drag gesture starts, so clicking the chevron can never also move the
+      // table — which is what the HTML button's `stopPropagation` used to buy.
+      if (nodeName && e.button === 0 && chevronAt(e.clientX, e.clientY, nodeName)) {
+        handleToggleCollapse(nodeName);
+        return;
+      }
 
       if (wantsPan) {
         gestureRef.current = {
@@ -1131,22 +1065,28 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
           next = new Set([nodeName]);
           setSelectedTableIds(next);
         }
+        selectedRef.current = next;
 
-        dragPlanRef.current = buildDragPlan(next);
+        // A private copy of the starting positions. Dragging writes a fresh map into
+        // `positionsRef` each frame and hands it to React once, on release — the old renderer
+        // had to resolve the card elements AND every connector touching them up front, which
+        // is exactly the bookkeeping a redrawn canvas does not need.
+        const origin: ERLayoutPositions = {};
+        for (const name of next) {
+          const pos = positionsRef.current[name];
+          if (pos) origin[name] = pos;
+        }
         gestureRef.current = {
           kind: 'node',
           pointerId: e.pointerId,
           startX: e.clientX,
           startY: e.clientY,
           moved: false,
+          origin,
+          names: Object.keys(origin),
         };
       } else {
-        const origin = originRef.current;
-        const world = screenToWorld(
-          viewportRef.current,
-          e.clientX - origin.left,
-          e.clientY - origin.top
-        );
+        const world = worldAt(e.clientX, e.clientY);
         gestureRef.current = {
           kind: 'marquee',
           pointerId: e.pointerId,
@@ -1162,26 +1102,51 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       setHovered(nodeName, null);
       el.setPointerCapture(e.pointerId);
     },
-    [buildDragPlan, cancelTween, refreshOrigin, setHovered, setMoving]
+    [
+      cancelTween,
+      chevronAt,
+      handleToggleCollapse,
+      refreshOrigin,
+      setHovered,
+      setMoving,
+      tableAt,
+      worldAt,
+    ]
   );
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent) => {
       const gesture = gestureRef.current;
-      if (!gesture || gesture.pointerId !== e.pointerId) return;
+      if (!gesture) {
+        // Not dragging: this is hover. The hand tool has nothing to hover — it only pans — and
+        // skipping it there is what keeps a pan free of hit tests entirely.
+        if (toolRef.current === 'hand') return;
+        // The panels float ABOVE the canvas, and their pointer events bubble to this container.
+        // Without this, moving across the toolbar lights up whichever table happens to be
+        // underneath it.
+        const over = e.target as HTMLElement;
+        if (over.closest('.er-toolbar-container') || over.closest('.er-minimap-container')) {
+          setHovered(null, null);
+          return;
+        }
+        const table = tableAt(e.clientX, e.clientY);
+        setHovered(table, table ? null : relationshipAt(e.clientX, e.clientY));
+        updateTooltip(e.clientX, e.clientY, table);
+        containerRef.current?.classList.toggle(
+          'over-chevron',
+          chevronAt(e.clientX, e.clientY, table)
+        );
+        return;
+      }
+      if (gesture.pointerId !== e.pointerId) return;
 
       if (gesture.kind === 'pan') {
-        const dx = e.clientX - gesture.startX;
-        const dy = e.clientY - gesture.startY;
         viewportRef.current = {
           ...viewportRef.current,
-          x: gesture.originX + dx,
-          y: gesture.originY + dy,
+          x: gesture.originX + (e.clientX - gesture.startX),
+          y: gesture.originY + (e.clientY - gesture.startY),
         };
-        schedule(() => {
-          applyTransform();
-          maybeCommitViewport();
-        });
+        requestDraw();
         return;
       }
 
@@ -1191,28 +1156,27 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
         const dy = (e.clientY - gesture.startY) / zoom;
         if (!gesture.moved && Math.abs(dx) + Math.abs(dy) < 1) return;
         gesture.moved = true;
-        // Straight to the DOM, like the pan. React sees the result once, on release.
-        schedule(() => applyDragFrame(dx, dy));
+        const next: ERLayoutPositions = { ...positionsRef.current };
+        for (const name of gesture.names) {
+          const start = gesture.origin[name];
+          if (!start) continue;
+          next[name] = { ...start, x: Math.round(start.x + dx), y: Math.round(start.y + dy) };
+        }
+        positionsRef.current = next;
+        requestDraw();
         return;
       }
 
-      const origin = originRef.current;
-      const world = screenToWorld(
-        viewportRef.current,
-        e.clientX - origin.left,
-        e.clientY - origin.top
+      const world = worldAt(e.clientX, e.clientY);
+      marqueeRef.current = rectFromCorners(
+        gesture.startWorldX,
+        gesture.startWorldY,
+        world.x,
+        world.y
       );
-      const box = rectFromCorners(gesture.startWorldX, gesture.startWorldY, world.x, world.y);
-      schedule(() =>
-        showMarquee({
-          x: box.minX,
-          y: box.minY,
-          w: box.maxX - box.minX,
-          h: box.maxY - box.minY,
-        })
-      );
+      requestDraw();
     },
-    [applyDragFrame, applyTransform, maybeCommitViewport, schedule, showMarquee]
+    [chevronAt, relationshipAt, requestDraw, setHovered, tableAt, updateTooltip, worldAt]
   );
 
   const handlePointerUp = useCallback(
@@ -1222,12 +1186,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       flush();
 
       if (gesture.kind === 'marquee') {
-        const origin = originRef.current;
-        const world = screenToWorld(
-          viewportRef.current,
-          e.clientX - origin.left,
-          e.clientY - origin.top
-        );
+        const world = worldAt(e.clientX, e.clientY);
         const box = rectFromCorners(gesture.startWorldX, gesture.startWorldY, world.x, world.y);
         const hits = marqueeHits(positionsRef.current, box).filter((name) =>
           visibleNames.has(name)
@@ -1242,31 +1201,12 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
 
       endGesture();
 
-      // Pointer capture retargets events to the container, so the node under the cursor has to
-      // be found by position rather than read off the event. This forces a layout AND a hit
-      // test that walks every connector path, so it is skipped for the hand tool — where the
-      // node layer takes no pointer events and the answer would always be null anyway.
+      // Pointer capture retargets events to the container, so what is under the cursor has to be
+      // found by position — which is now the only way it is ever found.
       if (toolRef.current === 'hand') return;
-      const under = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-      const node =
-        (under?.closest('[data-er-node]') as HTMLElement | null)?.dataset.erNode ?? null;
-      setHovered(node, null);
+      setHovered(tableAt(e.clientX, e.clientY), null);
     },
-    [endGesture, flush, setHovered, visibleNames]
-  );
-
-  const handlePointerOver = useCallback(
-    (e: React.PointerEvent) => {
-      if (gestureRef.current || toolRef.current === 'hand') return;
-      const target = e.target as HTMLElement;
-      const node = (target.closest('[data-er-node]') as HTMLElement | null)?.dataset.erNode ?? null;
-      const rel = node
-        ? null
-        : (target.closest('[data-er-rel]') as HTMLElement | null)?.getAttribute('data-er-rel') ??
-          null;
-      setHovered(node, rel);
-    },
-    [setHovered]
+    [endGesture, flush, setHovered, tableAt, visibleNames, worldAt]
   );
 
   const handlePointerLeave = useCallback(() => {
@@ -1275,12 +1215,10 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
 
   const handleDoubleClick = useCallback(
     (e: React.MouseEvent) => {
-      const name = (
-        (e.target as HTMLElement).closest('[data-er-node]') as HTMLElement | null
-      )?.dataset.erNode;
+      const name = tableAt(e.clientX, e.clientY);
       if (name && onOpenTable) onOpenTable(name);
     },
-    [onOpenTable]
+    [onOpenTable, tableAt]
   );
 
   // ---------------------------------------------------------------------------------------
@@ -1445,7 +1383,6 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
       onLostPointerCapture={endGesture}
-      onPointerOver={handlePointerOver}
       onPointerLeave={handlePointerLeave}
       onDoubleClick={handleDoubleClick}
     >
@@ -1474,94 +1411,15 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
         onExport={handleExport}
       />
 
-      {/* The transformed world. React never writes `transform` here — `applyTransform` does. */}
-      <div className="er-canvas-layer" ref={canvasRef}>
-        <svg
-          className="er-svg-connectors-layer"
-          width={connectorBox.width}
-          height={connectorBox.height}
-          viewBox={`${connectorBox.x} ${connectorBox.y} ${connectorBox.width} ${connectorBox.height}`}
-          // Placed with a transform rather than left/top: it is a computed value that moves
-          // with the viewport, and a transform costs no layout.
-          style={{ transform: `translate3d(${connectorBox.x}px, ${connectorBox.y}px, 0)` }}
-        >
-          <defs>
-            <marker
-              id="er-marker-target-arrow"
-              viewBox="0 0 10 10"
-              refX="6"
-              refY="5"
-              markerWidth="6"
-              markerHeight="6"
-              orient="auto-start-reverse"
-            >
-              <path d="M 0 1 L 8 5 L 0 9 z" fill="var(--win-accent)" />
-            </marker>
-            <marker
-              id="er-marker-source-dot"
-              viewBox="0 0 10 10"
-              refX="5"
-              refY="5"
-              markerWidth="5"
-              markerHeight="5"
-            >
-              <circle cx="5" cy="5" r="3" fill="var(--win-accent)" />
-            </marker>
-          </defs>
-
-          {lod === 'blocks' && flatConnectorPath && (
-            <path d={flatConnectorPath} className="er-rel-path bare" />
-          )}
-
-          {/* Filled by applyHighlight, never by React — see focusPathRef. */}
-          <path ref={focusPathRef} className="er-rel-path focus" />
-
-          {lod !== 'blocks' &&
-            renderedRelationships.map((rel) => {
-              const src = tableMap.get(rel.sourceTable);
-              const tgt = tableMap.get(rel.targetTable);
-              const srcPos = positions[rel.sourceTable];
-              const tgtPos = positions[rel.targetTable];
-              if (!src || !tgt || !srcPos || !tgtPos) return null;
-
-              return (
-                <ERRelationshipLine
-                  key={rel.id}
-                  relationship={rel}
-                  sourceTable={src}
-                  targetTable={tgt}
-                  sourcePos={srcPos}
-                  targetPos={tgtPos}
-                  detailLevel={detailLevel}
-                  lod={lod}
-                />
-              );
-            })}
-        </svg>
-
-        <div className="er-nodes-layer">
-          {renderedTables.map((table) => {
-            const pos = positions[table.name];
-            if (!pos) return null;
-
-            return (
-              <ERTableNode
-                key={table.name}
-                table={table}
-                position={pos}
-                detailLevel={detailLevel}
-                lod={lod}
-                isSelected={selectedTableIds.has(table.name)}
-                onToggleCollapse={handleToggleCollapse}
-              />
-            );
-          })}
-        </div>
-
-        {/* Lasso. It lives inside the transformed layer so its coordinates are world units and
-            it needs no inverse transform; only its border thickness is divided back out. */}
-        <div className="er-marquee" ref={marqueeRef} hidden />
-      </div>
+      {/* The diagram. Every card and connector is painted here — see `erScene.ts`. It takes no
+          pointer events of its own: the container owns the gestures and answers "what is under
+          the cursor" from geometry, so the toolbar and minimap above it still get their clicks
+          the ordinary way. */}
+      <canvas
+        className="er-canvas"
+        ref={canvasRef}
+        style={{ width: dimensions.width, height: dimensions.height }}
+      />
 
       {showMinimap && (
         <ERMinimap
