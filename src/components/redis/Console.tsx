@@ -52,6 +52,21 @@ interface LogEntry {
  * and commands that monopolise the shared connection (`SUBSCRIBE`, `MONITOR`, `BLPOP`…) — so the
  * message the user sees really is the one from the IPC boundary, not a second guess made in the UI.
  */
+/**
+ * Ring buffer for the command log, the same shape `Profiler` and `PubSub` already use.
+ *
+ * It was unbounded, and this tab is mounted for the life of the connection — so a session that
+ * runs a few `LRANGE`s or a `KEYS *` accumulates their full output forever, in a tab nobody is
+ * looking at. Entries are whole command outputs rather than single lines, hence a far smaller
+ * cap than the Profiler's 5000.
+ */
+const LOG_CAP = 500;
+
+function appendLog(prev: LogEntry[], entry: LogEntry): LogEntry[] {
+  const next = prev.concat(entry);
+  return next.length > LOG_CAP ? next.slice(-LOG_CAP) : next;
+}
+
 export const Console: React.FC<ConsoleProps> = ({ storageScope, theme, onError, onSelectedDb }) => {
   const { t } = useTranslation();
   const bufKey = `tf_redis_cli_buf_${storageScope}`;
@@ -122,18 +137,20 @@ export const Console: React.FC<ConsoleProps> = ({ storageScope, theme, onError, 
         const res = await dbHelper.redisExecuteCmd(command);
         const out = res.success ? JSON.stringify(res.result, null, 2) : `(error) ${res.error}`;
         if (!res.success && res.error) onError(res.error);
-        setLog((prev) => [...prev, { cmd: command, out, ok: !!res.success }]);
+        setLog((prev) => appendLog(prev, { cmd: command, out, ok: !!res.success }));
 
         if (res.selectedDb != null) {
           onSelectedDb(res.selectedDb, res.switchDb?.connId);
           const left = cmds.length - i - 1;
           if (left > 0) {
-            setLog((prev) => [...prev, {
-              cmd: '',
-              out: t('redis.cliStoppedAtSelect', { db: res.selectedDb, n: left }),
-              ok: true,
-              note: true,
-            }]);
+            setLog((prev) =>
+              appendLog(prev, {
+                cmd: '',
+                out: t('redis.cliStoppedAtSelect', { db: res.selectedDb, n: left }),
+                ok: true,
+                note: true,
+              })
+            );
           }
           break;
         }

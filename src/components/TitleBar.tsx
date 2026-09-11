@@ -146,6 +146,11 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     }
     let alive = true;
     const refresh = async () => {
+      // Nothing here is visible while the window is minimised or hidden, and this is not a free
+      // tick: every one is an IPC round trip plus a `SELECT 1` against the user's database, ten
+      // times a minute, for as long as the app is left open. The rest of the cluster is already
+      // cached per connection in Rust (`probe_session_info`) for the same reason.
+      if (document.hidden) return;
       try {
         const info = await dbHelper.getConnectionStatus();
         if (alive && info.isConnected) setConnStatus(info);
@@ -155,9 +160,12 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     };
     refresh();
     const timer = setInterval(refresh, 6000);
+    // Coming back to the window must not show a reading up to six seconds stale.
+    document.addEventListener('visibilitychange', refresh);
     return () => {
       alive = false;
       clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
     };
   }, [hasConnection]);
 
