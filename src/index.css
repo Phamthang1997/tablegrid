@@ -1946,6 +1946,52 @@ select.form-input {
   gap: 1px;
 }
 
+/* One object row, and the list's whole answer to "2500 tables".
+ *
+ * `content-visibility: auto` lets the browser skip style, layout and paint for any row that is
+ * not near the viewport — lazy rendering done by the engine rather than by a windowing library.
+ * At 2500 tables the list is ~20,000 DOM nodes of which about forty are on screen, and without
+ * this every one of them is laid out and painted on the first render and again on anything that
+ * invalidates the list.
+ *
+ * It is the right tool HERE specifically because the rows are not a uniform height: an expanded
+ * row carries a whole `TableDetailTree` under it. `contain-intrinsic-size: auto 26px` guesses a
+ * collapsed row until a row has been rendered once, and the `auto` keyword then makes the browser
+ * remember that row's real size — which is what keeps the scrollbar honest and stops an expanded
+ * row from collapsing the moment it scrolls away. A JS virtualiser would have to measure and
+ * cache all of that by hand.
+ *
+ * Keyboard navigation still works: skipped content is not `display: none`, so `scrollIntoView`
+ * and focus both reach a row and make it visible on the way. */
+.sidebar-row {
+  display: flex;
+  flex-direction: column;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 26px;
+}
+
+/* An object row's geometry. This was an inline style on the row, and moving it here is not
+   cosmetic: the row's "open"/"selected" classes are now written onto the element by hand
+   (`applyRowClasses` in Sidebar.tsx), and an inline style would win over every one of them.
+   The numbers are the inline style's, not `.sidebar-item`'s defaults, which they used to
+   override — `contain-intrinsic-size` above is measured from THESE. */
+.sidebar-row > .sidebar-item {
+  padding: 4px 8px;
+  gap: 6px;
+}
+
+/* The name takes the remaining width and may shrink; `min-width: 0` is what lets it, inside a
+   flex row that would otherwise refuse to go below its content. */
+.sb-name-slot {
+  font-weight: 400;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-item.active .sb-name-slot {
+  font-weight: 600;
+}
+
 .sidebar-item {
   padding: 6px 8px;
   border-radius: 4px;
@@ -8721,6 +8767,24 @@ input.rename-input {
   color: var(--win-text-primary);
   font-weight: 600;
   box-shadow: 0 1px 4px var(--ws-shadow), inset 0 1px 0 var(--ws-hairline);
+}
+
+/* A row that is open or selected: a FAINT accent background, not a solid one.
+ *
+ * This was an inline style (`ROW_STYLE_ACTIVE`), which is why it beat every rule above including
+ * the one directly overhead. Now that the class is written by hand it has to win on specificity
+ * instead — hence the second selector, which matches `.workspace-container .sidebar-item.active`
+ * at 0,3,0 and comes later. Both spellings are listed so the row looks right wherever it is
+ * mounted.
+ *
+ * The text stays `--win-text-primary` rather than a hardcoded `#ffffff`, for the reason recorded
+ * on the rule above: white text disappears on a faint background in the light theme. A SELECTED
+ * row shares this background with the OPEN one; what tells the two apart is the border and shadow
+ * that `.active` adds on top, not the fill. */
+.sidebar-item.is-on,
+.workspace-container .sidebar-item.is-on {
+  background: var(--win-accent-glow);
+  color: var(--win-text-primary);
 }
 
 /* ————— Tab bar —————
