@@ -659,7 +659,63 @@ export function computeAutoLayout(
 }
 
 /**
- * Calculates exact SVG socket anchor point for a specific column in a table node.
+ * Which row a column occupies, by lower-cased name, for one table at one detail level.
+ *
+ * This exists because of how often the canvas renderer asks. It resolves both sockets of every
+ * visible connector on **every frame**, and the obvious spelling —
+ * `visibleColumnsOf(...).findIndex((col) => col.name.toLowerCase() === needle)` — is O(columns)
+ * with a fresh string per column, plus a fresh filtered array per call at the non-`full` detail
+ * levels. On a Doctrine-shaped schema that was measured in the thousands of short-lived strings
+ * per frame: not slow enough to drop a frame, but enough garbage to make the whole thing feel
+ * sticky rather than smooth, which is a harder symptom to attribute.
+ *
+ * Keyed by the `ERTable` object in a `WeakMap`, so reloading the catalog drops the entries with
+ * the tables themselves.
+ */
+const rowIndexCache = new WeakMap<ERTable, Map<ERDetailLevel, Map<string, number>>>();
+
+/**
+ * Lower-cased names, memoized.
+ *
+ * The row lookup below is case-insensitive, and the canvas asks for it twice per connector per
+ * frame — at fit-to-view on a large schema that is ~9,000 `toLowerCase()` allocations a frame
+ * for a set of strings that never changes. Column names are bounded, so a plain `Map` is the
+ * whole fix; the cap only guards against a pathological catalog.
+ */
+const lowerCache = new Map<string, string>();
+const LOWER_CACHE_MAX = 20000;
+
+function lower(name: string): string {
+  let hit = lowerCache.get(name);
+  if (hit === undefined) {
+    if (lowerCache.size >= LOWER_CACHE_MAX) lowerCache.clear();
+    hit = name.toLowerCase();
+    lowerCache.set(name, hit);
+  }
+  return hit;
+}
+
+function rowIndexMap(table: ERTable, detailLevel: ERDetailLevel): Map<string, number> {
+  let byLevel = rowIndexCache.get(table);
+  if (!byLevel) rowIndexCache.set(table, (byLevel = new Map()));
+
+  let rows = byLevel.get(detailLevel);
+  if (!rows) {
+    rows = new Map();
+    const shown = visibleColumnsOf(table, detailLevel);
+    for (let i = 0; i < shown.length; i += 1) {
+      const key = lower(shown[i].name);
+      // First wins, which is what `findIndex` did — two columns differing only in case would
+      // otherwise anchor on the later row.
+      if (!rows.has(key)) rows.set(key, i);
+    }
+    byLevel.set(detailLevel, rows);
+  }
+  return rows;
+}
+
+/**
+ * Calculates exact socket anchor point for a specific column in a table node.
  */
 export function getColumnSocketPosition(
   nodePos: ERNodePosition,
@@ -675,17 +731,51 @@ export function getColumnSocketPosition(
     };
   }
 
-  const shown = visibleColumnsOf(table, detailLevel);
-  const needle = columnName.toLowerCase();
   // A column this level does not show anchors on the first row rather than off the card.
-  const row = Math.max(
-    shown.findIndex((col) => col.name.toLowerCase() === needle),
-    0
-  );
+  const row = rowIndexMap(table, detailLevel).get(lower(columnName)) ?? 0;
   const y = nodePos.y + HEADER_HEIGHT + row * ROW_HEIGHT + ROW_HEIGHT / 2;
   const x = side === 'left' ? nodePos.x : nodePos.x + nodePos.width;
 
   return { x, y };
+}
+
+/** The four points of one connector curve. */
+export interface ERBezier {
+  x1: number;
+  y1: number;
+  cx1: number;
+  cy1: number;
+  cx2: number;
+  cy2: number;
+  x2: number;
+  y2: number;
+}
+
+/**
+ * The control points of the connector curve.
+ *
+ * Split out from the path string because the canvas renderer needs the numbers (for
+ * `bezierCurveTo`, for the arrow head's tangent and for hit testing) while the SVG export
+ * needs the string. One definition of the curvature, two ways of spelling it — a second copy
+ * would drift and the exported diagram would stop matching the one on screen.
+ */
+export function computeBezierControls(
+  source: { x: number; y: number },
+  target: { x: number; y: number }
+): ERBezier {
+  const dx = target.x - source.x;
+  const curvature = Math.max(Math.min(Math.abs(dx) * 0.5, 180), 40);
+
+  return {
+    x1: source.x,
+    y1: source.y,
+    cx1: source.x + (dx >= 0 ? curvature : -curvature),
+    cy1: source.y,
+    cx2: target.x - (dx >= 0 ? curvature : -curvature),
+    cy2: target.y,
+    x2: target.x,
+    y2: target.y,
+  };
 }
 
 /**
@@ -695,15 +785,8 @@ export function computeBezierPath(
   source: { x: number; y: number },
   target: { x: number; y: number }
 ): string {
-  const dx = target.x - source.x;
-  const curvature = Math.max(Math.min(Math.abs(dx) * 0.5, 180), 40);
-
-  const cx1 = source.x + (dx >= 0 ? curvature : -curvature);
-  const cy1 = source.y;
-  const cx2 = target.x - (dx >= 0 ? curvature : -curvature);
-  const cy2 = target.y;
-
-  return `M ${source.x} ${source.y} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${target.x} ${target.y}`;
+  const b = computeBezierControls(source, target);
+  return `M ${b.x1} ${b.y1} C ${b.cx1} ${b.cy1}, ${b.cx2} ${b.cy2}, ${b.x2} ${b.y2}`;
 }
 
 /**
@@ -748,42 +831,6 @@ export function connectorSockets(
       detailLevel
     ),
   };
-}
-
-/**
- * Every connector as straight segments of ONE path.
- *
- * For the zoomed-out level of detail, where no connector can be hovered, highlighted or dimmed
- * individually and a curve is indistinguishable from a line. A few hundred `<path>` elements
- * become one: that is a few hundred fewer DOM nodes, memo comparisons and stroked paths, and it
- * is the difference that matters in the one case culling cannot help with — the whole diagram
- * fitted on screen, where every connector there is has to be drawn.
- */
-export function buildFlatConnectorPath(
-  relationships: ERRelationship[],
-  positions: ERLayoutPositions,
-  tables: Map<string, ERTable>,
-  detailLevel: ERDetailLevel = 'full'
-): string {
-  const parts: string[] = [];
-  for (const rel of relationships) {
-    const sourceTable = tables.get(rel.sourceTable);
-    const targetTable = tables.get(rel.targetTable);
-    const sourcePos = positions[rel.sourceTable];
-    const targetPos = positions[rel.targetTable];
-    if (!sourceTable || !targetTable || !sourcePos || !targetPos) continue;
-
-    const { source, target } = connectorSockets(
-      rel,
-      sourceTable,
-      targetTable,
-      sourcePos,
-      targetPos,
-      detailLevel
-    );
-    parts.push(`M ${source.x} ${source.y} L ${target.x} ${target.y}`);
-  }
-  return parts.join(' ');
 }
 
 /**

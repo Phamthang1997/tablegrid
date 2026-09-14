@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef, useDeferredValue } from 'r
 import { Trans, useTranslation } from 'react-i18next';
 import { dbHelper, type DatabaseStats, type AllDatabasesStats, type AllDatabasesSizeItem } from '../utils/dbHelper';
 import { RefreshCw, HardDrive, Hash, Table, Search, ExternalLink, ShieldCheck, Database, Server, ScanSearch, Lock, Layers, Eye, Braces, Cog, ChevronRight, ChevronDown, Columns3 } from 'lucide-react';
-import { Modal, ModalFooter } from './Modal';
+import { Modal } from './Modal';
 
 type InfoTab = 'current' | 'all';
 /** The object group being viewed in the "Current database" tab. */
@@ -1066,20 +1066,6 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
     </>
   );
 
-  const footerContent = (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 18px', borderTop: '1px solid var(--win-border)', background: 'var(--win-bg-card)', flexShrink: 0, fontSize: '12px', color: 'var(--win-text-secondary)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'var(--win-status-added-border, #10b981)' }} />
-        <span>{t('dbInfo.catalogNote')}</span>
-      </div>
-      {onClose && (
-        <button className="btn btn-secondary" onClick={onClose} style={{ padding: '0 20px' }}>
-          {t('common.close')}
-        </button>
-      )}
-    </div>
-  );
-
   if (asTab) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, height: '100%', width: '100%', overflow: 'hidden', background: 'var(--win-bg-window)' }}>
@@ -1102,7 +1088,6 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
           {modalBodyContent}
         </div>
-        {footerContent}
       </div>
     );
   }
@@ -1131,15 +1116,6 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
         {modalBodyContent}
       </div>
-      <ModalFooter style={{ justifyContent: 'space-between', fontSize: '12px', color: 'var(--win-text-secondary)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'var(--win-status-added-border, #10b981)' }} />
-          <span>{t('dbInfo.catalogNote')}</span>
-        </div>
-        <button className="btn btn-secondary" onClick={onClose} style={{ padding: '0 20px' }}>
-          {t('common.close')}
-        </button>
-      </ModalFooter>
     </Modal>
   );
 };

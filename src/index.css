@@ -149,12 +149,32 @@
   --win-status-deleted-border: #ef4444;
 }
 
+/* The window material is frosted ONCE, on `body`, and everything above it only tints.
+ *
+ * `backdrop-filter` makes the compositor keep a snapshot texture of everything behind the
+ * element, *per element*. Measured on this app with one ER tab open, killing every
+ * `backdrop-filter` from the console dropped the WebView2 GPU process from 449.9MB to 350.9MB
+ * — **~99MB**, and that is a floor, because DevTools was open (and costs GPU) in the second
+ * reading. For comparison the whole ER card bitmap cache is capped at 64MB.
+ *
+ * `body` has to keep it. Every `--win-bg-*` token is an `rgba()` at 0.70-0.88 and the WebView is
+ * transparent over the window material Tauri installs (`app/setup.rs`), so this blur is not
+ * decoration: it is the only thing frosting what sits behind the window. Removing it does not
+ * flatten the look, it makes the app SEE-THROUGH — the desktop behind it reads sharply through
+ * the sidebar. That was tried, and that is what happened.
+ *
+ * `.sidebar`, `.tab-bar`, `.card` and `.connection-card` had their own copies, and those are the
+ * ~99MB: they stack on top of a `body` that has already frosted the same backdrop, so each was
+ * keeping a second snapshot texture to blur an image that was blurred a moment earlier. They
+ * still carry their translucent `--win-bg-*` fill, so they still tint — the material underneath
+ * is simply `body`'s rather than their own. `.cm-side`/`.cm-main`/… further down this file were
+ * cleaned up for the same reason already.
+ *
+ * What else keeps a blur is everything that floats over real page content — modals, dropdowns,
+ * popovers, context menus. There the backdrop genuinely differs from `body`'s.
+ */
 body,
-.sidebar,
-.tab-bar,
 .modal-content,
-.card,
-.connection-card,
 .title-bar-dropdown {
   backdrop-filter: blur(40px) saturate(210%);
   -webkit-backdrop-filter: blur(40px) saturate(210%);
@@ -1924,6 +1944,209 @@ select.form-input {
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+/* One object row, and the list's whole answer to "2500 tables".
+ *
+ * `content-visibility: auto` lets the browser skip style, layout and paint for any row that is
+ * not near the viewport — lazy rendering done by the engine rather than by a windowing library.
+ * At 2500 tables the list is ~20,000 DOM nodes of which about forty are on screen, and without
+ * this every one of them is laid out and painted on the first render and again on anything that
+ * invalidates the list.
+ *
+ * It is the right tool HERE specifically because the rows are not a uniform height: an expanded
+ * row carries a whole `TableDetailTree` under it. `contain-intrinsic-size: auto 26px` guesses a
+ * collapsed row until a row has been rendered once, and the `auto` keyword then makes the browser
+ * remember that row's real size — which is what keeps the scrollbar honest and stops an expanded
+ * row from collapsing the moment it scrolls away. A JS virtualiser would have to measure and
+ * cache all of that by hand.
+ *
+ * Keyboard navigation still works: skipped content is not `display: none`, so `scrollIntoView`
+ * and focus both reach a row and make it visible on the way. */
+.sidebar-row {
+  display: flex;
+  flex-direction: column;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 26px;
+}
+
+/* An object row's geometry. This was an inline style on the row, and moving it here is not
+   cosmetic: the row's "open"/"selected" classes are now written onto the element by hand
+   (`applyRowClasses` in Sidebar.tsx), and an inline style would win over every one of them.
+   The numbers are the inline style's, not `.sidebar-item`'s defaults, which they used to
+   override — `contain-intrinsic-size` above is measured from THESE. */
+.sidebar-row > .sidebar-item {
+  padding: 4px 8px;
+  gap: 6px;
+}
+
+/* The name takes the remaining width and may shrink; `min-width: 0` is what lets it, inside a
+   flex row that would otherwise refuse to go below its content. */
+.sb-name-slot {
+  font-weight: 400;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-item.active .sb-name-slot {
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------------------
+   The expanded-row detail tree (Fields / Indexes / Foreign Keys / Checks / Triggers), and the
+   name list the Truncate/Drop dialogs show.
+
+   These were sixteen module-level `React.CSSProperties` objects in Sidebar.tsx. Every one was
+   fully static, which is the line CLAUDE.md draws: inline style is for a value the render
+   computes, and a constant is not one. Moving them also drops a `style` attribute from every
+   element of a tree that renders one row per column of an expanded table.
+   --------------------------------------------------------------------------------------- */
+/* Rows of the MULTI-SELECTION context menu.
+ *
+ * A new class rather than declarations added to `.sidebar-context-item`: that class has 17 call
+ * sites across the app and no base rule of its own, each one setting its own geometry inline, so
+ * giving it one here would change all of them. The three tones are modifiers because the colour
+ * is the only thing that varied between the rows — it was a spread over a shared object literal. */
+.sb-ctx-item {
+  padding: 6px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--win-text-primary);
+}
+
+.sb-ctx-item.warn {
+  color: var(--st-warn);
+}
+
+.sb-ctx-item.accent {
+  color: var(--win-accent);
+}
+
+.sb-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.sb-cols-wrap {
+  display: flex;
+  flex-direction: column;
+  padding-left: 14px;
+  margin: 2px 0 4px;
+}
+
+/* Header row of a group node. */
+.sb-group-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--win-text-secondary);
+}
+
+.sb-group-label {
+  font-weight: 400;
+  flex: 1;
+  min-width: 0;
+}
+
+.sb-group-count {
+  font-size: 10px;
+  color: var(--win-text-disabled);
+  flex-shrink: 0;
+}
+
+/* Members of a group sit one level deeper than their header. */
+.sb-group-items {
+  display: flex;
+  flex-direction: column;
+  padding-left: 14px;
+}
+
+.sb-cols-hint {
+  font-size: 10.5px;
+  color: var(--win-text-disabled);
+  padding: 2px 6px;
+}
+
+.sb-col-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px;
+  font-size: 11.5px;
+  border-radius: 4px;
+  color: var(--win-text-primary);
+}
+
+.sb-col-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* A fixed slot so a row with a key icon and one without still line their names up. */
+.sb-col-key {
+  width: 12px;
+  display: inline-flex;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sb-col-key-icon {
+  flex-shrink: 0;
+}
+
+.sb-col-key-spacer {
+  width: 11px;
+}
+
+.sb-col-name {
+  font-family: var(--win-font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-col-type {
+  font-family: var(--win-font-mono);
+  font-size: 10.5px;
+  color: var(--win-text-disabled);
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+/* Box listing object names in the Truncate/Drop dialogs. Those two used to name no table at all —
+   with a multi-selection that is information the user must have. */
+.sb-namelist-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--win-text-primary);
+  margin-bottom: 6px;
+}
+
+.sb-namelist-box {
+  max-height: 140px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-hover);
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-line;
+  color: var(--win-text-primary);
 }
 
 .sidebar-item {
@@ -8701,6 +8924,24 @@ input.rename-input {
   color: var(--win-text-primary);
   font-weight: 600;
   box-shadow: 0 1px 4px var(--ws-shadow), inset 0 1px 0 var(--ws-hairline);
+}
+
+/* A row that is open or selected: a FAINT accent background, not a solid one.
+ *
+ * This was an inline style (`ROW_STYLE_ACTIVE`), which is why it beat every rule above including
+ * the one directly overhead. Now that the class is written by hand it has to win on specificity
+ * instead — hence the second selector, which matches `.workspace-container .sidebar-item.active`
+ * at 0,3,0 and comes later. Both spellings are listed so the row looks right wherever it is
+ * mounted.
+ *
+ * The text stays `--win-text-primary` rather than a hardcoded `#ffffff`, for the reason recorded
+ * on the rule above: white text disappears on a faint background in the light theme. A SELECTED
+ * row shares this background with the OPEN one; what tells the two apart is the border and shadow
+ * that `.active` adds on top, not the fill. */
+.sidebar-item.is-on,
+.workspace-container .sidebar-item.is-on {
+  background: var(--win-accent-glow);
+  color: var(--win-text-primary);
 }
 
 /* ————— Tab bar —————
@@ -15507,8 +15748,8 @@ input.rename-input {
 .doc-tabs-bar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 14px;
+  gap: 6px;
+  padding: 8px 14px;
   background: var(--win-bg-sidebar);
   border-bottom: 1px solid var(--win-border);
   flex-shrink: 0;
@@ -15524,21 +15765,34 @@ input.rename-input {
   font-weight: 500;
   color: var(--win-text-secondary);
   background: transparent;
-  border: 1px solid transparent;
+  border: 1px solid var(--win-border);
   cursor: pointer;
   transition: all 0.12s ease;
 }
 
 .doc-tab-btn:hover:not(.is-active) {
   color: var(--win-text-primary);
+  border-color: var(--win-border-strong);
   background: var(--win-bg-hover);
 }
 
 .doc-tab-btn.is-active {
   color: var(--win-accent);
   background: var(--win-accent-glow);
-  border-color: rgba(96, 165, 250, 0.25);
+  border-color: var(--win-accent);
   font-weight: 600;
+}
+
+.doc-modal-body {
+  flex: 1;
+  min-height: 0;
+  padding: 0 !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-copy-check {
+  color: var(--st-ok);
 }
 
 /* 1. Table / Form View */
@@ -15553,6 +15807,7 @@ input.rename-input {
 .doc-search-bar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 8px 14px;
   background: var(--win-bg-window);
@@ -15604,12 +15859,106 @@ input.rename-input {
   flex: 1;
   overflow-y: auto;
   overflow-x: auto;
+  padding: 12px 14px;
+}
+
+.doc-table-card {
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+  background: var(--win-bg-card);
+  overflow: hidden;
+}
+
+/* Form View */
+.doc-form-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.doc-form-field {
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+  background: var(--win-bg-card);
+  padding: 10px 14px;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.doc-form-field:hover {
+  border-color: var(--win-border-strong);
+}
+
+.doc-form-field:hover .doc-field-copy-btn {
+  opacity: 0.85;
+  border-color: var(--win-border);
+}
+
+.doc-form-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.doc-form-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.doc-form-type-tag {
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-text-secondary);
+  background: var(--win-bg-tab-bar);
+  border: 1px solid var(--win-border);
+  padding: 1px 7px;
+  border-radius: 4px;
+}
+
+.doc-form-val-box {
+  background: var(--win-bg-window);
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-family: var(--win-font-mono);
+  font-size: 13px;
+  color: var(--win-text-primary);
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  word-break: break-all;
+  user-select: text;
+}
+
+[data-theme='light'] .doc-form-val-box {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+
+.doc-form-val-box.is-multiline {
+  display: block;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow-y: auto;
+  line-height: 1.55;
+}
+
+.doc-tab-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(168, 85, 247, 0.15);
+  color: #a855f7;
+  border: 1px solid rgba(168, 85, 247, 0.3);
 }
 
 .doc-field-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 12.5px;
   text-align: left;
 }
 
@@ -15630,6 +15979,10 @@ input.rename-input {
 .doc-field-tr {
   border-bottom: 1px solid var(--win-border-light, var(--win-border));
   transition: background 0.1s ease;
+}
+
+.doc-field-tr:last-child {
+  border-bottom: none;
 }
 
 .doc-field-tr:hover {
@@ -15682,7 +16035,7 @@ input.rename-input {
 
 .doc-field-val-text {
   font-family: var(--win-font-mono);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.5;
   color: var(--win-text-primary);
   white-space: pre-wrap;
@@ -15698,7 +16051,7 @@ input.rename-input {
   height: 22px;
   border-radius: 4px;
   background: transparent;
-  border: none;
+  border: 1px solid transparent;
   color: var(--win-text-disabled);
   cursor: pointer;
   opacity: 0;
@@ -15706,14 +16059,17 @@ input.rename-input {
   flex-shrink: 0;
 }
 
-.doc-field-tr:hover .doc-field-copy-btn {
-  opacity: 0.8;
+.doc-field-tr:hover .doc-field-copy-btn,
+.doc-tree-row:hover .doc-field-copy-btn {
+  opacity: 0.85;
+  border-color: var(--win-border);
 }
 
 .doc-field-copy-btn:hover {
   opacity: 1 !important;
   background: var(--win-bg-card);
   color: var(--win-accent);
+  border-color: var(--win-accent);
 }
 
 .doc-empty-hint {
@@ -15723,7 +16079,7 @@ input.rename-input {
   font-size: 13px;
 }
 
-/* 2. Tree View */
+/* 2. Tree View / Inspector */
 .doc-tree-view {
   display: flex;
   flex-direction: column;
@@ -15736,8 +16092,9 @@ input.rename-input {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 8px 14px;
-  background: var(--win-bg-tab-bar);
+  background: var(--win-bg-window);
   border-bottom: 1px solid var(--win-border);
   flex-shrink: 0;
 }
@@ -15745,117 +16102,191 @@ input.rename-input {
 .doc-tree-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 16px;
-  font-family: var(--win-font-mono);
-  font-size: 12px;
+  padding: 12px 14px;
+}
+
+.doc-tree-card {
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+  background: var(--win-bg-card);
+  overflow: hidden;
+}
+
+.doc-tree-node {
+  display: flex;
+  flex-direction: column;
 }
 
 .doc-tree-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 6px;
-  border-radius: 4px;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--win-border-light, var(--win-border));
+  font-family: var(--win-font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
   transition: background 0.1s ease;
+}
+
+.doc-tree-node:last-child > .doc-tree-row {
+  border-bottom: none;
 }
 
 .doc-tree-row:hover {
   background: var(--win-bg-hover);
 }
 
-.doc-tree-indent {
-  display: inline-block;
-  width: 18px;
-  flex-shrink: 0;
-}
-
 .doc-tree-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 3px;
-  border: none;
-  background: transparent;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-window);
   color: var(--win-text-secondary);
   cursor: pointer;
   flex-shrink: 0;
-  transition: transform 0.12s ease;
+  transition: all 0.12s ease;
 }
 
 .doc-tree-toggle:hover {
-  background: var(--win-bg-card);
+  background: var(--win-bg-hover);
   color: var(--win-accent);
+  border-color: var(--win-accent);
+}
+
+.doc-tree-toggle-placeholder {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
 }
 
 .doc-tree-key {
   font-weight: 600;
   color: var(--win-text-primary);
+  min-width: 140px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   flex-shrink: 0;
 }
 
 .doc-type-badge {
   font-size: 9.5px;
-  font-weight: 600;
-  padding: 1px 5px;
-  border-radius: 3px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
   flex-shrink: 0;
 }
 
+/* Light theme high contrast badges & values */
 .doc-type-string {
   background: rgba(16, 185, 129, 0.12);
-  color: #10b981;
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  color: #047857;
+  border: 1px solid rgba(16, 185, 129, 0.3);
 }
 
 .doc-type-number {
   background: rgba(59, 130, 246, 0.12);
-  color: #3b82f6;
-  border: 1px solid rgba(59, 130, 246, 0.25);
+  color: #1d4ed8;
+  border: 1px solid rgba(59, 130, 246, 0.3);
 }
 
 .doc-type-boolean {
   background: rgba(245, 158, 11, 0.12);
-  color: #f59e0b;
-  border: 1px solid rgba(245, 158, 11, 0.25);
+  color: #b45309;
+  border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
 .doc-type-object,
 .doc-type-array {
   background: rgba(168, 85, 247, 0.12);
-  color: #a855f7;
-  border: 1px solid rgba(168, 85, 247, 0.25);
+  color: #7e22ce;
+  border: 1px solid rgba(168, 85, 247, 0.3);
 }
 
 .doc-type-null {
-  background: rgba(148, 163, 184, 0.12);
-  color: #94a3b8;
-  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(148, 163, 184, 0.15);
+  color: #475569;
+  border: 1px solid rgba(148, 163, 184, 0.3);
 }
 
 .doc-tree-val {
-  color: var(--win-text-secondary);
+  color: var(--win-text-primary);
   word-break: break-all;
   flex: 1;
 }
 
 .doc-tree-val.is-string {
-  color: #10b981;
+  color: #047857;
+  font-weight: 500;
 }
 
 .doc-tree-val.is-number {
-  color: #3b82f6;
+  color: #1d4ed8;
+  font-weight: 600;
 }
 
 .doc-tree-val.is-boolean {
-  color: #f59e0b;
+  color: #b45309;
+  font-weight: 600;
 }
 
 .doc-tree-val.is-null {
   color: var(--win-text-disabled);
   font-style: italic;
+}
+
+.doc-tree-val.is-summary {
+  color: var(--win-text-secondary);
+  font-style: italic;
+  font-size: 11.5px;
+}
+
+/* Dark mode adjustments for bright, clear contrast */
+[data-theme='dark'] .doc-type-string,
+:root:not([data-theme='light']) .doc-type-string {
+  color: #34d399;
+}
+[data-theme='dark'] .doc-tree-val.is-string,
+:root:not([data-theme='light']) .doc-tree-val.is-string {
+  color: #34d399;
+}
+
+[data-theme='dark'] .doc-type-number,
+:root:not([data-theme='light']) .doc-type-number {
+  color: #60a5fa;
+}
+[data-theme='dark'] .doc-tree-val.is-number,
+:root:not([data-theme='light']) .doc-tree-val.is-number {
+  color: #60a5fa;
+}
+
+[data-theme='dark'] .doc-type-boolean,
+:root:not([data-theme='light']) .doc-type-boolean {
+  color: #fbbf24;
+}
+[data-theme='dark'] .doc-tree-val.is-boolean,
+:root:not([data-theme='light']) .doc-tree-val.is-boolean {
+  color: #fbbf24;
+}
+
+[data-theme='dark'] .doc-type-object,
+[data-theme='dark'] .doc-type-array,
+:root:not([data-theme='light']) .doc-type-object,
+:root:not([data-theme='light']) .doc-type-array {
+  color: #c084fc;
+}
+
+[data-theme='dark'] .doc-type-null,
+:root:not([data-theme='light']) .doc-type-null {
+  color: #94a3b8;
 }
 
 /* 3. JSON View */
@@ -17660,372 +18091,30 @@ input.rename-input {
   cursor: grabbing;
 }
 
-/* Hand tool: the node and connector layers stop taking pointer events entirely. That is what
-   removes hover tracking, the accidental table drag AND the hover repaint of every card the
-   pointer crosses while panning — the three things that made panning expensive. */
-.er-diagram-container.tool-hand .er-nodes-layer,
-.er-diagram-container.tool-hand .er-rel-group {
-  pointer-events: none;
-}
-
-.er-canvas-layer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  transform-origin: 0 0;
-}
-
-/* `will-change` asks the compositor to keep a texture for this layer ready. On a diagram a
-   few hundred tables wide that texture is not small, so the promise is made only around the
-   moments it is collected — and it outlives the gesture by about a second, because creating
-   and destroying the layer each cost a full rasterization and wheel gestures come in bursts.
-   See `setMoving` in ERDiagramView.tsx for why this is a separate class from `.gesturing`. */
-.er-diagram-container.compositing .er-canvas-layer {
-  will-change: transform;
-}
-
-/* While a gesture runs, nothing may animate: a 0.15s box-shadow transition on a few hundred
-   cards is a repaint per frame for something nobody can perceive mid-drag. */
-.er-diagram-container.gesturing .er-table-node,
-.er-diagram-container.gesturing .er-column-row,
-.er-diagram-container.gesturing .er-rel-path,
-.er-diagram-container.gesturing .er-rel-socket-source,
-.er-diagram-container.gesturing .er-rel-socket-target {
-  transition: none !important;
-}
-
-.er-nodes-layer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  pointer-events: auto;
-}
-
-/* Table Node Card */
-.er-table-node {
-  position: absolute;
-  top: 0;
-  left: 0;
-  background: var(--win-bg-card);
-  border: 1px solid var(--win-border);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.05);
-  font-family: var(--win-font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
-  font-size: 11.5px;
-  color: var(--win-text-primary);
-  display: flex;
-  flex-direction: column;
+/* The collapse chevron is a hit box on the canvas rather than a <button>, so the cursor is the
+   only thing left saying it is clickable. Written by the hover path in ERDiagramView. */
+.er-diagram-container.over-chevron {
   cursor: pointer;
-  transition: box-shadow 0.15s ease, border-color 0.15s ease;
-  overflow: hidden;
-  /* A card never affects the layout or the paint of anything outside itself, and saying so
-     keeps a few hundred of them from invalidating each other. */
-  contain: layout paint;
 }
 
-.er-table-node:hover {
-  border-color: var(--win-accent);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12), 0 0 0 1px var(--win-accent);
-  z-index: 10;
-}
+/* The diagram itself: ONE canvas, painted by `erScene.ts`.
 
-.er-table-node.selected {
-  border-color: var(--win-accent);
-  box-shadow: 0 0 0 2px var(--win-accent), 0 8px 24px rgba(59, 130, 246, 0.2);
-  z-index: 20;
-}
+   It takes no pointer events. The container owns every gesture and answers "what is under the
+   cursor" from geometry (`hitTestCards` / `hitTestRelationships`), so the toolbar and the
+   minimap stacked above it keep receiving their clicks the ordinary way.
 
-/* ---------------------------------------------------------------------------------------
-   Focus: the table under the pointer, or the one clicked, plus its FK neighbourhood.
-
-   The dim is expressed as "everything, except what is lit" so that focusing writes classes
-   on the neighbourhood only — a handful of elements — instead of on every mounted card. It
-   used to arrive through React props, which made crossing a card boundary a re-render plus
-   an opacity change on the whole visible set.
-   --------------------------------------------------------------------------------------- */
-.er-diagram-container.focused .er-table-node {
-  opacity: 0.35;
-}
-
-/* A related table: readable, and outlined. The thick ring stays the SELECTED card's alone,
-   below, so a click can be told from its own neighbours. */
-.er-diagram-container.focused .er-table-node.hl {
-  opacity: 1;
-  border-color: var(--win-accent);
-  z-index: 15;
-}
-
-.er-diagram-container.focused .er-table-node.hl.selected {
-  box-shadow: 0 0 0 2px var(--win-accent), 0 8px 24px rgba(59, 130, 246, 0.2);
-  z-index: 20;
-}
-
-.er-diagram-container.focused .er-rel-group {
-  opacity: 0.15;
-}
-
-.er-diagram-container.focused .er-rel-group.hl {
-  opacity: 1;
-}
-
-/* The lit connectors at the lowest level of detail, where the others are one anonymous path
-   that no class can pick out of. Written by applyHighlight, empty the rest of the time.
-
-   `non-scaling-stroke` is what makes it visible at all down there: stroke width is in user
-   units inside a scaled layer, so the 1.5px of the path below renders under a fifth of a device
-   pixel at 0.1 zoom — a haze, which is right for context and useless for "these ones". */
-.er-rel-path.focus {
-  fill: none;
-  stroke: var(--win-accent);
-  stroke-width: 2px;
-  vector-effect: non-scaling-stroke;
-  transition: none;
-  opacity: 1;
-}
-
-/* And the crowd steps back so the accent reads against it. */
-.er-diagram-container.focused .er-rel-path.bare {
-  opacity: 0.12;
-}
-
-.er-node-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  background: var(--win-bg-hover, rgba(0, 0, 0, 0.03));
-  border-bottom: 1px solid var(--win-border);
-  gap: 8px;
-}
-
-.er-node-header.view-header {
-  background: rgba(168, 85, 247, 0.08);
-  border-bottom-color: rgba(168, 85, 247, 0.2);
-}
-
-.er-node-title-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex: 1;
-}
-
-.er-icon-table {
-  color: var(--win-accent);
-  flex-shrink: 0;
-}
-
-.er-icon-view {
-  color: #a855f7;
-  flex-shrink: 0;
-}
-
-.er-node-title {
-  font-weight: 600;
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.er-node-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.er-node-col-count {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--win-text-secondary);
-  background: var(--win-bg-window);
-  border: 1px solid var(--win-border);
-  border-radius: 10px;
-  padding: 1px 6px;
-}
-
-.er-node-collapse-btn {
-  background: transparent;
-  border: none;
-  color: var(--win-text-secondary);
-  cursor: pointer;
-  padding: 2px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.er-node-collapse-btn:hover {
-  color: var(--win-text-primary);
-  background: var(--win-bg-hover);
-}
-
-.er-node-columns {
-  display: flex;
-  flex-direction: column;
-  /* 3+3 = FOOTER_HEIGHT in erLayoutEngine.ts. The node height is now set from that formula,
-     and 4px here would overflow it by 2px and clip the last row. */
-  padding: 3px 0;
-}
-
-.er-column-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 24px;
-  padding: 0 10px;
-  transition: background 0.1s ease;
-  position: relative;
-}
-
-.er-column-row:hover {
-  background: var(--win-bg-hover);
-}
-
-.er-column-row.pk-row {
-  background: rgba(245, 158, 11, 0.05);
-}
-
-.er-column-row.fk-row {
-  background: rgba(59, 130, 246, 0.04);
-}
-
-.er-col-left {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex: 1;
-}
-
-.er-badge-pk {
-  color: #f59e0b;
-  flex-shrink: 0;
-}
-
-.er-badge-fk {
-  color: #3b82f6;
-  flex-shrink: 0;
-}
-
-.er-col-bullet {
-  color: var(--win-text-disabled);
-  font-size: 10px;
-  line-height: 1;
-}
-
-.er-col-name {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--win-text-primary);
-}
-
-.er-col-name.bold {
-  font-weight: 600;
-}
-
-.er-col-right {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  margin-left: 8px;
-}
-
-.er-col-type {
-  font-size: 10.5px;
-  font-family: var(--win-font-mono, monospace);
-  color: var(--win-text-secondary);
-}
-
-.er-col-req-dot {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #ef4444;
-}
-
-.er-col-more {
-  padding: 4px 10px;
-  font-size: 10.5px;
-  font-style: italic;
-  color: var(--win-text-secondary);
-}
-
-/* SVG Connector Lines */
-.er-svg-connectors-layer {
+   There is no transformed layer here any more, and that absence is the point: the viewport
+   lives in the canvas transform, so nothing needs `will-change: transform` and a zoom no
+   longer re-rasterizes a DOM subtree once per frame. The several hundred rules that used to
+   style cards, column rows and connectors are gone with it — a card is drawn by
+   `erCardRenderer.ts` into a bitmap, and its colours come from `erTheme.ts`, which reads the
+   same `--win-*` tokens this file defines. Changing a token still changes the diagram; adding
+   a rule for `.er-table-node` no longer does anything. */
+.er-canvas {
   position: absolute;
   top: 0;
   left: 0;
-  /* Nodes can be dragged to negative coordinates, and the bezier control points reach past the
-     endpoints, so the layer must not clip to its own width/height. */
-  overflow: visible;
-  /* Only the connector groups take pointer events, and only above the lowest LOD. */
   pointer-events: none;
-}
-
-.er-rel-group {
-  cursor: pointer;
-  pointer-events: auto;
-}
-
-.er-rel-hitbox {
-  fill: none;
-  stroke: transparent;
-  stroke-width: 14px;
-}
-
-.er-rel-path {
-  fill: none;
-  stroke: var(--win-text-secondary);
-  stroke-width: 1.5px;
-  transition: stroke 0.15s ease, stroke-width 0.15s ease, opacity 0.2s ease;
-  opacity: 0.6;
-}
-
-/* Only added at the highest level of detail. Dashing forces the rasterizer to flatten the
-   curve and lay out every dash along it, and a 4-and-2 pattern is invisible below ~0.7 zoom
-   anyway — see the `lod` check in ERRelationshipLine.tsx. */
-.er-rel-path.dashed {
-  stroke-dasharray: 4 2;
-}
-
-.er-rel-group:hover .er-rel-path,
-.er-rel-group.hl .er-rel-path {
-  stroke: var(--win-accent);
-  stroke-width: 2.5px;
-  stroke-dasharray: none;
-  opacity: 1;
-  filter: drop-shadow(0 0 3px rgba(59, 130, 246, 0.4));
-}
-
-/* `.hl` and the container-scoped dim above replace what used to be a per-connector prop. */
-.er-rel-group.hl {
-  opacity: 1;
-}
-
-.er-rel-socket-source,
-.er-rel-socket-target {
-  fill: var(--win-bg-card);
-  stroke: var(--win-text-secondary);
-  stroke-width: 1.5px;
-  transition: all 0.15s ease;
-}
-
-.er-rel-group:hover .er-rel-socket-source,
-.er-rel-group:hover .er-rel-socket-target,
-.er-rel-group.hl .er-rel-socket-source,
-.er-rel-group.hl .er-rel-socket-target {
-  fill: var(--win-accent);
-  stroke: #ffffff;
-  stroke-width: 2px;
-  r: 4.5px;
 }
 
 /* Floating Toolbar */
@@ -18372,77 +18461,12 @@ input.rename-input {
 }
 
 /* ---------------------------------------------------------------------------------------
-   Level of detail.
-
-   Chosen from the zoom in `erViewport.ts`, and deliberately only about what is DRAWN: the card
-   keeps the height the layout gave it at every level, so the FK sockets never move.
-   --------------------------------------------------------------------------------------- */
-
-/* `names`: one element per column row, holding its own text. */
-.er-column-row.plain {
-  display: block;
-  padding: 0 10px;
-  font-size: 11px;
-  line-height: 24px;
-  color: var(--win-text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* `blocks`: the body is gone, so the header is the whole card. */
-.er-table-node.lod-blocks .er-node-header {
-  height: 100%;
-  border-bottom: none;
-}
-
-.er-table-node.lod-blocks .er-node-title {
-  font-size: 13px;
-}
-
-/* Below this zoom the shadow is a smear, but it still costs a composite for every visible card.
-   The `:not()` matters: this block sits BELOW `.er-table-node.selected` and the hover rules,
-   which carry their rings in `box-shadow` — dropping the shadow unconditionally would make a
-   selection invisible at exactly the zoom where tables are picked out of the whole map. */
-.er-table-node.lod-blocks {
-  border-radius: 4px;
-  /* Nothing here is legible enough to be worth animating between states. */
-  transition: none;
-}
-
-.er-table-node.lod-blocks:not(.selected):not(.hl) {
-  box-shadow: none;
-}
-
-/* The flattened single path that carries EVERY connector at the lowest level of detail
-   (see buildFlatConnectorPath). Transition-free: there is no state for it to animate. */
-.er-rel-path.bare {
-  fill: none;
-  stroke: var(--win-text-secondary);
-  stroke-width: 1.5px;
-  transition: none;
-  opacity: 0.45;
-}
-
-/* ---------------------------------------------------------------------------------------
-   Lasso (move tool, dragging the empty canvas)
-   --------------------------------------------------------------------------------------- */
-.er-marquee {
-  position: absolute;
-  top: 0;
-  left: 0;
-  pointer-events: none;
-  background: rgba(59, 130, 246, 0.1);
-  /* It lives inside the scaled layer, so the border is divided back out to stay 1px on
-     screen at every zoom. `--er-inv-zoom` is written by `applyTransform`. */
-  border: calc(1px * var(--er-inv-zoom, 1)) solid var(--win-accent);
-  z-index: 30;
-}
-
-/* ---------------------------------------------------------------------------------------
    Tool switch
    --------------------------------------------------------------------------------------- */
 .er-tool-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
 }
 
@@ -18459,6 +18483,38 @@ input.rename-input {
 .er-toolbar-icon-btn:disabled:hover {
   background: transparent;
   color: var(--win-text-secondary);
+}
+
+/* ---------------------------------------------------------------------------------------
+   The tool switch.
+
+   Each button carries its OWN outline instead of the two sharing one `.er-btn-group` box, so
+   the pair reads as part of the same row of controls as `Full` / `Keys only` / `Compact` —
+   every other thing on that toolbar is an individually outlined 26px pill. The active one is
+   outlined in the accent rather than filled solid, matching `.er-toolbar-btn.active`: both are
+   mode switches, so they should say "selected" the same way.
+
+   These three rules MUST stay below `.er-toolbar-icon-btn.active` above. That selector has the
+   same specificity as `.er-tool-btn.active`, so source order is the only thing turning the
+   solid accent fill off — the same trap as `.tp-details .tp-row` in the Properties pane.
+   --------------------------------------------------------------------------------------- */
+.er-tool-btn {
+  width: 26px;
+  background: var(--win-bg-window);
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+}
+
+.er-tool-btn:hover {
+  background: var(--win-bg-hover);
+  border-color: var(--win-accent);
+  color: var(--win-text-primary);
+}
+
+.er-tool-btn.active {
+  background: var(--win-bg-hover);
+  border-color: var(--win-accent);
+  color: var(--win-accent);
 }
 
 /* Loading & Empty States */

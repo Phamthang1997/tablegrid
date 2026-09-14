@@ -121,10 +121,25 @@ fn cli_candidates() -> Vec<(&'static str, PathBuf)> {
         candidates.push(("nerdctl", PathBuf::from("/usr/local/bin/nerdctl")));
 
         if let Ok(home) = std::env::var("HOME") {
+            // Docker Desktop's own bin directory. Linking the CLI into /usr/local/bin is an
+            // OPTIONAL step there (it needs a privileged helper, and plenty of people decline it),
+            // so on a Mac this is routinely the only copy that exists -- the same gap the Rancher
+            // Desktop entries close on Windows.
+            let docker_bin = Path::new(&home).join(".docker").join("bin");
+            candidates.push(("docker", docker_bin.join("docker")));
+
             let rd_bin = Path::new(&home).join(".rd").join("bin");
             candidates.push(("docker", rd_bin.join("docker")));
             candidates.push(("nerdctl", rd_bin.join("nerdctl")));
         }
+
+        // The copy inside the .app bundle, the macOS twin of the Program Files path above. Last,
+        // because it is the fallback for a Docker Desktop that was never linked anywhere.
+        #[cfg(target_os = "macos")]
+        candidates.push((
+            "docker",
+            PathBuf::from("/Applications/Docker.app/Contents/Resources/bin/docker"),
+        ));
     }
 
     candidates
@@ -201,6 +216,12 @@ pub async fn get_docker_cli_info() -> Result<DockerCliInfo, String> {
 
 /// The fields asked of `ps`, in the order `parse_ps_line` reads them.
 const PS_FORMAT: &str = "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}";
+
+/// How many containers `probe_log_path` will spend a process spawn on.
+///
+/// The list arrives ranked, so the server is the first entry whenever a port matched; the cap is
+/// there for the case where nothing matched and every container would otherwise be probed.
+const MAX_PROBED_CONTAINERS: usize = 4;
 
 /// One line of `ps --format PS_FORMAT` -> a container, or `None` for a line too short to trust.
 ///
@@ -294,6 +315,86 @@ pub async fn list_docker_containers(
     })
     .await
 }
+
+/// Where a log path actually exists, as far as this machine can see.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogPathProbe {
+    /// The path resolves to a real file/directory on THIS machine.
+    pub local: bool,
+    /// Name or id of the first candidate container that has it, or "" when none does.
+    pub container: String,
+    /// The CLI was missing, so `container` is "unknown" rather than "no".
+    pub cli_missing: bool,
+}
+
+/// Answers "is this log path on this machine, or inside one of these containers?".
+///
+/// The point is to replace an INFERENCE with a test. Guessing from the shape of the path only ever
+/// worked on Windows -- a POSIX path there cannot be local, because .NET resolves it against the
+/// current drive -- and said nothing on macOS or Linux, where a native server's log lives at a path
+/// shaped exactly like a container's. `fs::metadata` and `test -e` answer the same question on
+/// every platform, and the answer is evidence rather than a heuristic.
+///
+/// `candidates` is expected best-first (the caller passes what `list_docker_containers` ranked),
+/// because each one costs a process spawn; the scan stops at the first container that has the file
+/// and never probes more than `MAX_PROBED_CONTAINERS`.
+#[command]
+pub async fn probe_log_path(path: String, candidates: Vec<String>) -> Result<LogPathProbe, String> {
+    Box::pin(async move {
+        blocking("probe log path", move || {
+            // A directory counts: `datadir`/`log_directory` are listed rather than tailed, and the
+            // caller needs the same answer about where they live.
+            let local = std::fs::metadata(&path).is_ok();
+            if local {
+                return Ok(LogPathProbe {
+                    local: true,
+                    container: String::new(),
+                    cli_missing: false,
+                });
+            }
+
+            let Some(cli) = find_docker_cli() else {
+                return Ok(LogPathProbe {
+                    local: false,
+                    container: String::new(),
+                    cli_missing: true,
+                });
+            };
+
+            for name in candidates.iter().take(MAX_PROBED_CONTAINERS) {
+                // `test -e` rather than `ls`: it says yes/no through the exit status alone, so
+                // nothing has to be parsed and a localized `ls` error cannot be mistaken for a hit.
+                // A failure to spawn, a stopped container and a missing file are all the same
+                // answer here -- not this one -- so they share the branch.
+                let ok = silent_command(&cli.binary_path)
+                    .arg("exec")
+                    .arg(name)
+                    .arg("test")
+                    .arg("-e")
+                    .arg(&path)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if ok {
+                    return Ok(LogPathProbe {
+                        local: false,
+                        container: name.clone(),
+                        cli_missing: false,
+                    });
+                }
+            }
+
+            Ok(LogPathProbe {
+                local: false,
+                container: String::new(),
+                cli_missing: false,
+            })
+        })
+        .await
+    })
+    .await
+}
+
 
 #[cfg(test)]
 mod tests {

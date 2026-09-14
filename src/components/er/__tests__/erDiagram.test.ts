@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
-  buildFlatConnectorPath,
   computeAutoLayout,
   calculateNodeDimensions,
   connectorSockets,
   getColumnSocketPosition,
   computeBezierPath,
+  computeBezierControls,
   computeDiagramBounds,
+  HEADER_HEIGHT,
+  ROW_HEIGHT,
 } from '../erLayoutEngine';
 import { exportToMermaid, exportToDbml, exportToSql, generateFullDiagramSvg } from '../erExportHelper';
 import type { ERTable, ERRelationship, ERLayoutPositions } from '../erTypes';
@@ -236,6 +238,39 @@ describe('erLayoutEngine', () => {
     expect(socket.y).toBe(layout['customer'].y + 74);
   });
 
+  it('resolves a socket row case-insensitively, and per detail level', () => {
+    // The row lookup is memoized per (table, detail level) because the canvas asks for both
+    // sockets of every visible connector on every frame. These are the three answers the
+    // memoized version has to keep giving.
+    const pos = { x: 0, y: 0, width: 260, height: 400 };
+    const table = mockTables[0];
+    const column = table.columns[table.columns.length - 1];
+
+    const exact = getColumnSocketPosition(pos, table, column.name, 'right', 'full');
+    const shouty = getColumnSocketPosition(pos, table, column.name.toUpperCase(), 'right', 'full');
+    expect(shouty.y).toBe(exact.y);
+    // Its row is the last one, not the fallback.
+    expect(exact.y).toBe(HEADER_HEIGHT + (table.columns.length - 1) * ROW_HEIGHT + ROW_HEIGHT / 2);
+
+    // A column the level does not show anchors on the FIRST row rather than off the card, and
+    // the same name can therefore resolve differently per level — which is why the memo is
+    // keyed by both.
+    const firstRowY = HEADER_HEIGHT + ROW_HEIGHT / 2;
+    expect(getColumnSocketPosition(pos, table, 'nope', 'right', 'full').y).toBe(firstRowY);
+    const keysOnly = getColumnSocketPosition(pos, table, column.name, 'right', 'keys_only');
+    expect(keysOnly.y).toBeLessThanOrEqual(exact.y);
+
+    // A collapsed card has no rows at all: every socket meets the header.
+    const collapsed = getColumnSocketPosition(
+      { ...pos, isCollapsed: true },
+      table,
+      column.name,
+      'left',
+      'full'
+    );
+    expect(collapsed).toEqual({ x: pos.x, y: pos.y + HEADER_HEIGHT / 2 });
+  });
+
   it('picks the connector sides from where the two cards actually are', () => {
     const left = { x: 0, y: 0, width: 260, height: 200 };
     const right = { x: 500, y: 0, width: 260, height: 200 };
@@ -258,42 +293,27 @@ describe('erLayoutEngine', () => {
     expect(stacked.target.x).toBe(300);
   });
 
-  it('flattens every connector into one path, skipping the ones it cannot place', () => {
-    const layout = computeAutoLayout(mockTables, mockRelationships, 'full');
-    const tableMap = new Map(mockTables.map((table) => [table.name, table]));
-
-    const d = buildFlatConnectorPath(mockRelationships, layout, tableMap, 'full');
-    // One `M ... L ...` per relationship, and straight segments only.
-    expect(d.match(/M /g)).toHaveLength(mockRelationships.length);
-    expect(d.match(/L /g)).toHaveLength(mockRelationships.length);
-    expect(d).not.toContain('C ');
-
-    // Endpoints agree with the per-connector geometry, so lines cannot jump when the level of
-    // detail crosses the threshold between the two renderers.
-    const first = mockRelationships[0];
-    const sockets = connectorSockets(
-      first,
-      tableMap.get(first.sourceTable)!,
-      tableMap.get(first.targetTable)!,
-      layout[first.sourceTable],
-      layout[first.targetTable],
-      'full'
-    );
-    expect(d).toContain(`M ${sockets.source.x} ${sockets.source.y}`);
-
-    // A relationship naming a table that is not in the diagram is dropped, not drawn to 0,0.
-    const dangling = buildFlatConnectorPath(
-      [{ ...first, id: 'x', targetTable: 'not_here' }],
-      layout,
-      tableMap,
-      'full'
-    );
-    expect(dangling).toBe('');
-  });
-
   it('computes valid Cubic Bezier SVG path', () => {
     const path = computeBezierPath({ x: 100, y: 150 }, { x: 400, y: 250 });
     expect(path).toMatch(/^M 100 150 C \d+ \d+, \d+ \d+, 400 250$/);
+  });
+
+  it('spells the same curve as control points for the canvas renderer', () => {
+    // The painter strokes `bezierCurveTo` and the export writes the path string. Both come from
+    // one function, so a diagram can never be exported with a different shape than it had on
+    // screen — see `computeBezierControls`.
+    const source = { x: 100, y: 150 };
+    const target = { x: 400, y: 250 };
+    const b = computeBezierControls(source, target);
+    expect(computeBezierPath(source, target)).toBe(
+      `M ${b.x1} ${b.y1} C ${b.cx1} ${b.cy1}, ${b.cx2} ${b.cy2}, ${b.x2} ${b.y2}`
+    );
+    // The curve leaves its source sideways and arrives sideways, which is what puts the arrow
+    // head flat against the card edge rather than at an angle.
+    expect(b.cy1).toBe(source.y);
+    expect(b.cy2).toBe(target.y);
+    expect(b.cx1).toBeGreaterThan(source.x);
+    expect(b.cx2).toBeLessThan(target.x);
   });
 
   it('calculates bounding box of diagram correctly', () => {

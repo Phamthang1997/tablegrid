@@ -99,131 +99,76 @@ const ObjectName: React.FC<{ name: string }> = ({ name }) => {
  * .sidebar-item.active` in index.css, so switching to a class would also change the selected row's
  * border and shadow — outside the scope of this change.
  */
-const ROW_WRAP_STYLE: React.CSSProperties = { display: 'flex', flexDirection: 'column' };
-const ROW_STYLE: React.CSSProperties = {
-  borderRadius: '4px',
-  padding: '4px 8px',
-  display: 'flex',
-  alignItems: 'center',
-  gap: '6px',
-};
+
+
 /**
- * The selected row: a FAINT accent background, not a solid one.
+ * How many rows of a block are rendered before the user scrolls.
  *
- * The text stays `--win-text-primary` rather than a hardcoded `#ffffff` — the same reason recorded on
- * `.workspace-container .sidebar-item.active` in index.css: a faint background in the light theme
- * makes white text disappear. The border and shadow are still that class's job and the inline style
- * only overrides background and text colour, so the selected row stays distinguishable from the one
- * highlighted by keyboard (`.is-highlighted` uses accent-glow too, but has no border).
+ * ~150 rows is about six screens at 26px, so the sentinel below is never in view on arrival and
+ * the list still feels complete. `content-visibility` already stops off-screen rows costing
+ * layout and paint; this is about the half it cannot touch — React building the elements and the
+ * browser building the DOM nodes, which is paid in full every time the list is rebuilt (a
+ * keystroke in the search box, expanding a row, an arrow key).
  */
-const ROW_STYLE_ACTIVE: React.CSSProperties = {
-  ...ROW_STYLE,
-  background: 'var(--win-accent-glow)',
-  color: 'var(--win-text-primary)',
-};
-const CHEVRON_STYLE: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  width: '14px',
-  height: '14px',
-  cursor: 'pointer',
-  opacity: 0.8,
-};
-const NAME_STYLE: React.CSSProperties = { fontWeight: 400, flex: 1, minWidth: 0 };
-const NAME_STYLE_ACTIVE: React.CSSProperties = { fontWeight: 600, flex: 1, minWidth: 0 };
-const COLS_WRAP_STYLE: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  paddingLeft: '14px',
-  margin: '2px 0 4px',
-};
-/** Header row of a group node (Fields / Indexes / Foreign Keys / Checks / Triggers). */
-const GROUP_ROW_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: '6px',
-  padding: '2px 6px',
-  fontSize: '11.5px',
-  fontWeight: 500,
-  borderRadius: '4px',
-  cursor: 'pointer',
-  color: 'var(--win-text-secondary)',
-};
-/** Members of a group sit one level deeper than their header. */
-const GROUP_ITEMS_STYLE: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  paddingLeft: '14px',
-};
-/** Box listing object names in the Truncate/Drop dialogs. Those two dialogs used to name no
- *  table at all — with a multi-selection that is information the user must have. */
-const NAME_LIST_LABEL_STYLE: React.CSSProperties = {
-  fontSize: '12px',
-  fontWeight: 500,
-  color: 'var(--win-text-primary)',
-  marginBottom: '6px',
-};
-const NAME_LIST_BOX_STYLE: React.CSSProperties = {
-  maxHeight: '140px',
-  overflowY: 'auto',
-  padding: '8px 10px',
-  borderRadius: '6px',
-  border: '1px solid var(--win-border)',
-  background: 'var(--win-bg-hover)',
-  fontFamily: 'var(--win-font-mono)',
-  fontSize: '11.5px',
-  lineHeight: 1.6,
-  whiteSpace: 'pre-line',
-  color: 'var(--win-text-primary)',
-};
-const GROUP_COUNT_STYLE: React.CSSProperties = {
-  fontSize: '10px',
-  color: 'var(--win-text-disabled)',
-  flexShrink: 0,
-};
-const COLS_HINT_STYLE: React.CSSProperties = {
-  fontSize: '10.5px',
-  color: 'var(--win-text-disabled)',
-  padding: '2px 6px',
-};
-const COL_ROW_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  padding: '2px 6px',
-  fontSize: '11.5px',
-  borderRadius: '4px',
-  color: 'var(--win-text-primary)',
-};
-const COL_LEFT_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: '6px',
-  minWidth: 0,
-  flex: 1,
-};
-const COL_KEY_SLOT_STYLE: React.CSSProperties = {
-  width: '12px',
-  display: 'inline-flex',
-  justifyContent: 'center',
-  flexShrink: 0,
-};
-const COL_KEY_ICON_STYLE: React.CSSProperties = { flexShrink: 0 };
-const COL_KEY_SPACER_STYLE: React.CSSProperties = { width: '11px' };
-const COL_NAME_STYLE: React.CSSProperties = {
-  fontFamily: 'var(--win-font-mono)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-};
-const COL_TYPE_STYLE: React.CSSProperties = {
-  fontFamily: 'var(--win-font-mono)',
-  fontSize: '10.5px',
-  color: 'var(--win-text-disabled)',
-  marginLeft: '8px',
-  flexShrink: 0,
-};
+const CHUNK_SIZE = 150;
+/** How far past the last row the sentinel starts growing the list. One chunk is ~3900px, so a
+ *  single growth always clears this margin — the observer cannot run away with itself. */
+const CHUNK_ROOT_MARGIN = '400px';
+
+/**
+ * Renders a long list a chunk at a time, growing as the end comes into view.
+ *
+ * Deliberately incremental rather than windowed: a row here is NOT a fixed height — an expanded
+ * one carries a whole `TableDetailTree` — so a windowing library would have to measure and cache
+ * every row's height, and get scroll restoration right on top. Growing forwards needs neither,
+ * keeps the DOM in document order (so `scrollIntoView`, focus and find-in-page all still work),
+ * and costs one sentinel element.
+ *
+ * `minCount` is what keeps keyboard navigation honest: ↑ from the first row wraps to the LAST
+ * one, which would otherwise not be rendered to scroll to.
+ */
+function useChunkedList<T>(items: T[], minCount: number) {
+  const [count, setCount] = useState(CHUNK_SIZE);
+  // Reset when the list itself changes — a new filter must not inherit the old scroll depth.
+  // Adjusted during render rather than in an effect, the way `reconcileLayout` does in
+  // ERDiagramView: an effect would paint one frame of the previous list first.
+  const [seen, setSeen] = useState(items);
+  if (seen !== items) {
+    setSeen(items);
+    setCount(CHUNK_SIZE);
+  }
+
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const sentinelRef = useCallback((el: HTMLDivElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) setCount((c) => c + CHUNK_SIZE);
+      },
+      { rootMargin: CHUNK_ROOT_MARGIN }
+    );
+    io.observe(el);
+    observerRef.current = io;
+  }, []);
+
+  useEffect(() => () => observerRef.current?.disconnect(), []);
+
+  const want = Math.max(count, minCount);
+  return {
+    visible: want >= items.length ? items : items.slice(0, want),
+    hasMore: want < items.length,
+    sentinelRef,
+  };
+}
+
+/**
+ * Registry key for one row. NUL as the separator, for the reason `EDGE_SEP` gives in
+ * erLayoutEngine: a quoted identifier may legally contain a space or a dot, and cannot contain a
+ * NUL, so `tables\0a b` can never collide with anything.
+ */
+const rowKey = (section: ObjectSection, name: string) => `${section}${String.fromCharCode(0)}${name}`;
 
 /**
  * The four segmented tabs at the top of the sidebar. The constant table holds translation KEYS, not
@@ -251,11 +196,11 @@ interface GroupNodeProps {
 /** Header of one group inside an expanded table. The members are rendered by the
  *  caller (only when open) so a closed group costs nothing to build. */
 const GroupNode: React.FC<GroupNodeProps> = ({ open, icon, label, count, onToggle }) => (
-  <div style={GROUP_ROW_STYLE} onClick={onToggle} title={label}>
-    <span style={CHEVRON_STYLE}>{open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}</span>
+  <div className="sb-group-row" onClick={onToggle} title={label}>
+    <span className="sb-chevron">{open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}</span>
     {icon}
-    <span style={NAME_STYLE}>{label}</span>
-    {count !== undefined && <span style={GROUP_COUNT_STYLE}>{count}</span>}
+    <span className="sb-group-label">{label}</span>
+    {count !== undefined && <span className="sb-group-count">{count}</span>}
   </div>
 );
 
@@ -298,16 +243,16 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
     }
   };
 
-  const emptyHint = <div style={COLS_HINT_STYLE}>{t('sidebar.groupEmpty')}</div>;
-  const loadingHint = <div style={COLS_HINT_STYLE}>{t('sidebar.groupLoading')}</div>;
+  const emptyHint = <div className="sb-cols-hint">{t('sidebar.groupEmpty')}</div>;
+  const loadingHint = <div className="sb-cols-hint">{t('sidebar.groupLoading')}</div>;
 
   const detailRow = (key: string, icon: React.ReactNode, name: string, meta: string, title: string) => (
-    <div key={key} style={COL_ROW_STYLE} title={title}>
-      <div style={COL_LEFT_STYLE}>
-        <span style={COL_KEY_SLOT_STYLE}>{icon}</span>
-        <span style={COL_NAME_STYLE}>{name}</span>
+    <div key={key} className="sb-col-row" title={title}>
+      <div className="sb-col-left">
+        <span className="sb-col-key">{icon}</span>
+        <span className="sb-col-name">{name}</span>
       </div>
-      {meta && <span style={COL_TYPE_STYLE}>{meta}</span>}
+      {meta && <span className="sb-col-type">{meta}</span>}
     </div>
   );
 
@@ -321,27 +266,27 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
         onToggle={() => toggle('fields')}
       />
       {open.fields && (
-        <div style={GROUP_ITEMS_STYLE}>
+        <div className="sb-group-items">
           {schema.columns.length === 0
-            ? <div style={COLS_HINT_STYLE}>{t('sidebar.noColumns')}</div>
+            ? <div className="sb-cols-hint">{t('sidebar.noColumns')}</div>
             : schema.columns.map((col) => (
               <div
                 key={col.name}
-                style={COL_ROW_STYLE}
+                className="sb-col-row"
                 title={`${col.name} (${col.type}) ${col.isPrimaryKey ? '[PK]' : ''}`}
               >
-                <div style={COL_LEFT_STYLE}>
-                  <span style={COL_KEY_SLOT_STYLE}>
+                <div className="sb-col-left">
+                  <span className="sb-col-key">
                     {col.isPrimaryKey ? (
-                      <Key size={11} color="#f59e0b" style={COL_KEY_ICON_STYLE} />
+                      <Key size={11} color="#f59e0b" className="sb-col-key-icon" />
                     ) : (
-                      <span style={COL_KEY_SPACER_STYLE} />
+                      <span className="sb-col-key-spacer" />
                     )}
                   </span>
-                  <span style={COL_NAME_STYLE}>{col.name}</span>
+                  <span className="sb-col-name">{col.name}</span>
                 </div>
 
-                <span style={COL_TYPE_STYLE}>{col.type}</span>
+                <span className="sb-col-type">{col.type}</span>
               </div>
             ))}
         </div>
@@ -355,12 +300,12 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
         onToggle={() => toggle('indexes')}
       />
       {open.indexes && (
-        <div style={GROUP_ITEMS_STYLE}>
+        <div className="sb-group-items">
           {schema.indexes.length === 0
             ? emptyHint
             : schema.indexes.map((idx) => detailRow(
               idx.name,
-              <ArrowDownAZ size={11} style={COL_KEY_ICON_STYLE} />,
+              <ArrowDownAZ size={11} className="sb-col-key-icon" />,
               idx.name,
               idx.columns,
               `${idx.name} (${idx.columns})${idx.unique ? ' [UNIQUE]' : ''}`,
@@ -376,12 +321,12 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
         onToggle={() => toggle('fks')}
       />
       {open.fks && (
-        <div style={GROUP_ITEMS_STYLE}>
+        <div className="sb-group-items">
           {schema.foreignKeys.length === 0
             ? emptyHint
             : schema.foreignKeys.map((fk, i) => detailRow(
               `${fk.name || fk.column}_${i}`,
-              <Link2 size={11} style={COL_KEY_ICON_STYLE} />,
+              <Link2 size={11} className="sb-col-key-icon" />,
               fk.name || fk.column,
               `${fk.refTable}.${fk.refColumn}`,
               `${fk.column} -> ${fk.refTable}.${fk.refColumn}`,
@@ -397,14 +342,14 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
         onToggle={() => toggle('checks')}
       />
       {open.checks && (
-        <div style={GROUP_ITEMS_STYLE}>
+        <div className="sb-group-items">
           {loadingExtra.checks || checks === null
             ? loadingHint
             : checks.length === 0
               ? emptyHint
               : checks.map((c, i) => detailRow(
                 `${c.name}_${i}`,
-                <CheckCircle2 size={11} color="#22c55e" style={COL_KEY_ICON_STYLE} />,
+                <CheckCircle2 size={11} color="#22c55e" className="sb-col-key-icon" />,
                 c.name,
                 c.expression,
                 `${c.name}: ${c.expression}`,
@@ -420,14 +365,14 @@ const TableDetailTree: React.FC<{ connId: string; tableName: string; schema: Sch
         onToggle={() => toggle('triggers')}
       />
       {open.triggers && (
-        <div style={GROUP_ITEMS_STYLE}>
+        <div className="sb-group-items">
           {loadingExtra.triggers || triggers === null
             ? loadingHint
             : triggers.length === 0
               ? emptyHint
               : triggers.map((tr, i) => detailRow(
                 `${tr.name}_${i}`,
-                <Zap size={11} color="#f59e0b" style={COL_KEY_ICON_STYLE} />,
+                <Zap size={11} color="#f59e0b" className="sb-col-key-icon" />,
                 tr.name,
                 `${tr.timing} ${tr.event}`.trim(),
                 `${tr.name} (${tr.timing} ${tr.event})`,
@@ -455,8 +400,6 @@ interface ObjectItemProps {
   section: ObjectSection;
   index: number;
   isHighlighted: boolean;
-  isActive: boolean;
-  isSelected: boolean;
   isExpanded: boolean;
   /** undefined = not expanded yet, or still loading. No default object is passed: a fresh object each
    *  render would break the memo of EVERY closed row. */
@@ -465,6 +408,17 @@ interface ObjectItemProps {
   highlightRef: React.RefObject<HTMLDivElement | null>;
   /** Takes the mouse event too: Ctrl/Cmd and Shift decide toggle-one vs take-the-range. */
   onSelect: (name: string, section: ObjectSection, index: number, e: React.MouseEvent) => void;
+  /**
+   * Hands the row's element to the sidebar's registry.
+   *
+   * "Which row is open" and "which rows are selected" are NOT props, because they change on every
+   * click and a prop would mean rebuilding all 2500 rows to tell two of them apart — measured: the
+   * lag disappears entirely once the search box narrows the list to a handful. The sidebar writes
+   * the classes straight onto the elements instead (`applyRowClasses`), which is the same trade
+   * the ER canvas makes for hover, and this registry is how it finds them in O(1) without building
+   * a selector out of a user-supplied table name.
+   */
+  registerRow: (key: string, el: HTMLDivElement | null) => void;
   onContextMenu: (e: React.MouseEvent, name: string, section: ObjectSection, index: number) => void;
   /** `schema` is `TableItem.schema` — the detail tree has to introspect the same relation the row
    *  came from, which for a Postgres temp row is `pg_temp_N` rather than the current schema. */
@@ -485,13 +439,12 @@ const ObjectItem = memo(function ObjectItem({
   section,
   index,
   isHighlighted,
-  isActive,
-  isSelected,
   isExpanded,
   schema,
   isLoadingCols,
   highlightRef,
   onSelect,
+  registerRow,
   onContextMenu,
   onToggleExpand,
   onRequestDrop,
@@ -503,10 +456,15 @@ const ObjectItem = memo(function ObjectItem({
   const isView = item.type === 'view';
 
   return (
-    <div style={ROW_WRAP_STYLE}>
+    <div className="sidebar-row">
       <div
-        ref={isHighlighted ? highlightRef : undefined}
-        className={`sidebar-item ${isActive ? 'active' : ''}${isHighlighted ? ' is-highlighted' : ''}`}
+        ref={(el) => {
+          registerRow(rowKey(section, item.name), el);
+          // The keyboard highlight stays a prop: it only moves on arrow keys, never on a click,
+          // so it is not on the path this registry exists to make cheap.
+          if (isHighlighted) highlightRef.current = el;
+        }}
+        className={`sidebar-item${isHighlighted ? ' is-highlighted' : ''}`}
         tabIndex={0}
         onClick={(e) => onSelect(item.name, section, index, e)}
         onContextMenu={(e) => onContextMenu(e, item.name, section, index)}
@@ -518,12 +476,9 @@ const ObjectItem = memo(function ObjectItem({
           }
         }}
         title={t('sidebar.tableItemHint', { name: item.name })}
-        // A selected row shares its background with the open row; what tells the two apart
-        // is the border + shadow from the `.active` class in index.css, not the background.
-        style={isActive || isSelected ? ROW_STYLE_ACTIVE : ROW_STYLE}
       >
         {!isView && (
-          <span onClick={(e) => onToggleExpand(item.name, isExpanded, e, item.schema)} style={CHEVRON_STYLE}>
+          <span onClick={(e) => onToggleExpand(item.name, isExpanded, e, item.schema)} className="sb-chevron">
             {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
           </span>
         )}
@@ -536,17 +491,17 @@ const ObjectItem = memo(function ObjectItem({
           <Columns3 size={14} className="icon-table" />
         )}
 
-        <span style={isActive ? NAME_STYLE_ACTIVE : NAME_STYLE}>
+        <span className="sb-name-slot">
           <ObjectName name={item.name} />
         </span>
       </div>
 
       {isExpanded && !isView && (
-        <div style={COLS_WRAP_STYLE}>
+        <div className="sb-cols-wrap">
           {isLoadingCols ? (
-            <div style={COLS_HINT_STYLE}>{t('sidebar.loadingColumns')}</div>
+            <div className="sb-cols-hint">{t('sidebar.loadingColumns')}</div>
           ) : !schema ? (
-            <div style={COLS_HINT_STYLE}>{t('sidebar.noColumns')}</div>
+            <div className="sb-cols-hint">{t('sidebar.noColumns')}</div>
           ) : (
             <TableDetailTree connId={connId} tableName={item.name} schema={schema} />
           )}
@@ -813,7 +768,69 @@ export const Sidebar: React.FC<SidebarProps> = ({
    * the other block replaces the selection.
    */
   const [selection, setSelection] = useState<{ section: ObjectSection; names: string[] }>({ section: 'tables', names: [] });
-  const selectionSet = useMemo(() => new Set(selection.names), [selection]);
+
+  /**
+   * The rows' elements, and the classes the sidebar writes onto them by hand.
+   *
+   * `active` and `is-on` used to be props (`isActive` / `isSelected`), which meant a click had to
+   * rebuild every row in the list so that two of them could change appearance. At 2500 tables that
+   * is what the lag was — confirmed by narrowing the list with the search box, where it vanishes.
+   * Writing the classes costs the size of the selection instead of the size of the list.
+   */
+  const rowElsRef = useRef(new Map<string, HTMLDivElement>());
+  const markedRowsRef = useRef<HTMLElement[]>([]);
+
+  const registerRow = useCallback((key: string, el: HTMLDivElement | null) => {
+    if (el) rowElsRef.current.set(key, el);
+    else rowElsRef.current.delete(key);
+  }, []);
+
+  /**
+   * Both values are ARGUMENTS, never read from a ref.
+   *
+   * `selectionRef` is filled by a passive `useEffect`, which runs AFTER every `useLayoutEffect` —
+   * so reading it from here saw the PREVIOUS render's selection, and a click lit two rows: the new
+   * one from `activeTable` and the old one from the stale selection. Anything this function needs
+   * has to arrive from the render that is being painted.
+   */
+  const applyRowClasses = useCallback(
+    (sel: { section: ObjectSection; names: string[] }, open: string | null | undefined) => {
+    for (const el of markedRowsRef.current) el.classList.remove('active', 'is-on');
+    const marked: HTMLElement[] = [];
+    const els = rowElsRef.current;
+
+    // A selected row shares its background with the open row; what tells the two apart is the
+    // border + shadow `.active` carries in index.css, not the background.
+    for (const name of sel.names) {
+      const el = els.get(rowKey(sel.section, name));
+      if (el) {
+        el.classList.add('is-on');
+        marked.push(el);
+      }
+    }
+
+    // Matched by name across all three blocks, exactly as `activeTable === item.name` did.
+    if (open) {
+      for (const section of ['tables', 'views', 'temporary'] as const) {
+        const el = els.get(rowKey(section, open));
+        if (el) {
+          el.classList.add('active', 'is-on');
+          marked.push(el);
+        }
+      }
+    }
+
+    markedRowsRef.current = marked;
+    },
+    []
+  );
+
+  // No dependency array: React owns none of these classes, and the list remounts its rows whenever
+  // the filter or the table list changes — a fresh row arrives without them. Same reason the ER
+  // canvas re-applies its highlight after every commit.
+  useLayoutEffect(() => {
+    applyRowClasses(selection, activeTable);
+  });
   const selectionRef = useRef(selection);
   useEffect(() => {
     selectionRef.current = selection;
@@ -1414,6 +1431,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (highlight >= 0) highlightRef.current?.scrollIntoView({ block: 'nearest' });
   }, [highlight]);
 
+  /**
+   * Each block renders a chunk at a time. The `minCount` arguments translate the ↑/↓ highlight,
+   * which is an index into the flat nav run across all three blocks, into "this block must render
+   * at least this many rows" — otherwise wrapping from the first row to the last has nothing to
+   * scroll to.
+   */
+  const tablesChunk = useChunkedList(
+    filteredTables,
+    highlight >= 0 && highlight < viewNavOffset ? highlight + 1 : 0
+  );
+  const viewsChunk = useChunkedList(
+    filteredViews,
+    highlight >= viewNavOffset && highlight < tempNavOffset ? highlight - viewNavOffset + 1 : 0
+  );
+  const tempChunk = useChunkedList(
+    filteredTempTables,
+    highlight >= tempNavOffset ? highlight - tempNavOffset + 1 : 0
+  );
+
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       if (navItems.length === 0) return;
@@ -1440,7 +1476,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   /** `navIndex` is the position in the ↑/↓ run (tables then views), `index` the position
    *  within the BLOCK — two different numbers, and Shift+click needs the second one. */
-  const renderObjectItem = (item: TableItem, navIndex: number, section: ObjectSection, index: number) => {
+  const renderObjectItem = useCallback(
+    (item: TableItem, navIndex: number, section: ObjectSection, index: number) => {
     const isExpanded = !!expandedTables[item.name];
     return (
       <ObjectItem
@@ -1450,8 +1487,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         section={section}
         index={index}
         isHighlighted={navIndex === highlight}
-        isActive={activeTable === item.name}
-        isSelected={selection.section === section && selectionSet.has(item.name)}
         isExpanded={isExpanded}
         // Passed only while expanded: a fresh default value each render would break the memo of every
         // closed row.
@@ -1459,12 +1494,54 @@ export const Sidebar: React.FC<SidebarProps> = ({
         isLoadingCols={!!loadingColumns[item.name]}
         highlightRef={highlightRef}
         onSelect={handleRowSelect}
+        registerRow={registerRow}
         onContextMenu={handleTableContextMenu}
         onToggleExpand={toggleTableExpanded}
         onRequestDrop={handleRowRequestDrop}
       />
     );
-  };
+    },
+    [
+      connId,
+      expandedTables,
+      highlight,
+      tableSchemaMap,
+      loadingColumns,
+      highlightRef,
+      handleRowSelect,
+      registerRow,
+      handleTableContextMenu,
+      toggleTableExpanded,
+      handleRowRequestDrop,
+    ]
+  );
+
+  /**
+   * The three object lists, as elements.
+   *
+   * This memo is the difference between a click costing three DOM writes and costing 2500
+   * `createElement` calls plus 2500 `React.memo` prop comparisons. `Sidebar` is NOT memoized and
+   * `App` hands it several inline arrows plus `terminalConfig()` (a fresh object per render), so
+   * every single App render — a job tick, a transaction event, opening a tab — re-runs this
+   * component. Without the memo each of those rebuilds the whole list; with it React sees the same
+   * element objects and skips the subtree entirely.
+   *
+   * It is deliberately keyed on `renderObjectItem`, which carries every real dependency in its own
+   * list: adding a prop to a row means adding it there, in one place, rather than to three memos.
+   */
+  const tableRows = useMemo(
+    () => tablesChunk.visible.map((item, i) => renderObjectItem(item, i, 'tables', i)),
+    [tablesChunk.visible, renderObjectItem]
+  );
+  const viewRows = useMemo(
+    () => viewsChunk.visible.map((item, i) => renderObjectItem(item, viewNavOffset + i, 'views', i)),
+    [viewsChunk.visible, viewNavOffset, renderObjectItem]
+  );
+  const tempRows = useMemo(
+    () =>
+      tempChunk.visible.map((item, i) => renderObjectItem(item, tempNavOffset + i, 'temporary', i)),
+    [tempChunk.visible, tempNavOffset, renderObjectItem]
+  );
 
   // Grouped Tools Configuration
   const toolGroups = useMemo(() => [
@@ -1771,7 +1848,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       {t('sidebar.noTables')}
                     </div>
                   ) : (
-                    filteredTables.map((item, i) => renderObjectItem(item, i, 'tables', i))
+                    <>
+                      {tableRows}
+                      {tablesChunk.hasMore && <div ref={tablesChunk.sentinelRef} />}
+                    </>
                   )}
                 </div>
               )}
@@ -1817,7 +1897,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </div>
                 {isOpen('views') && (
                   <div className="sidebar-list">
-                    {filteredViews.map((item, i) => renderObjectItem(item, viewNavOffset + i, 'views', i))}
+                    {viewRows}
+                    {viewsChunk.hasMore && <div ref={viewsChunk.sentinelRef} />}
                   </div>
                 )}
               </div>
@@ -1838,9 +1919,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </div>
                 {isOpen('temporary') && (
                   <div className="sidebar-list">
-                    {filteredTempTables.map((item, i) =>
-                      renderObjectItem(item, tempNavOffset + i, 'temporary', i)
-                    )}
+                    {tempRows}
+                    {tempChunk.hasMore && <div ref={tempChunk.sentinelRef} />}
                   </div>
                 )}
               </div>
@@ -2370,7 +2450,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           zIndex: 99999,
           minWidth: '170px',
         };
-        const itemStyle: React.CSSProperties = { padding: '6px 12px', fontSize: '11px', cursor: 'pointer' };
 
         /**
          * Menu for a multi-selection. Only what genuinely runs in bulk: opening a tab,
@@ -2396,8 +2475,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   setContextMenu(null);
                   navigator.clipboard?.writeText(names.join(', '));
                 }}
-                style={{ ...itemStyle, color: 'var(--win-text-primary)' }}
-                className="sidebar-context-item"
+                className="sidebar-context-item sb-ctx-item"
               >
                 {t('sidebar.ctxCopyNames')}
               </div>
@@ -2409,8 +2487,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     if (blockedByReadOnly()) return;
                     setTruncateModal({ names, restartIdentity: false, disableFkCheck: false, cascade: false });
                   }}
-                  style={{ ...itemStyle, color: 'var(--st-warn)' }}
-                  className="sidebar-context-item"
+                  className="sidebar-context-item sb-ctx-item warn"
                 >
                   {t('sidebar.ctxTruncateSelected', { n: names.length })}
                 </div>
@@ -2422,8 +2499,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   if (blockedByReadOnly()) return;
                   setDropModal({ names, isView, ignoreFkCheck: false, cascade: false, schema: contextMenu.schema });
                 }}
-                style={{ ...itemStyle, color: 'var(--win-accent)' }}
-                className="sidebar-context-item"
+                className="sidebar-context-item sb-ctx-item accent"
               >
                 {t('sidebar.ctxDropSelected', { n: names.length })}
               </div>
@@ -2898,10 +2974,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <ModalBody style={{ gap: '16px', padding: '16px 20px' }}>
             <div>
-              <div style={NAME_LIST_LABEL_STYLE}>
+              <div className="sb-namelist-label">
                 {t('sidebar.truncateModalObjects', { n: truncateModal.names.length })}
               </div>
-              <div style={NAME_LIST_BOX_STYLE}>{truncateModal.names.join('\n')}</div>
+              <div className="sb-namelist-box">{truncateModal.names.join('\n')}</div>
             </div>
 
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', userSelect: 'none' }}>
@@ -2992,10 +3068,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <ModalBody style={{ gap: '16px', padding: '16px 20px' }}>
             <div>
-              <div style={NAME_LIST_LABEL_STYLE}>
+              <div className="sb-namelist-label">
                 {t('sidebar.dropModalObjects', { n: dropModal.names.length })}
               </div>
-              <div style={NAME_LIST_BOX_STYLE}>{dropModal.names.join('\n')}</div>
+              <div className="sb-namelist-box">{dropModal.names.join('\n')}</div>
             </div>
 
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', userSelect: 'none' }}>

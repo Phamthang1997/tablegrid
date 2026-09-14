@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  CULL_MARGIN,
   LOD_BLOCKS_BELOW,
   LOD_NAMES_BELOW,
   ZOOM_MAX,
@@ -11,7 +10,6 @@ import {
   lerpViewport,
   lodForZoom,
   marqueeHits,
-  needsRecommit,
   rectContainsNode,
   rectFromCorners,
   connectorHasVisibleEnd,
@@ -85,13 +83,22 @@ describe('erViewport level of detail', () => {
 });
 
 describe('erViewport culling', () => {
-  it('covers the screen plus the margin on every side', () => {
+  it('covers exactly the screen by default', () => {
     const vp: ERViewport = { x: 0, y: 0, zoom: 1 };
-    const rect = visibleWorldRect(vp, 1000, 500, CULL_MARGIN);
-    expect(rect.minX).toBeCloseTo(-1000 * CULL_MARGIN, 6);
-    expect(rect.maxX).toBeCloseTo(1000 + 1000 * CULL_MARGIN, 6);
-    expect(rect.minY).toBeCloseTo(-500 * CULL_MARGIN, 6);
-    expect(rect.maxY).toBeCloseTo(500 + 500 * CULL_MARGIN, 6);
+    const rect = visibleWorldRect(vp, 1000, 500);
+    expect(rect.minX).toBeCloseTo(0, 6);
+    expect(rect.maxX).toBeCloseTo(1000, 6);
+    expect(rect.minY).toBeCloseTo(0, 6);
+    expect(rect.maxY).toBeCloseTo(500, 6);
+  });
+
+  it('grows by the margin on every side when one is asked for', () => {
+    const vp: ERViewport = { x: 0, y: 0, zoom: 1 };
+    const rect = visibleWorldRect(vp, 1000, 500, 0.25);
+    expect(rect.minX).toBeCloseTo(-250, 6);
+    expect(rect.maxX).toBeCloseTo(1250, 6);
+    expect(rect.minY).toBeCloseTo(-125, 6);
+    expect(rect.maxY).toBeCloseTo(625, 6);
   });
 
   it('grows in world units as the diagram is zoomed out', () => {
@@ -147,7 +154,7 @@ describe('erViewport culling', () => {
     expect(connectorIntersects(rect, node(-300, 100), node(-320, 400))).toBe(true);
   });
 
-  it('at the zoomed-in levels keeps only connectors with an end on screen', () => {
+  it('separates the two tests by what the zoom makes readable', () => {
     const rect = { minX: 0, minY: 0, maxX: 800, maxY: 600 };
     const inside = node(100, 100);
     const outside = node(-9000, -9000);
@@ -156,40 +163,13 @@ describe('erViewport culling', () => {
     expect(connectorHasVisibleEnd(rect, outside, inside)).toBe(true);
     expect(connectorHasVisibleEnd(rect, inside, node(400, 300))).toBe(true);
 
-    // A long diagonal that crosses the viewport with both ends far outside: honest geometry,
-    // and the line test keeps it — but there is nothing to read in it at this zoom, and at a
-    // few thousand tables there are hundreds of them, each a `<g>` of six elements.
+    // A long diagonal crossing the viewport with both ends far outside. The honest test keeps
+    // it, which is right at `blocks` where those diagonals are the shape of the graph; at a
+    // working zoom it is a dashed line with both ends, both sockets and its arrow head off
+    // screen, and there were ~140 of them against 7 visible cards.
     const across = [node(-3000, -2000), node(4000, 2600)] as const;
     expect(connectorIntersects(rect, across[0], across[1])).toBe(true);
     expect(connectorHasVisibleEnd(rect, across[0], across[1])).toBe(false);
-  });
-});
-
-describe('erViewport recommit policy', () => {
-  const base: ERViewport = { x: 0, y: 0, zoom: 1 };
-
-  it('holds still for a small pan', () => {
-    expect(needsRecommit(base, { ...base, x: -100 }, 1000, 600)).toBe(false);
-  });
-
-  it('commits once the pan eats into the cull margin', () => {
-    const drift = (1000 * CULL_MARGIN) / 2 + 10;
-    expect(needsRecommit(base, { ...base, x: -drift }, 1000, 600)).toBe(true);
-  });
-
-  it('commits on a zoom ratio rather than an absolute difference', () => {
-    expect(needsRecommit(base, { ...base, zoom: 1.1 }, 1000, 600)).toBe(false);
-    expect(needsRecommit(base, { ...base, zoom: 1.3 }, 1000, 600)).toBe(true);
-    // The same 0.2 difference far below 1 is a huge relative change and must commit.
-    const small: ERViewport = { x: 0, y: 0, zoom: 0.2 };
-    expect(needsRecommit(small, { ...small, zoom: 0.4 }, 1000, 600)).toBe(true);
-  });
-
-  it('always commits when the level of detail would change', () => {
-    const a: ERViewport = { x: 0, y: 0, zoom: LOD_NAMES_BELOW };
-    const b: ERViewport = { x: 0, y: 0, zoom: LOD_NAMES_BELOW - 0.001 };
-    expect(lodForZoom(a.zoom)).not.toBe(lodForZoom(b.zoom));
-    expect(needsRecommit(a, b, 1000, 600)).toBe(true);
   });
 });
 

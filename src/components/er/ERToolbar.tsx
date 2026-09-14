@@ -140,10 +140,10 @@ const ERToolbarInner: React.FC<ERToolbarProps> = ({
   return (
     <div className="er-toolbar-container">
       {/* Tools. A switch, not a menu: the two modes are the whole interaction model. */}
-      <div className="er-btn-group er-tool-group">
+      <div className="er-tool-group">
         <button
           type="button"
-          className={`er-toolbar-icon-btn ${tool === 'select' ? 'active' : ''}`}
+          className={`er-toolbar-icon-btn er-tool-btn ${tool === 'select' ? 'active' : ''}`}
           onClick={() => onToolChange('select')}
           title={t('er.toolSelectHint')}
           aria-label={t('er.toolSelect')}
@@ -152,7 +152,7 @@ const ERToolbarInner: React.FC<ERToolbarProps> = ({
         </button>
         <button
           type="button"
-          className={`er-toolbar-icon-btn ${tool === 'hand' ? 'active' : ''}`}
+          className={`er-toolbar-icon-btn er-tool-btn ${tool === 'hand' ? 'active' : ''}`}
           onClick={() => onToolChange('hand')}
           title={t('er.toolHandHint')}
           aria-label={t('er.toolHand')}
