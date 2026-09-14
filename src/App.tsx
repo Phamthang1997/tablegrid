@@ -2835,7 +2835,7 @@ export const App: React.FC = () => {
             </div>
 
             <div className="about-foot">
-              <span className="about-copy">© 2026 MeoMeo · MIT License</span>
+              <span className="about-copy">© 2026 Pham Thang · MIT License</span>
               <button className="cm-btn" onClick={() => setShowAbout(false)}>{t('common.close')}</button>
             </div>
           </div>
