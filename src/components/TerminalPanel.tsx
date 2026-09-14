@@ -128,7 +128,17 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
    */
   const chosenIsListed = dockerContainers.some((c) => (c.name || c.id) === dockerContainer);
 
-  const scanDocker = useCallback(async () => {
+  /**
+   * Set when the auto-pick below has just scanned and switched the source to `docker`.
+   *
+   * Switching the source while the menu is open re-triggers the effect under `scanDocker`, which
+   * would spawn a second `docker ps` for a list this component already holds. The flag is checked
+   * AND cleared there, so a later manual switch to Docker still scans.
+   */
+  const justAutoScannedRef = useRef(false);
+
+  /** Returns the containers it found, so a caller can decide on them; `[]` on any failure. */
+  const scanDocker = useCallback(async (): Promise<DockerContainerInfo[]> => {
     setScanningContainers(true);
     try {
       const cliInfo = await dbHelper.getDockerCliInfo();
@@ -139,7 +149,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
       if (!cliInfo.available) {
         setDockerContainers([]);
         setDockerError(tRef.current('backend.dockerCliMissing'));
-        return;
+        return [];
       }
       const list = await dbHelper.listDockerContainers(config.port);
       setDockerContainers(list);
@@ -152,10 +162,12 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
         if (!prev.trim() && list.length > 0) return list[0].name || list[0].id;
         return prev;
       });
+      return list;
     } catch (err) {
       // `listDockerContainers` rethrows the backend's already-translated text.
       setDockerContainers([]);
       setDockerError(String(err));
+      return [];
     } finally {
       setScanningContainers(false);
       setDockerScanned(true);
@@ -167,6 +179,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
   useEffect(() => {
     if (logSource === 'docker' && logMenu) {
+      if (justAutoScannedRef.current) {
+        justAutoScannedRef.current = false;
+        return;
+      }
       void scanDocker();
     }
   }, [logSource, logMenu, scanDocker]);
@@ -286,6 +302,82 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     document.addEventListener('mouseup', up);
   };
 
+  /**
+   * Is the database server reachable as a container of THIS machine's docker daemon?
+   *
+   * Necessary condition for the auto-pick: the docker CLI here talks to the daemon here, so for a
+   * server on another host `docker exec` is as useless as a local `tail` and the answer is SSH. An
+   * empty host is the driver's own default, i.e. local. A connection tunnelled over SSH never gets
+   * here -- `useSsh` short-circuits the caller.
+   */
+  const hostIsLocal = () => {
+    const h = (config.host || '').trim().toLowerCase();
+    return h === '' || h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+  };
+
+  /**
+   * Picks the log source by TESTING where the detected path is, rather than inferring it.
+   *
+   * The earlier version read the shape of the path: one rooted at `/` cannot be local on Windows,
+   * so switch to Docker if a container publishes the connection's port. That inference is sound on
+   * Windows and worth nothing anywhere else -- a native macOS server logs to
+   * `/opt/homebrew/var/mysql/…`, shaped exactly like a container's path -- and a matching port is
+   * only ever circumstantial. `probe_log_path` answers the same question with `fs::metadata` and
+   * `docker exec … test -e`, which are evidence and mean the same thing on all three platforms.
+   *
+   * Three outcomes, and only the first two move anything:
+   *   - the file is HERE -> Local, whatever the path looks like;
+   *   - a container HAS it -> Docker, with that container selected;
+   *   - nobody has it -> say so, and point at SSH when the server is on another host, because that
+   *     is the one case this machine can do nothing about.
+   *
+   * Only a source still on `local` is ever replaced, and every move is announced: a control that
+   * changes by itself with no explanation is worse than one the user had to find.
+   */
+  const autoPickSource = async (paths: { label: string; path: string }[]) => {
+    // Ranked best-first by `list_docker_containers`, and each candidate costs a `docker exec`.
+    // Probing only runs when there is something to probe or the answer might be "it is local".
+    const probePath = paths.find(lp => !isFolder(lp))?.path || paths[0]?.path;
+    if (!probePath || logSource !== 'local') return;
+
+    // A remote server cannot be a container of THIS daemon -- the CLI here talks to the daemon
+    // here -- so the probe would spend spawns to learn nothing. SSH is the only answer there.
+    if (!hostIsLocal()) {
+      if (!sshTarget.trim()) setSshTarget((config.host || '').trim());
+      setLogSource(prev => (prev === 'local' ? 'ssh' : prev));
+      note(t('terminal.autoPickedSsh', { n: (config.host || '').trim() }), 'ok');
+      return;
+    }
+
+    const list = await scanDocker();
+    justAutoScannedRef.current = true;
+    const probe = await dbHelper.probeLogPath(
+      probePath,
+      list.filter(c => c.running).map(c => c.name || c.id)
+    );
+
+    if (probe.local) return; // Already on `local`, and now it is proven right.
+
+    if (probe.container) {
+      setDockerContainer(probe.container);
+      // Functional form, not `setLogSource('docker')`: two round trips happened above and the user
+      // may have picked a source by hand meanwhile. Only the `local` proven wrong is replaced.
+      setLogSource(prev => (prev === 'local' ? 'docker' : prev));
+      note(t('terminal.autoPickedDocker', { n: probe.container }), 'ok');
+      return;
+    }
+
+    // Found nowhere. Staying silent here is what used to make the user meet the failure later, at
+    // the click, with no diagnosis. `probe.cli_missing` is read off the probe rather than off
+    // `dockerError`, which this closure would see at its pre-scan value.
+    note(
+      probe.cli_missing
+        ? t('terminal.logPathNotFoundNoCli', { n: probePath })
+        : t('terminal.logPathNotFound', { n: probePath }),
+      'err'
+    );
+  };
+
   const handleDetectLog = async () => {
     if (logPaths && !detecting) { setLogMenu(m => !m); return; }
     setDetecting(true);
@@ -295,18 +387,24 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     setLogPaths(det.paths);
     setDetectError(det.error || null);
     setDetecting(false);
+    await autoPickSource(det.paths);
   };
 
   // Windows: Get-Content -Wait does not keep up with what mysqld appends, and ReadLine() cuts a
   // half-written line while MySQL's log ends lines with \n and no \r -> xterm draws a "staircase".
   // So: open with FileShare.ReadWrite, seek to the end, read RAW ReadToEnd() every 250ms, and
   // normalise to \r\n before printing.
+  // The Open() is guarded and everything after it sits inside `if($fs)`: a failed open leaves $fs
+  // and then $sr null, and the loop would keep calling $sr.ReadToEnd() -> $c.Length on null,
+  // throwing twice per iteration and never reaching Start-Sleep -- an error spew at full speed
+  // until the user hits Ctrl+C. `exit` is not the way out of it: this runs in the panel's
+  // interactive shell and would close the whole session rather than just the tail.
   // Escaping for a PowerShell single-quoted string: ' -> '' (so a path containing one cannot break
   // the command)
   const psq = (p: string) => p.replace(/'/g, "''");
 
   const winTail = (p: string) =>
-    `$p='${psq(p)}'; $fs=[System.IO.File]::Open($p,'Open','Read','ReadWrite'); $sr=New-Object System.IO.StreamReader($fs,[System.Text.Encoding]::UTF8); [void]$fs.Seek(0,'End'); $cr=[char]13; $lf=[char]10; Write-Host '--- theo doi log (Ctrl+C de dung) ---'; while($true){ $c=$sr.ReadToEnd(); if($c.Length -gt 0){ [Console]::Out.Write($c.Replace($cr.ToString(),'').Replace($lf.ToString(),$cr.ToString()+$lf.ToString())); [Console]::Out.Flush() } else { Start-Sleep -Milliseconds 250 } }`;
+    `$p='${psq(p)}'; $fs=$null; try{ $fs=[System.IO.File]::Open($p,'Open','Read','ReadWrite') }catch{ Write-Host ('Failed to open log: ' + $_.Exception.Message) }; if($fs){ $sr=New-Object System.IO.StreamReader($fs,[System.Text.Encoding]::UTF8); [void]$fs.Seek(0,'End'); $cr=[char]13; $lf=[char]10; Write-Host '--- Following log (Ctrl+C to stop) ---'; while($true){ $c=$sr.ReadToEnd(); if($c.Length -gt 0){ [Console]::Out.Write($c.Replace($cr.ToString(),'').Replace($lf.ToString(),$cr.ToString()+$lf.ToString())); [Console]::Out.Flush() } else { Start-Sleep -Milliseconds 250 } } }`;
 
   const isWindows = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent);
 
@@ -345,7 +443,12 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   const tailCommand = (p: string) => {
     switch (src()) {
       case 'ssh': return `ssh ${sshTarget.trim()} "tail -f '${p}'"`;
-      case 'docker': return `${dockerExe()} exec ${dockerContainer.trim()} tail -f '${p}'`;
+      // `-F`, not `-f`: the path most often chosen here is `general_log_file`, whose value MySQL
+      // reports whether or not the log is ON -- so the file frequently does not exist yet and `-f`
+      // would exit at once with "No such file or directory". `-F` waits for it, which also means
+      // "start the tail, then enable the log from the Setup menu" works in that order, and it
+      // survives a rotation. GNU coreutils and busybox both have it, i.e. every image this reaches.
+      case 'docker': return `${dockerExe()} exec ${dockerContainer.trim()} tail -F '${p}'`;
       default: return (useSsh || !isWindows) ? `tail -f "${p}"` : winTail(p);
     }
   };
@@ -353,6 +456,19 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   // datadir or log_directory is a DIRECTORY -> it cannot be tailed, so its files are listed instead.
   const isFolder = (lp: { label: string; path: string }) =>
     lp.label === 'datadir' || lp.label === 'log_directory' || /[\\/]$/.test(lp.path) || /[\\/]log$/.test(lp.path);
+
+  /**
+   * Would this path be handed to the local Windows shell while naming a file the shell cannot see?
+   *
+   * `detectLogPaths` asks the SERVER (`SHOW VARIABLES`/`pg_settings`), so the path it returns
+   * belongs to the filesystem mysqld/postgres sees -- inside the container when the server runs in
+   * Docker. A POSIX path is rooted but carries no DRIVE, so .NET resolves it against the current
+   * one: `/var/lib/mysql/<id>.log` becomes `C:\var\lib\mysql\<id>.log` and the open can only fail.
+   * The condition mirrors the branch in `tailCommand`/`listCommand` that picks the Windows builders
+   * -- change one and change both, or this guard starts refusing commands that would have worked.
+   */
+  const unreachableLocalPath = (p: string) =>
+    src() === 'local' && !useSsh && isWindows && p.startsWith('/');
 
   const listCommand = (p: string) => {
     switch (src()) {
@@ -485,6 +601,12 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
       note(t('terminal.errNoContainerSelected'), 'err');
       return;
     }
+    // The menu is left OPEN here (the early return skips setLogMenu(false)), because the fix is the
+    // source switch sitting at the top of that same menu.
+    if (unreachableLocalPath(lp.path)) {
+      note(t('terminal.errPathNotLocal', { n: lp.path }), 'err');
+      return;
+    }
     if (sendCommand(isFolder(lp) ? listCommand(lp.path) : tailCommand(lp.path))) setLogMenu(false);
   };
 
@@ -534,6 +656,11 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
       note(t('terminal.noLogPaths'));
     } else {
       note(t('terminal.foundLogPaths', { n: det.paths.length }), 'ok');
+      // The other entry point to detection, so it needs the same auto-pick: somebody who turns the
+      // log on from the Setup menu without opening Find logs first would otherwise land on the
+      // `local` source that this very path proves cannot work. It runs last so its own banner is
+      // the one left standing.
+      await autoPickSource(det.paths);
     }
   };
 

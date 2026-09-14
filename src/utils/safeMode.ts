@@ -135,6 +135,7 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   list_connections: 'internal',
   list_databases: 'internal',
   list_schemas: 'internal',
+  probe_log_path: 'internal',
   // Both return SQL text without running it.
   preview_alter_schema: 'internal',
   preview_generated_data: 'internal',

@@ -185,6 +185,16 @@ export interface DockerContainerInfo {
   matched_container_port: boolean;
 }
 
+/** The answer of `probe_log_path`: where a detected log path actually exists. */
+export interface LogPathProbe {
+  /** The path resolves on THIS machine. */
+  local: boolean;
+  /** Name/id of the first probed container holding it, or '' when none does. */
+  container: string;
+  /** No docker/nerdctl CLI, so `container` means "unknown", not "no". */
+  cli_missing: boolean;
+}
+
 export interface SshTerminalMessage {
   type: 'data' | 'exit' | 'closed';
   bytes?: number[];
@@ -1352,6 +1362,13 @@ export const dbHelper = {
   // things from the user, and an empty array makes them one. The caller shows the reason.
   async listDockerContainers(targetPort?: number): Promise<DockerContainerInfo[]> {
     return await invoke('list_docker_containers', { targetPort });
+  },
+
+  // Where a log path really is: on this machine, or inside one of `candidates` (best-first, since
+  // each one costs a `docker exec`). This replaces guessing the location from the SHAPE of the
+  // path, which only ever carried information on Windows — see `probe_log_path` in docker.rs.
+  async probeLogPath(path: string, candidates: string[]): Promise<LogPathProbe> {
+    return await invoke('probe_log_path', { path, candidates });
   },
 
   // Finds the DB server's log file paths by asking the database itself, over the open connection.
