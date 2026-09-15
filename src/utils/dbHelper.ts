@@ -434,6 +434,32 @@ export interface SchemaInfo {
   foreignKeys: { name?: string; column: string; refTable: string; refColumn: string }[];
 }
 
+/**
+ * What the create-database dialog sends. Only `name` is required — an omitted or blank field means
+ * "server default", and `owner`/`template`/`ctype` are Postgres-only (the Rust builder ignores them
+ * on MySQL rather than emitting invalid SQL).
+ */
+export interface CreateDbPayload {
+  name: string;
+  encoding?: string;
+  collation?: string;
+  ctype?: string;
+  owner?: string;
+  template?: string;
+}
+
+/** The option lists that dialog fills its selects from. Everything but `encodings` is dialect-specific. */
+export interface DbCharsets {
+  encodings: string[];
+  /** Postgres: one flat list. */
+  collations?: string[];
+  /** MySQL: a collation belongs to a charset, so the list is filtered by the chosen encoding. */
+  collationsByEncoding?: Record<string, string[]>;
+  ctypes?: string[];
+  templates?: string[];
+  owners?: string[];
+}
+
 export interface GridChange {
   type: 'insert' | 'update' | 'delete';
   rowId: any;
@@ -1640,10 +1666,21 @@ export const dbHelper = {
     }
   },
 
-  async createDatabase(connId: string, payload: { name: string; encoding?: string; collation?: string }): Promise<{ success: boolean; error?: string }> {
+  async createDatabase(connId: string, payload: CreateDbPayload): Promise<{ success: boolean; error?: string }> {
     try {
       const res: any = await invoke('create_database', { connId, payload });
       return { success: !!res.success, error: res.message };
+    } catch (err: any) {
+      return { success: false, error: err.toString() };
+    }
+  },
+
+  // The statement createDatabase would run, as text. The builder lives in Rust so the dialog's
+  // preview cannot drift from what executes (same split as previewAlterSchema).
+  async previewCreateDatabase(connId: string, payload: CreateDbPayload): Promise<{ success: boolean; sql?: string; error?: string }> {
+    try {
+      const res: any = await invoke('preview_create_database', { connId, payload });
+      return { success: !!res.success, sql: res.sql, error: res.message };
     } catch (err: any) {
       return { success: false, error: err.toString() };
     }
@@ -1667,14 +1704,20 @@ export const dbHelper = {
     }
   },
 
-  async getDbCharsets(): Promise<{ success: boolean; encodings: string[]; collations?: string[]; collationsByEncoding?: Record<string, string[]>; error?: string }> {
+  // The lists behind the create-database dialog's selects. `connId` is required by the command and
+  // used to be omitted here, which made every call fail with a missing-argument error — i.e. the
+  // dialog's encoding/collation selects only ever offered "server default".
+  async getDbCharsets(connId: string): Promise<DbCharsets & { success: boolean; error?: string }> {
     try {
-      const res: any = await invoke('get_db_charsets');
+      const res: any = await invoke('get_db_charsets', { connId });
       return {
         success: !!res.success,
         encodings: res.encodings || [],
         collations: res.collations,
         collationsByEncoding: res.collationsByEncoding,
+        ctypes: res.ctypes,
+        templates: res.templates,
+        owners: res.owners,
         error: res.message,
       };
     } catch (err: any) {

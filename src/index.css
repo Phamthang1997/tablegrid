@@ -7926,14 +7926,16 @@ input.rename-input {
   cursor: not-allowed;
 }
 
-.cm-combo-empty {
+.cm-combo-empty,
+.os-empty {
   padding: 9px 8px;
   text-align: center;
   font-size: 11.5px;
   color: var(--win-text-disabled);
 }
 
-.cm-combo-pop {
+.cm-combo-pop,
+.os-pop {
   position: absolute;
   z-index: 41;
   top: calc(100% + 4px);
@@ -7950,7 +7952,8 @@ input.rename-input {
   backdrop-filter: blur(30px) saturate(180%);
 }
 
-.cm-combo-opt {
+.cm-combo-opt,
+.os-opt {
   width: 100%;
   display: flex;
   align-items: center;
@@ -7966,16 +7969,19 @@ input.rename-input {
   cursor: pointer;
 }
 
-.cm-combo-opt:hover {
+.cm-combo-opt:hover,
+.os-opt:hover {
   background: var(--win-bg-hover);
 }
 
-.cm-combo-opt.on {
+.cm-combo-opt.on,
+.os-opt.on {
   color: var(--win-accent);
   font-weight: 600;
 }
 
-.cm-combo-opt span {
+.cm-combo-opt span,
+.os-opt span {
   flex: 1;
 }
 
@@ -7997,6 +8003,74 @@ input.rename-input {
 .cm-eye:hover,
 .cm-combo-btn:hover {
   color: var(--win-text-primary);
+}
+
+/* OptionSelect.tsx — the <select> the app draws itself. A native select's popup is drawn by the OS,
+   so its height cannot be capped, and MySQL's 40 character sets came back taller than the window.
+   The popup itself is `.os-pop`, which shares `.cm-combo-pop`'s rule above (capped + scrolling). */
+.os-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* The popup is a portal into <body> placed from the trigger's rect (left/top/width/max-height come
+   in as inline, measured values), because as an absolutely-positioned child it was clipped by
+   ModalBody's `overflow: auto` and the list was cut off mid-way. Its chrome — radius, border, fill,
+   shadow, blur, scrolling — is the shared `.cm-combo-pop` rule above; only placement is overridden.
+   z-index sits above the dialogs it opens from (99999 / 999999 / ConfirmDialog's 1000000). */
+.os-pop {
+  position: fixed;
+  top: auto;
+  left: auto;
+  right: auto;
+  max-height: none;
+  z-index: 1000010;
+  /* The filter box must not scroll away, and it cannot do that as a sticky child either: every
+     input fill in this app is translucent, so rows would show through it. So the popup is a column
+     with a fixed header and only `.os-list` scrolls. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.os-list {
+  overflow-y: auto;
+}
+
+.os-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000009;
+}
+
+.os-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.os-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.os-trigger.placeholder {
+  color: var(--win-text-secondary);
+}
+
+.os-chev {
+  flex-shrink: 0;
+  color: var(--win-text-secondary);
+}
+
+.os-search {
+  flex-shrink: 0;
+  margin-bottom: 4px;
 }
 
 /* Small secondary buttons (Load list, Clear all…) */

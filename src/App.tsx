@@ -2246,7 +2246,6 @@ export const App: React.FC = () => {
                 onGenerateData={handleOpenDataGen}
                 onTableRenamed={(oldName, newName) => handleTableRenamed(activeConnIdState, oldName, newName)}
                 onTableDropped={handleTableDropped}
-                onDatabaseOpened={handleDatabaseOpened}
                 schema={connection.schema}
                 onSchemaChanged={handleSchemaChanged}
                 onOpenQueryWithSql={openQueryTabWithSql}

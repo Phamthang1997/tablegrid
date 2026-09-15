@@ -65,6 +65,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         crate::database::list_schemas,
         crate::database::set_current_schema,
         crate::database::create_database,
+        crate::database::preview_create_database,
         crate::database::drop_database,
         crate::database::rename_database,
         crate::database::get_db_charsets,
