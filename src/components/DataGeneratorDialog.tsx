@@ -1,6 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Check, Database, Dice5, Loader, RefreshCw, Search, Table2, Wand2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  Check,
+  Columns3,
+  Database,
+  Dice5,
+  Eye,
+  Layers,
+  Loader,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+  Table2,
+  Wand2,
+  X,
+} from 'lucide-react';
 import { dbHelper } from '../utils/dbHelper';
 import {
   GENERATOR_GROUPS,
@@ -28,7 +43,7 @@ import {
   type GenTargets,
   type OptionField,
 } from '../utils/dataGenHelper';
-import { Modal, ModalBody, ModalFooter } from './Modal';
+import { Modal, ModalBody } from './Modal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ProgressBar } from './ProgressBar';
 import { cancelJob, startJob } from '../utils/jobs';
@@ -54,8 +69,12 @@ const rollSeed = () => {
   return Date.now() % 2_000_000_000;
 };
 
-const Badge: React.FC<{ children: React.ReactNode; title?: string }> = ({ children, title }) => (
-  <span className="dgen-badge" title={title}>
+const Badge: React.FC<{ children: React.ReactNode; title?: string; variant?: 'pk' | 'fk' | 'ai' | 'nn' }> = ({
+  children,
+  title,
+  variant,
+}) => (
+  <span className={`dgen-badge${variant ? ` dgen-badge-${variant}` : ''}`} title={title}>
     {children}
   </span>
 );
@@ -93,6 +112,8 @@ export const DataGeneratorDialog: React.FC<DataGeneratorDialogProps> = ({
   const [specs, setSpecs] = useState<Record<string, GenTableSpec>>({});
   const [activeTable, setActiveTable] = useState<string | null>(null);
   const [activeColumn, setActiveColumn] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'columns' | 'preview'>('columns');
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const [preview, setPreview] = useState<GenPreview | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -149,6 +170,10 @@ export const DataGeneratorDialog: React.FC<DataGeneratorDialogProps> = ({
   );
 
   const issues = useMemo(() => validateSpec(spec), [spec]);
+  const activeTableIssues = useMemo(
+    () => issues.filter((i) => i.table === activeTable),
+    [issues, activeTable],
+  );
   const blocked = hasBlockingIssue(issues);
   const totalRows = totalRowsOf(spec);
 
@@ -393,493 +418,604 @@ export const DataGeneratorDialog: React.FC<DataGeneratorDialogProps> = ({
   };
 
   const dgenContent = (
-    <div className="dgen" style={asTab ? { padding: '14px 18px', flex: 1, overflowY: 'auto' } : undefined}>
-      {/* ---- shared controls ---- */}
+    <div className={`dgen${asTab ? ' dgen-as-tab' : ''}`}>
+      {/* ---- shared controls & top action bar ---- */}
       <div className="dgen-bar">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span className="dgen-label">{t('dataGen.rowsPerTable')}</span>
+        <div className="dgen-bar-group">
+          <span className="dgen-label">{t('dataGen.rowsPerTable')}</span>
+          <input
+            type="number"
+            min={1}
+            className="dgen-input-rows"
+            value={defaultRows}
+            disabled={running}
+            onChange={(e) => setDefaultRows(Math.max(1, Number(e.target.value) || 0))}
+          />
+          <button className="btn btn-secondary" disabled={running || !selectedCount} onClick={applyRowsToAll}>
+            {t('dataGen.applyToAll')}
+          </button>
+        </div>
+        <div className="dgen-bar-sep" />
+        <label className="dgen-check" title={t('dataGen.disableConstraintsHint')}>
+          <input
+            type="checkbox"
+            checked={disableConstraints}
+            disabled={running}
+            onChange={(e) => setDisableConstraints(e.target.checked)}
+          />
+          {t('dataGen.disableConstraints')}
+        </label>
+        <div className="dgen-bar-right">
+          <div className="dgen-foot-db">
+            <Database size={13} /> {dbName ?? ''}
+          </div>
+          <div className="dgen-bar-sep" />
+          <div className="dgen-dim dgen-summary">
+            {t('dataGen.summary', { tables: selectedCount, rows: formatCount(totalRows, i18n.language) })}
+          </div>
+          {running ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => { if (jobIdRef.current) cancelJob(jobIdRef.current); }}
+            >
+              {t('dataGen.cancelRun')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!selectedCount || blocked}
+              onClick={() => setConfirming(true)}
+            >
+              <Wand2 size={13} /> {t('dataGen.generate')}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {loadError && (
+        <div className="dgen-msg error">
+          <AlertTriangle size={12} /> {loadError}
+        </div>
+      )}
+      {(targets?.warnings ?? []).map((w) => (
+        <div key={w} className="dgen-msg warn">
+          <AlertTriangle size={12} /> {w}
+        </div>
+      ))}
+
+      {/* ---- master-detail layout: unified single block ---- */}
+      <div className="dgen-block">
+        {/* Left: tables sidebar */}
+        <div className="dgen-block-sidebar">
+          <div className="dgen-pane-title">
+            <span>{t('dataGen.paneTables')}</span>
+            <span className="dgen-sidebar-count">({selectedCount}/{tableTargets.length})</span>
+          </div>
+          <div className="dgen-pane-pad dgen-sidebar-content">
+            <div className="dgen-search-box">
+              <Search size={12} className="dgen-dim dgen-search-icon" />
               <input
-                type="number"
-                min={1}
-                style={{ width: '90px' }}
-                value={defaultRows}
-                disabled={running}
-                onChange={(e) => setDefaultRows(Math.max(1, Number(e.target.value) || 0))}
+                className="dgen-search-input"
+                placeholder={t('dataGen.searchTables')}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
               />
-              <button className="btn btn-secondary" disabled={running || !selectedCount} onClick={applyRowsToAll}>
-                {t('dataGen.applyToAll')}
+            </div>
+            <div className="dgen-sidebar-actions">
+              <button className="btn btn-secondary dgen-flex-1" disabled={running} onClick={selectAll}>
+                {t('dataGen.selectAll')}
+              </button>
+              <button
+                className="btn btn-secondary dgen-flex-1"
+                disabled={running || !selectedCount}
+                onClick={clearAll}
+              >
+                {t('dataGen.clearAll')}
               </button>
             </div>
-            <div className="dgen-bar-sep" />
-            <label className="dgen-check" title={t('dataGen.disableConstraintsHint')}>
-              <input
-                type="checkbox"
-                checked={disableConstraints}
-                disabled={running}
-                onChange={(e) => setDisableConstraints(e.target.checked)}
-              />
-              {t('dataGen.disableConstraints')}
-            </label>
-            <div className="dgen-dim" style={{ marginLeft: 'auto', fontSize: '11.5px' }}>
-              {t('dataGen.summary', { tables: selectedCount, rows: formatCount(totalRows, i18n.language) })}
-            </div>
-          </div>
-
-          {loadError && (
-            <div className="dgen-msg error">
-              <AlertTriangle size={12} /> {loadError}
-            </div>
-          )}
-          {(targets?.warnings ?? []).map((w) => (
-            <div key={w} className="dgen-msg warn">
-              <AlertTriangle size={12} /> {w}
-            </div>
-          ))}
-
-          {/* ---- three panes ---- */}
-          <div className="dgen-grid">
-            {/* tables */}
-            <div className="dgen-pane">
-              <div className="dgen-pane-title">{t('dataGen.paneTables')}</div>
-              <div className="dgen-pane-pad" style={{ minHeight: 0, flex: 1, gap: '6px' }}>
-                <div style={{ position: 'relative' }}>
-                  {/* The input is 28px tall (matching .btn) -> the icon centres vertically. */}
-                  <Search
-                    size={12}
-                    className="dgen-dim"
-                    style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)' }}
-                  />
-                  <input
-                    style={{ paddingLeft: '23px' }}
-                    placeholder={t('dataGen.searchTables')}
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                  />
-                </div>
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  <button className="btn btn-secondary" style={{ flex: 1 }} disabled={running} onClick={selectAll}>
-                    {t('dataGen.selectAll')}
-                  </button>
-                  <button
-                    className="btn btn-secondary"
-                    style={{ flex: 1 }}
-                    disabled={running || !selectedCount}
-                    onClick={clearAll}
-                  >
-                    {t('dataGen.clearAll')}
-                  </button>
-                </div>
-                <div style={{ overflow: 'auto', minHeight: 0, flex: 1, margin: '0 -8px' }}>
-                  {!targets && !loadError && (
-                    <div className="dgen-hint" style={{ padding: '6px 13px' }}>
-                      <Loader size={12} className="spin" style={{ verticalAlign: '-2px' }} /> {t('dataGen.loading')}
-                    </div>
-                  )}
-                  {targets && !filteredTables.length && (
-                    <div className="dgen-hint" style={{ padding: '6px 13px' }}>
-                      {t('dataGen.noTables')}
-                    </div>
-                  )}
-                  {filteredTables.map((target) => {
-                    const picked = !!specs[target.table];
-                    return (
-                      <div
-                        key={target.table}
-                        className={`dgen-row${activeTable === target.table ? ' on' : ''}`}
-                        onClick={() => {
-                          setActiveTable(target.table);
-                          setActiveColumn(null);
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={picked}
-                          disabled={running}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={() => toggleTable(target)}
-                        />
-                        <Table2 size={12} className="dgen-dim" style={{ flexShrink: 0 }} />
-                        <span className={`dgen-row-name${picked ? '' : ' dgen-dim'}`}>{target.table}</span>
-                        {picked && (
-                          <span className="dgen-dim" style={{ marginLeft: 'auto', fontSize: '10px' }}>
-                            {formatCount(specs[target.table].rows, i18n.language)}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="dgen-hint">{t('dataGen.insertOrderHint')}</div>
-              </div>
-            </div>
-
-            {/* columns of the active table */}
-            <div className="dgen-pane">
-              <div className="dgen-pane-title">
-                {activeTable ? t('dataGen.paneColumnsOf', { table: activeTable }) : t('dataGen.paneColumns')}
-              </div>
-              {!activeTarget && <div className="dgen-hint" style={{ padding: '10px' }}>{t('dataGen.pickTableHint')}</div>}
-              {activeTarget && !activeSpec && (
-                <div className="dgen-pane-pad">
-                  <span className="dgen-hint">{t('dataGen.tableNotSelected')}</span>
-                  <div>
-                    <button className="btn btn-primary" disabled={running} onClick={() => toggleTable(activeTarget)}>
-                      <Check size={13} /> {t('dataGen.selectThisTable')}
-                    </button>
-                  </div>
+            <div className="dgen-table-list">
+              {!targets && !loadError && (
+                <div className="dgen-hint dgen-loading-hint">
+                  <Loader size={12} className="spin dgen-valign-sub" /> {t('dataGen.loading')}
                 </div>
               )}
-              {activeTarget && activeSpec && (
-                <>
+              {targets && !filteredTables.length && (
+                <div className="dgen-hint dgen-loading-hint">
+                  {t('dataGen.noTables')}
+                </div>
+              )}
+              {filteredTables.map((target) => {
+                const picked = !!specs[target.table];
+                const tableHasIssue = issues.some((i) => i.table === target.table);
+                return (
                   <div
-                    className="dgen-pane-title"
-                    style={{ textTransform: 'none', letterSpacing: 0, gap: '12px', alignItems: 'flex-end' }}
+                    key={target.table}
+                    className={`dgen-row${activeTable === target.table ? ' on' : ''}`}
+                    onClick={() => {
+                      setActiveTable(target.table);
+                      setActiveColumn(null);
+                    }}
                   >
-                    <Field text={t('dataGen.rows')}>
-                      <input
-                        type="number"
-                        min={1}
-                        style={{ width: '110px' }}
-                        value={activeSpec.rows}
-                        disabled={running}
-                        onChange={(e) => patchTable(activeSpec.table, { rows: Math.max(0, Number(e.target.value) || 0) })}
-                      />
-                    </Field>
-                    <Field text={t('dataGen.mode')}>
-                      <select
-                        style={{ width: '170px' }}
-                        value={activeSpec.mode ?? 'append'}
-                        disabled={running}
-                        onChange={(e) => patchTable(activeSpec.table, { mode: e.target.value as 'append' | 'truncate' })}
-                      >
-                        <option value="append">{t('dataGen.modeAppend')}</option>
-                        <option value="truncate">{t('dataGen.modeTruncate')}</option>
-                      </select>
-                    </Field>
+                    <input
+                      type="checkbox"
+                      checked={picked}
+                      disabled={running}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => toggleTable(target)}
+                    />
+                    <Table2 size={12} className="dgen-dim" />
+                    <span className={`dgen-row-name${picked ? '' : ' dgen-dim'}`}>{target.table}</span>
+                    {tableHasIssue && (
+                      <AlertTriangle size={11} className="dgen-icon-warn" />
+                    )}
+                    {picked && (
+                      <span className="dgen-dim dgen-row-badge">
+                        {formatCount(specs[target.table].rows, i18n.language)}
+                      </span>
+                    )}
                   </div>
-                  <div className="dgen-pane-body">
-                    <table className="dgen-table">
-                      <thead>
-                        <tr>
-                          <th>{t('dataGen.colColumn')}</th>
-                          <th>{t('dataGen.colType')}</th>
-                          <th>{t('dataGen.colGenerator')}</th>
-                          <th style={{ textAlign: 'center' }}>{t('dataGen.colUnique')}</th>
-                          <th style={{ textAlign: 'right' }}>{t('dataGen.colNullPercent')}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {activeTarget.columns.map((colTarget) => {
-                          const colSpec = activeSpec.columns.find((c) => c.column === colTarget.name);
-                          if (!colSpec) return null;
-                          return (
-                            <tr
-                              key={colTarget.name}
-                              className={activeColumn === colTarget.name ? 'on' : undefined}
-                              onClick={() => setActiveColumn(colTarget.name)}
-                            >
-                              <td>
-                                {colTarget.name}
-                                {colTarget.isPrimaryKey && <Badge title={t('dataGen.badgePkTitle')}>PK</Badge>}
-                                {colTarget.fk && (
-                                  <Badge
-                                    title={t('dataGen.badgeFkTitle', {
-                                      ref: `${colTarget.fk.refTable}.${colTarget.fk.refColumn}`,
-                                    })}
+                );
+              })}
+            </div>
+            <div className="dgen-hint dgen-sidebar-hint">
+              <Layers size={11} className="dgen-valign-sub" /> {t('dataGen.insertOrderHint')}
+            </div>
+          </div>
+        </div>
+
+        {/* Right: workspace for active table */}
+        <div className="dgen-block-workspace">
+          {!activeTarget && (
+            <div className="dgen-empty-state">
+              <div className="dgen-empty-icon">
+                <Table2 size={26} />
+              </div>
+              <div className="dgen-empty-title">{t('dataGen.pickTableHint')}</div>
+              <div className="dgen-empty-desc">{t('dataGen.insertOrderHint')}</div>
+              {filteredTables.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={running}
+                  onClick={() => toggleTable(filteredTables[0])}
+                >
+                  <Check size={12} />
+                  <span>{t('dataGen.selectThisTable')} ({filteredTables[0].table})</span>
+                </button>
+              )}
+            </div>
+          )}
+          {activeTarget && !activeSpec && (
+            <div className="dgen-pane-pad dgen-p-24 dgen-center-flex">
+              <span className="dgen-hint">{t('dataGen.tableNotSelected')}</span>
+              <button className="btn btn-primary" disabled={running} onClick={() => toggleTable(activeTarget)}>
+                <Check size={13} /> {t('dataGen.selectThisTable')}
+              </button>
+            </div>
+          )}
+          {activeTarget && activeSpec && (
+            <>
+              {/* Workspace header with table name and tabs */}
+              <div className="dgen-workspace-header">
+                <div className="dgen-workspace-header-left">
+                  <div className="dgen-workspace-title">
+                    <Table2 size={14} className="dgen-dim" />
+                    <span>{activeSpec.table}</span>
+                  </div>
+                  <span className="dgen-chip dgen-table-chip">
+                    {t('dataGen.tableRowsBadge', { n: formatCount(activeSpec.rows, i18n.language) })}
+                  </span>
+                </div>
+
+                {/* Independent Tab buttons */}
+                <div className="dgen-workspace-tabs">
+                  <button
+                    type="button"
+                    className={`dgen-tab-btn${activeTab === 'columns' ? ' active' : ''}`}
+                    onClick={() => setActiveTab('columns')}
+                  >
+                    <Columns3 size={12} />
+                    <span>{t('dataGen.tabColumns')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`dgen-tab-btn${activeTab === 'preview' ? ' active' : ''}`}
+                    onClick={() => setActiveTab('preview')}
+                  >
+                    <Eye size={12} />
+                    <span>{t('dataGen.tabPreview')}</span>
+                    {previewBusy && <Loader size={11} className="spin" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Subbar for Columns tab: rows and mode configuration */}
+              {activeTab === 'columns' && (
+                <div className="dgen-workspace-subbar">
+                  <div className="dgen-field-inline">
+                    <span className="dgen-label">{t('dataGen.rows')}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      className="dgen-input-table-rows"
+                      value={activeSpec.rows}
+                      disabled={running}
+                      onChange={(e) => patchTable(activeSpec.table, { rows: Math.max(0, Number(e.target.value) || 0) })}
+                    />
+                  </div>
+                  <div className="dgen-bar-sep" />
+                  <div className="dgen-field-inline">
+                    <span className="dgen-label">{t('dataGen.mode')}</span>
+                    <select
+                      className="dgen-select-mode"
+                      value={activeSpec.mode ?? 'append'}
+                      disabled={running}
+                      onChange={(e) => patchTable(activeSpec.table, { mode: e.target.value as 'append' | 'truncate' })}
+                    >
+                      <option value="append">{t('dataGen.modeAppend')}</option>
+                      <option value="truncate">{t('dataGen.modeTruncate')}</option>
+                    </select>
+                  </div>
+                  {activeSpec.mode === 'truncate' && (
+                    <span className="dgen-subbar-hint">
+                      {t('dataGen.confirmNoteTruncate')}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Table configuration issues */}
+              {!!activeTableIssues.length && (
+                <div className="dgen-workspace-issues">
+                  {activeTableIssues.map((issue) => (
+                    <div
+                      key={`${issue.key}-${issue.column ?? ''}`}
+                      className={`dgen-msg ${issue.level === 'error' ? 'error' : 'warn'}`}
+                    >
+                      <AlertTriangle size={11} />
+                      <span>{t(issue.key as never, issue.params ?? {})}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Workspace body */}
+              <div className="dgen-workspace-body">
+                {activeTab === 'columns' ? (
+                  <div className="dgen-cols-wrap">
+                    {/* Columns table */}
+                    <div className="dgen-cols-table-scroll">
+                      <table className="dgen-table">
+                        <thead>
+                          <tr>
+                            <th>{t('dataGen.colColumn')}</th>
+                            <th>{t('dataGen.colType')}</th>
+                            <th>{t('dataGen.colGenerator')}</th>
+                            <th className="dgen-th-center">{t('dataGen.colUnique')}</th>
+                            <th className="dgen-th-right">{t('dataGen.colNullPercent')}</th>
+                            <th className="dgen-th-options">{t('dataGen.colOptions')}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activeTarget.columns.map((colTarget) => {
+                            const colSpec = activeSpec.columns.find((c) => c.column === colTarget.name);
+                            if (!colSpec) return null;
+                            const hasOpts =
+                              optionFields(colSpec.generator).length > 0 ||
+                              isTextGenerator(colSpec.generator) ||
+                              !!colTarget.fk;
+                            const isSelected = activeColumn === colTarget.name;
+                            return (
+                              <tr
+                                key={colTarget.name}
+                                className={isSelected ? 'on' : undefined}
+                                onClick={() => setActiveColumn(colTarget.name)}
+                              >
+                                <td>
+                                  {colTarget.name}
+                                  {colTarget.isPrimaryKey && <Badge variant="pk" title={t('dataGen.badgePkTitle')}>PK</Badge>}
+                                  {colTarget.fk && (
+                                    <Badge
+                                      variant="fk"
+                                      title={t('dataGen.badgeFkTitle', {
+                                        ref: `${colTarget.fk.refTable}.${colTarget.fk.refColumn}`,
+                                      })}
+                                    >
+                                      FK
+                                    </Badge>
+                                  )}
+                                  {colTarget.autoIncrement && <Badge variant="ai" title={t('dataGen.badgeAutoIncTitle')}>AI</Badge>}
+                                  {!colTarget.nullable && <Badge variant="nn" title={t('dataGen.badgeNotNullTitle')}>NN</Badge>}
+                                </td>
+                                <td className="dgen-mono dgen-dim">{colTarget.type}</td>
+                                <td>
+                                  <select
+                                    className="dgen-select-gen"
+                                    value={colSpec.generator}
+                                    disabled={running}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={(e) => {
+                                      patchColumn(activeSpec.table, colTarget.name, {
+                                        generator: e.target.value,
+                                        options: {},
+                                      });
+                                      setActiveColumn(colTarget.name);
+                                    }}
                                   >
-                                    FK
-                                  </Badge>
-                                )}
-                                {colTarget.autoIncrement && <Badge title={t('dataGen.badgeAutoIncTitle')}>AI</Badge>}
-                                {!colTarget.nullable && <Badge title={t('dataGen.badgeNotNullTitle')}>NN</Badge>}
-                              </td>
-                              <td className="dgen-mono dgen-dim">{colTarget.type}</td>
-                              <td>
-                                <select
-                                  style={{ minWidth: '152px' }}
-                                  value={colSpec.generator}
-                                  disabled={running}
-                                  onClick={(e) => e.stopPropagation()}
-                                  onChange={(e) => {
-                                    patchColumn(activeSpec.table, colTarget.name, {
-                                      generator: e.target.value,
-                                      options: {},
-                                    });
-                                    setActiveColumn(colTarget.name);
-                                  }}
-                                >
-                                  {GENERATOR_GROUPS.map((group) => (
-                                    <optgroup key={group.groupKey} label={t(group.groupKey as never)}>
-                                      {group.ids.map((id) => (
-                                        <option key={id} value={id}>
-                                          {t(generatorLabelKey(id) as never)}
-                                        </option>
-                                      ))}
-                                    </optgroup>
-                                  ))}
-                                </select>
-                              </td>
-                              <td style={{ textAlign: 'center' }}>
+                                    {GENERATOR_GROUPS.map((group) => (
+                                      <optgroup key={group.groupKey} label={t(group.groupKey as never)}>
+                                        {group.ids.map((id) => (
+                                          <option key={id} value={id}>
+                                            {t(generatorLabelKey(id) as never)}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td className="dgen-td-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!colSpec.unique}
+                                    disabled={running || colSpec.generator === 'skip'}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={(e) =>
+                                      patchColumn(activeSpec.table, colTarget.name, { unique: e.target.checked })
+                                    }
+                                  />
+                                </td>
+                                <td className="dgen-td-right">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    className="dgen-input-null"
+                                    value={colSpec.nullPercent ?? 0}
+                                    disabled={running || colSpec.generator === 'skip' || !colTarget.nullable}
+                                    title={colTarget.nullable ? undefined : t('dataGen.badgeNotNullTitle')}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={(e) =>
+                                      patchColumn(activeSpec.table, colTarget.name, {
+                                        nullPercent: Number(e.target.value) || 0,
+                                      })
+                                    }
+                                  />
+                                </td>
+                                <td className="dgen-td-center">
+                                  <button
+                                    type="button"
+                                    className={`dgen-col-btn${isSelected && drawerOpen ? ' active' : ''}${
+                                      hasOpts ? ' has-options' : ''
+                                    }`}
+                                    title={t('dataGen.colOptions')}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setActiveColumn(colTarget.name);
+                                      setDrawerOpen((prev) => (activeColumn === colTarget.name ? !prev : true));
+                                    }}
+                                  >
+                                    <SlidersHorizontal size={11} />
+                                    <span>{t('dataGen.colOptions')}</span>
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Inspector Drawer */}
+                    {drawerOpen && activeColSpec && activeSpec && (
+                      <div className="dgen-drawer">
+                        <div className="dgen-drawer-head">
+                          <div className="dgen-drawer-title">
+                            <SlidersHorizontal size={12} className="dgen-dim" />
+                            <span>{activeColSpec.column}</span>
+                            <span className="dgen-dim">
+                              · {t(generatorLabelKey(activeColSpec.generator) as never)}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="dgen-icon-btn"
+                            title={t('dataGen.closeOptions')}
+                            onClick={() => setDrawerOpen(false)}
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                        <div className="dgen-drawer-body">
+                          {activeColTarget?.fk && activeColSpec.generator !== 'foreignKey' && (
+                            <div className="dgen-msg warn">
+                              <AlertTriangle size={11} />
+                              {t('dataGen.fkOverriddenHint', {
+                                ref: `${activeColTarget.fk.refTable}.${activeColTarget.fk.refColumn}`,
+                              })}
+                            </div>
+                          )}
+                          {optionFields(activeColSpec.generator).map((field) =>
+                            renderOptionField(field, activeColSpec, activeSpec.table),
+                          )}
+                          {isTextGenerator(activeColSpec.generator) && (
+                            <>
+                              <Field text={t('dataGen.prefix')}>
                                 <input
-                                  type="checkbox"
-                                  checked={!!colSpec.unique}
-                                  disabled={running || colSpec.generator === 'skip'}
-                                  onClick={(e) => e.stopPropagation()}
+                                  value={activeColSpec.prefix ?? ''}
                                   onChange={(e) =>
-                                    patchColumn(activeSpec.table, colTarget.name, { unique: e.target.checked })
+                                    patchColumn(activeSpec.table, activeColSpec.column, { prefix: e.target.value })
                                   }
                                 />
-                              </td>
-                              <td style={{ textAlign: 'right' }}>
+                              </Field>
+                              <Field text={t('dataGen.suffix')}>
+                                <input
+                                  value={activeColSpec.suffix ?? ''}
+                                  onChange={(e) =>
+                                    patchColumn(activeSpec.table, activeColSpec.column, { suffix: e.target.value })
+                                  }
+                                />
+                              </Field>
+                              <Field text={t('dataGen.letterCase')}>
+                                <select
+                                  value={activeColSpec.case ?? ''}
+                                  onChange={(e) =>
+                                    patchColumn(activeSpec.table, activeColSpec.column, {
+                                      case: (e.target.value || undefined) as GenColumnSpec['case'],
+                                    })
+                                  }
+                                >
+                                  <option value="">{t('dataGen.caseNone')}</option>
+                                  <option value="upper">{t('dataGen.caseUpper')}</option>
+                                  <option value="lower">{t('dataGen.caseLower')}</option>
+                                  <option value="title">{t('dataGen.caseTitle')}</option>
+                                </select>
+                              </Field>
+                              <Field text={t('dataGen.emptyPercent')}>
                                 <input
                                   type="number"
                                   min={0}
                                   max={100}
-                                  style={{ width: '62px', textAlign: 'right' }}
-                                  value={colSpec.nullPercent ?? 0}
-                                  disabled={running || colSpec.generator === 'skip' || !colTarget.nullable}
-                                  title={colTarget.nullable ? undefined : t('dataGen.badgeNotNullTitle')}
-                                  onClick={(e) => e.stopPropagation()}
+                                  value={activeColSpec.emptyPercent ?? 0}
                                   onChange={(e) =>
-                                    patchColumn(activeSpec.table, colTarget.name, {
-                                      nullPercent: Number(e.target.value) || 0,
+                                    patchColumn(activeSpec.table, activeColSpec.column, {
+                                      emptyPercent: Number(e.target.value) || 0,
                                     })
                                   }
                                 />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* per-column options */}
-            <div className="dgen-pane">
-              <div className="dgen-pane-title">{t('dataGen.paneOptions')}</div>
-              {!activeColSpec && <div className="dgen-hint" style={{ padding: '10px' }}>{t('dataGen.pickColumnHint')}</div>}
-              {activeColSpec && activeSpec && (
-                <div className="dgen-pane-body">
-                  <div className="dgen-pane-pad">
-                    <div style={{ fontSize: '11.5px', fontWeight: 600 }}>
-                      {activeColSpec.column}
-                      <span className="dgen-dim" style={{ fontWeight: 400 }}>
-                        {' '}
-                        · {t(generatorLabelKey(activeColSpec.generator) as never)}
-                      </span>
-                    </div>
-                    {activeColTarget?.fk && activeColSpec.generator !== 'foreignKey' && (
-                      <div className="dgen-msg warn" style={{ fontSize: '10.5px' }}>
-                        <AlertTriangle size={11} />
-                        {t('dataGen.fkOverriddenHint', {
-                          ref: `${activeColTarget.fk.refTable}.${activeColTarget.fk.refColumn}`,
-                        })}
+                              </Field>
+                            </>
+                          )}
+                          {!optionFields(activeColSpec.generator).length &&
+                            !isTextGenerator(activeColSpec.generator) &&
+                            !activeColTarget?.fk && (
+                              <div className="dgen-hint">{t('dataGen.noOptionsForCol')}</div>
+                            )}
+                        </div>
                       </div>
                     )}
-                    {optionFields(activeColSpec.generator).map((field) =>
-                      renderOptionField(field, activeColSpec, activeSpec.table),
-                    )}
-                    {isTextGenerator(activeColSpec.generator) && (
-                      <>
-                        <Field text={t('dataGen.prefix')}>
-                          <input
-                            value={activeColSpec.prefix ?? ''}
-                            onChange={(e) => patchColumn(activeSpec.table, activeColSpec.column, { prefix: e.target.value })}
-                          />
-                        </Field>
-                        <Field text={t('dataGen.suffix')}>
-                          <input
-                            value={activeColSpec.suffix ?? ''}
-                            onChange={(e) => patchColumn(activeSpec.table, activeColSpec.column, { suffix: e.target.value })}
-                          />
-                        </Field>
-                        <Field text={t('dataGen.letterCase')}>
-                          <select
-                            value={activeColSpec.case ?? ''}
-                            onChange={(e) =>
-                              patchColumn(activeSpec.table, activeColSpec.column, {
-                                case: (e.target.value || undefined) as GenColumnSpec['case'],
-                              })
-                            }
-                          >
-                            <option value="">{t('dataGen.caseNone')}</option>
-                            <option value="upper">{t('dataGen.caseUpper')}</option>
-                            <option value="lower">{t('dataGen.caseLower')}</option>
-                            <option value="title">{t('dataGen.caseTitle')}</option>
-                          </select>
-                        </Field>
-                        <Field text={t('dataGen.emptyPercent')}>
-                          <input
-                            type="number"
-                            min={0}
-                            max={100}
-                            value={activeColSpec.emptyPercent ?? 0}
-                            onChange={(e) =>
-                              patchColumn(activeSpec.table, activeColSpec.column, {
-                                emptyPercent: Number(e.target.value) || 0,
-                              })
-                            }
-                          />
-                        </Field>
-                      </>
-                    )}
                   </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* ---- issues ---- */}
-          {!!issues.length && (
-            <div className="dgen-issues">
-              {issues.map((issue, idx) => (
-                <div
-                  key={`${issue.key}-${issue.table ?? ''}-${issue.column ?? ''}-${idx}`}
-                  className={`dgen-msg ${issue.level === 'error' ? 'error' : 'warn'}`}
-                  style={{ fontSize: '11px' }}
-                >
-                  <AlertTriangle size={11} /> {t(issue.key as never, issue.params ?? {})}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ---- preview ---- */}
-          <div className="dgen-pane" style={{ maxHeight: '210px' }}>
-            <div className="dgen-pane-title">
-              <span>{t('dataGen.panePreview')}</span>
-              {previewBusy && <Loader size={11} className="spin" />}
-              {/* Seed lives here: it is only interesting next to the data it produced. */}
-              <span className="dgen-chip" style={{ marginLeft: 'auto' }} title={t('dataGen.seedHint')}>
-                {t('dataGen.seed')} {seed}
-                <button
-                  className="dgen-icon-btn"
-                  disabled={running}
-                  title={t('dataGen.seedRandomTitle')}
-                  onClick={() => setSeed(rollSeed())}
-                >
-                  <Dice5 size={12} />
-                </button>
-              </span>
-              <button
-                className="dgen-icon-btn"
-                disabled={!activeSpec || running}
-                title={t('dataGen.previewHint')}
-                onClick={() => setPreviewNonce((n) => n + 1)}
-              >
-                <RefreshCw size={11} />
-              </button>
-            </div>
-            {previewError && (
-              <div className="dgen-msg error" style={{ padding: '8px' }}>
-                <AlertTriangle size={12} /> {previewError}
+                ) : (
+                  /* Live Preview Tab */
+                  <div className="dgen-preview-wrap">
+                    <div className="dgen-preview-bar">
+                      <div className="dgen-preview-bar-left">
+                        <span className="dgen-label">{t('dataGen.panePreview')}</span>
+                        <span className="dgen-dim">
+                          ({formatCount(preview?.data.length ?? 0, i18n.language)} rows)
+                        </span>
+                        <span className="dgen-chip" title={t('dataGen.seedHint')}>
+                          {t('dataGen.seed')} {seed}
+                          <button
+                            type="button"
+                            className="dgen-icon-btn"
+                            disabled={running}
+                            title={t('dataGen.seedRandomTitle')}
+                            onClick={() => setSeed(rollSeed())}
+                          >
+                            <Dice5 size={12} />
+                          </button>
+                        </span>
+                        <button
+                          type="button"
+                          className="dgen-icon-btn"
+                          disabled={!activeSpec || running}
+                          title={t('dataGen.previewHint')}
+                          onClick={() => setPreviewNonce((n) => n + 1)}
+                        >
+                          <RefreshCw size={11} />
+                        </button>
+                      </div>
+                      {previewBusy && <Loader size={12} className="spin" />}
+                    </div>
+                    <div className="dgen-preview-table-scroll">
+                      {previewError && (
+                        <div className="dgen-msg error dgen-p-12">
+                          <AlertTriangle size={12} /> {previewError}
+                        </div>
+                      )}
+                      {!previewError && (!preview || !preview.data.length) && (
+                        <div className="dgen-hint dgen-p-16">
+                          {activeSpec ? t('dataGen.previewEmpty') : t('dataGen.pickTableHint')}
+                        </div>
+                      )}
+                      {!previewError && preview && !!preview.data.length && (
+                        <table className="dgen-table">
+                          <thead>
+                            <tr>
+                              {preview.columns.map((col) => (
+                                <th key={col}>{col}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {preview.data.map((row, rowIdx) => (
+                              // oxlint-disable-next-line react/no-array-index-key
+                              <tr key={rowIdx} className="dgen-row-static">
+                                {preview.columns.map((col) => {
+                                  const v = row[col];
+                                  return (
+                                    <td key={col} className="dgen-mono">
+                                      {v === null || v === undefined ? (
+                                        <span className="dgen-dim dgen-null-val">
+                                          {'NULL'}
+                                        </span>
+                                      ) : (
+                                        String(v)
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-            {!previewError && (!preview || !preview.data.length) && (
-              <div className="dgen-hint" style={{ padding: '8px' }}>
-                {activeSpec ? t('dataGen.previewEmpty') : t('dataGen.pickTableHint')}
-              </div>
-            )}
-            {!previewError && preview && !!preview.data.length && (
-              <div className="dgen-pane-body">
-                <table className="dgen-table">
-                  <thead>
-                    <tr>
-                      {/* Keyed by POSITION, not name: a result set can carry repeated column names. */}
-                      {preview.columns.map((col, i) => (
-                        <th key={i}>{col}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {preview.data.map((row, rowIdx) => (
-                      <tr key={rowIdx} style={{ cursor: 'default' }}>
-                        {preview.columns.map((col, i) => {
-                          const v = row[col];
-                          return (
-                            <td key={i} className="dgen-mono">
-                              {v === null || v === undefined ? (
-                                // SQL keyword, not UI prose — same as DataGrid's empty cells.
-                                <span className="dgen-dim" style={{ fontStyle: 'italic' }}>
-                                  {'NULL'}
-                                </span>
-                              ) : (
-                                String(v)
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* ---- progress / result ---- */}
-          {running && (
-            <ProgressBar
-              progress={{
-                label: t('dataGen.progress', {
-                  table: progress?.table ?? '',
-                  done: formatCount(doneRows, i18n.language),
-                  total: formatCount(totalRows, i18n.language),
-                }),
-                current: doneRows,
-                total: totalRows,
-                detail:
-                  remainingMs === null ? undefined : t('dataGen.eta', { time: formatDuration(remainingMs, t as never) }),
-              }}
-            />
-          )}
-          {result && (
-            <div className={`dgen-msg ${result.cancelled ? 'warn' : 'ok'}`}>
-              <span>
-                {result.cancelled
-                  ? t('dataGen.resultCancelled', { n: formatCount(insertedTotal, i18n.language) })
-                  : t('dataGen.resultDone', {
-                      n: formatCount(insertedTotal, i18n.language),
-                      time: formatDuration(result.elapsedMs ?? 0, t as never),
-                    })}
-                {!!result.warnings?.length && <div className="dgen-msg warn">{result.warnings.join(' · ')}</div>}
-              </span>
-            </div>
-          )}
-          {runError && (
-            <div className="dgen-msg error">
-              <AlertTriangle size={12} /> {runError}
-            </div>
+            </>
           )}
         </div>
-  );
-
-  const footerActions = (
-    <>
-      <div className="dgen-foot-db">
-        <Database size={12} /> {dbName ?? ''}
       </div>
-      {running ? (
-        <button
-          className="btn btn-secondary"
-          onClick={() => { if (jobIdRef.current) cancelJob(jobIdRef.current); }}
-        >
-          {t('dataGen.cancelRun')}
-        </button>
-      ) : (
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button className="btn btn-secondary" onClick={onClose}>
-            {t('common.close')}
-          </button>
-          <button className="btn btn-primary" disabled={!selectedCount || blocked} onClick={() => setConfirming(true)}>
-            <Wand2 size={13} /> {t('dataGen.generate')}
-          </button>
+
+      {/* ---- progress / result ---- */}
+      {running && (
+        <ProgressBar
+          progress={{
+            label: t('dataGen.progress', {
+              table: progress?.table ?? '',
+              done: formatCount(doneRows, i18n.language),
+              total: formatCount(totalRows, i18n.language),
+            }),
+            current: doneRows,
+            total: totalRows,
+            detail:
+              remainingMs === null ? undefined : t('dataGen.eta', { time: formatDuration(remainingMs, t as never) }),
+          }}
+        />
+      )}
+      {result && (
+        <div className={`dgen-msg ${result.cancelled ? 'warn' : 'ok'}`}>
+          <span>
+            {result.cancelled
+              ? t('dataGen.resultCancelled', { n: formatCount(insertedTotal, i18n.language) })
+              : t('dataGen.resultDone', {
+                  n: formatCount(insertedTotal, i18n.language),
+                  time: formatDuration(result.elapsedMs ?? 0, t as never),
+                })}
+            {!!result.warnings?.length && <div className="dgen-msg warn">{result.warnings.join(' · ')}</div>}
+          </span>
         </div>
       )}
-    </>
+      {runError && (
+        <div className="dgen-msg error">
+          <AlertTriangle size={12} /> {runError}
+        </div>
+      )}
+    </div>
   );
 
   const confirmDialog = (
@@ -912,19 +1048,16 @@ export const DataGeneratorDialog: React.FC<DataGeneratorDialogProps> = ({
 
   if (asTab) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, height: '100%', width: '100%', overflow: 'hidden', background: 'var(--win-bg-window)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 18px', borderBottom: '1px solid var(--win-border)', background: 'var(--win-bg-card)', flexShrink: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Wand2 size={15} style={{ color: 'var(--win-accent)' }} />
-            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--win-text-primary)' }}>
+      <div className="dgen-tab-container">
+        <div className="dgen-tab-header">
+          <div className="dgen-tab-title-wrap">
+            <Wand2 size={15} className="dgen-accent-icon" />
+            <span className="dgen-tab-title-text">
               {dbName ? t('dataGen.titleWithDb', { db: dbName }) : t('dataGen.title')}
             </span>
           </div>
         </div>
         {dgenContent}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 18px', borderTop: '1px solid var(--win-border)', background: 'var(--win-bg-card)', flexShrink: 0 }}>
-          {footerActions}
-        </div>
         {confirmDialog}
       </div>
     );
@@ -940,13 +1073,9 @@ export const DataGeneratorDialog: React.FC<DataGeneratorDialogProps> = ({
       height="86vh"
       zIndex={10000}
     >
-      <ModalBody style={{ overflowY: 'hidden', gap: 0, flex: 1 }}>
+      <ModalBody className="dgen-modal-body">
         {dgenContent}
       </ModalBody>
-
-      <ModalFooter>
-        {footerActions}
-      </ModalFooter>
 
       {confirmDialog}
     </Modal>

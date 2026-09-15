@@ -10962,7 +10962,7 @@ input.rename-input {
   --dgen-glass: rgba(255, 255, 255, 0.42);
   --dgen-glass-weak: rgba(255, 255, 255, 0.28);
   --dgen-recess: rgba(15, 23, 42, 0.06);
-  --dgen-th: rgba(246, 248, 251, 0.94);
+  --dgen-th: #f8fafc;
   --dgen-hairline: rgba(255, 255, 255, 0.70);
   --dgen-shadow: rgba(15, 23, 42, 0.12);
   --dgen-hover: rgba(255, 255, 255, 0.45);
@@ -10974,13 +10974,14 @@ input.rename-input {
   gap: 10px;
   min-height: 0;
   flex: 1;
+  height: 100%;
 }
 
 [data-theme='dark'] .dgen {
   --dgen-glass: rgba(20, 24, 32, 0.46);
   --dgen-glass-weak: rgba(18, 22, 30, 0.34);
   --dgen-recess: rgba(0, 0, 0, 0.26);
-  --dgen-th: rgba(22, 26, 34, 0.94);
+  --dgen-th: #161a22;
   --dgen-hairline: rgba(255, 255, 255, 0.10);
   --dgen-shadow: rgba(0, 0, 0, 0.38);
   --dgen-hover: rgba(255, 255, 255, 0.07);
@@ -10994,11 +10995,12 @@ input.rename-input {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  flex-shrink: 0;
   padding: 6px 12px;
   border-radius: 8px;
   background: var(--dgen-glass-weak);
   border: 1px solid var(--win-border);
-  box-shadow: 0 1px 2px var(--dgen-shadow);
+  box-shadow: none;
 }
 
 .dgen-bar-sep {
@@ -11015,9 +11017,9 @@ input.rename-input {
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--win-border);
-  border-radius: 12px;
+  border-radius: 8px;
   background: var(--dgen-glass-weak);
-  box-shadow: 0 1px 3px var(--dgen-shadow), inset 0 1px 0 var(--dgen-hairline);
+  box-shadow: none;
 }
 
 .dgen-pane-title {
@@ -11048,21 +11050,506 @@ input.rename-input {
   gap: 8px;
 }
 
-.dgen-grid {
+/* Unified single block for sidebar + workspace with no box-shadow */
+.dgen-block {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr) 306px;
-  gap: 10px;
-  min-height: 240px;
-  flex: 1 1 auto;
+  grid-template-columns: 240px minmax(0, 1fr);
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+  background: var(--dgen-glass-weak);
+  box-shadow: none;
+  min-height: 0;
+  flex: 1 1 0px;
+  overflow: hidden;
 }
 
-/* A narrow window squeezes the outer two columns rather than changing their number — the three panes
-   depend on each other horizontally (pick a table -> a column -> its settings), so stacking them
-   vertically would break that flow. */
-@media (max-width: 1120px) {
-  .dgen-grid {
-    grid-template-columns: 190px minmax(0, 1fr) 250px;
+@media (max-width: 1020px) {
+  .dgen-block {
+    grid-template-columns: 200px minmax(0, 1fr);
   }
+}
+
+.dgen-block-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--win-border);
+  background: transparent;
+}
+
+.dgen-block-workspace {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.dgen-grid {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+  flex: 1 1 0px;
+}
+
+@media (max-width: 1020px) {
+  .dgen-grid {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+}
+
+.dgen-as-tab {
+  padding: 14px 18px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.dgen-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dgen-summary {
+  margin-left: auto;
+  font-size: 11.5px;
+}
+
+.dgen-sidebar-content {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dgen-search-box {
+  position: relative;
+}
+
+.dgen-search-icon {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.dgen-search-input,
+.dgen input.dgen-search-input {
+  padding-left: 28px !important;
+}
+
+.dgen-sidebar-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.dgen-table-list {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+  margin: 0 -8px;
+}
+
+.dgen-row-badge {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.dgen-input-rows {
+  width: 90px;
+}
+
+.dgen-input-table-rows {
+  width: 100px;
+}
+
+.dgen-select-mode {
+  width: 165px;
+}
+
+.dgen-select-gen {
+  min-width: 160px;
+  width: 100%;
+}
+
+.dgen-input-null {
+  width: 58px;
+  text-align: right;
+}
+
+.dgen-workspace {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dgen-workspace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--dgen-recess);
+  border-bottom: 1px solid var(--win-border);
+  flex-shrink: 0;
+}
+
+.dgen-workspace-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dgen-workspace-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--win-text-primary);
+}
+
+.dgen-table-chip {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 4px;
+}
+
+.dgen-workspace-subbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--dgen-glass-weak);
+  border-bottom: 1px solid var(--win-border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.dgen-subbar-hint {
+  font-size: 11px;
+  color: var(--st-danger, #ef4444);
+}
+
+.dgen-workspace-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+  background: var(--dgen-recess);
+  border-bottom: 1px solid var(--win-border);
+  flex-shrink: 0;
+}
+
+.dgen-icon-warn {
+  color: var(--st-warn, #f59e0b);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.dgen-workspace-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dgen-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--win-border);
+  background: transparent;
+  color: var(--win-text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.dgen-tab-btn:hover {
+  border-color: var(--win-accent);
+  color: var(--win-text-primary);
+}
+
+.dgen-tab-btn.active {
+  border-color: var(--win-accent);
+  color: var(--win-accent);
+  background: var(--dgen-hover);
+  font-weight: 600;
+}
+
+.dgen-workspace-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.dgen-cols-wrap {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  width: 100%;
+}
+
+.dgen-cols-table-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.dgen-drawer {
+  width: 300px;
+  border-left: 1px solid var(--win-border);
+  background: var(--dgen-glass);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex-shrink: 0;
+  animation: dgen-drawer-slide 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes dgen-drawer-slide {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.dgen-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--win-border);
+  background: var(--dgen-recess);
+  flex-shrink: 0;
+}
+
+.dgen-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dgen-drawer-body {
+  padding: 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+.dgen-col-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 2px 7px;
+  height: 22px;
+  border-radius: 5px;
+  border: 1px solid var(--win-border);
+  background: transparent;
+  color: var(--win-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dgen-col-btn:hover {
+  border-color: var(--win-accent);
+  color: var(--win-text-primary);
+}
+
+.dgen-col-btn.active {
+  border-color: var(--win-accent);
+  color: var(--win-accent);
+  background: var(--dgen-hover);
+}
+
+.dgen-col-btn.has-options {
+  color: var(--win-accent);
+}
+
+.dgen-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.dgen-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--win-border);
+  font-size: 11.5px;
+  color: var(--win-text-secondary);
+  flex-shrink: 0;
+}
+
+.dgen-preview-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dgen-preview-table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.dgen-tab-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--win-bg-window);
+}
+
+.dgen-tab-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--win-border);
+  background: var(--win-bg-card);
+  flex-shrink: 0;
+}
+
+.dgen-tab-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dgen-tab-title-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+
+.dgen-tab-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px;
+  border-top: 1px solid var(--win-border);
+  background: var(--win-bg-card);
+  flex-shrink: 0;
+}
+
+.dgen-foot-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.dgen-p-12 {
+  padding: 12px;
+}
+
+.dgen-p-16 {
+  padding: 16px;
+}
+
+.dgen-p-24 {
+  padding: 24px;
+}
+
+.dgen-center-text {
+  text-align: center;
+}
+
+.dgen-center-flex {
+  align-items: center;
+  justify-content: center;
+}
+
+.dgen-flex-1 {
+  flex: 1;
+}
+
+.dgen-row-static {
+  cursor: default;
+}
+
+.dgen-accent-icon {
+  color: var(--win-accent);
+}
+
+.dgen-th-center {
+  text-align: center;
+}
+
+.dgen-th-right {
+  text-align: right;
+}
+
+.dgen-th-options {
+  text-align: center;
+  width: 84px;
+}
+
+.dgen-td-center {
+  text-align: center;
+}
+
+.dgen-td-right {
+  text-align: right;
+}
+
+.dgen-loading-hint {
+  padding: 6px 13px;
+}
+
+.dgen-valign-sub {
+  vertical-align: -2px;
+}
+
+.dgen-null-val {
+  font-style: italic;
+}
+
+.dgen-modal-body {
+  overflow-y: hidden !important;
+  gap: 8px !important;
+  flex: 1;
+  height: 100%;
+  padding: 12px 16px !important;
+  box-sizing: border-box;
 }
 
 .dgen-label {
@@ -11154,6 +11641,10 @@ input.rename-input {
   cursor: pointer;
 }
 
+.dgen-row svg {
+  flex-shrink: 0;
+}
+
 .dgen-row:hover {
   background: var(--dgen-hover);
 }
@@ -11232,6 +11723,88 @@ input.rename-input {
   margin-left: 4px;
 }
 
+.dgen-badge-pk {
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #f59e0b;
+}
+
+.dgen-badge-fk {
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.35);
+  color: #3b82f6;
+}
+
+.dgen-badge-ai {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #10b981;
+}
+
+.dgen-badge-nn {
+  background: var(--dgen-recess);
+  border-color: var(--win-border);
+  color: var(--win-text-secondary);
+}
+
+.dgen-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.dgen-sidebar-count {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--win-text-disabled);
+  margin-left: 4px;
+}
+
+.dgen-sidebar-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.dgen-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  gap: 10px;
+  margin: auto;
+  text-align: center;
+  max-width: 360px;
+}
+
+.dgen-empty-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: var(--dgen-recess);
+  border: 1px solid var(--win-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--win-text-secondary);
+  margin-bottom: 4px;
+}
+
+.dgen-empty-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+
+.dgen-empty-desc {
+  font-size: 11.5px;
+  color: var(--win-text-secondary);
+  line-height: 1.5;
+}
+
 .dgen-hint {
   font-size: 10.5px;
   color: var(--win-text-secondary);
@@ -11302,8 +11875,14 @@ input.rename-input {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  max-height: 84px;
-  overflow: auto;
+  flex-shrink: 0;
+  padding: 6px 12px;
+  background: var(--dgen-glass-weak);
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+  box-shadow: none;
+  max-height: 70px;
+  overflow-y: auto;
 }
 
 .dgen-foot-db {

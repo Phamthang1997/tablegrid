@@ -1870,6 +1870,12 @@ const ja: typeof en = {
     paneColumnsOf: '{{table}} のカラム',
     paneOptions: 'ジェネレーター設定',
     panePreview: 'プレビュー',
+    tabColumns: 'カラム設定',
+    tabPreview: 'ライブプレビュー',
+    colOptions: 'オプション',
+    closeOptions: '設定を閉じる',
+    noOptionsForCol: 'このカラムには追加の設定はありません。',
+    tableRowsBadge: '{{n}} 行',
 
     searchTables: 'テーブルを検索...',
     selectAll: 'すべて選択',

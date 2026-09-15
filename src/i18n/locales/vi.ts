@@ -1875,6 +1875,12 @@ const vi: typeof en = {
     paneColumnsOf: 'Cột của {{table}}',
     paneOptions: 'Cấu hình generator',
     panePreview: 'Xem trước',
+    tabColumns: 'Cột dữ liệu',
+    tabPreview: 'Xem trước dữ liệu',
+    colOptions: 'Tùy chọn',
+    closeOptions: 'Đóng cài đặt',
+    noOptionsForCol: 'Cột này không có tùy chọn bổ sung.',
+    tableRowsBadge: '{{n}} dòng',
 
     searchTables: 'Tìm bảng...',
     selectAll: 'Chọn tất cả',

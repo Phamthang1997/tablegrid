@@ -1889,6 +1889,12 @@ const en = {
     paneColumnsOf: 'Columns of {{table}}',
     paneOptions: 'Generator settings',
     panePreview: 'Preview',
+    tabColumns: 'Columns',
+    tabPreview: 'Live Preview',
+    colOptions: 'Options',
+    closeOptions: 'Close settings',
+    noOptionsForCol: 'No additional settings for this column.',
+    tableRowsBadge: '{{n}} rows',
 
     searchTables: 'Find a table...',
     selectAll: 'Select all',
