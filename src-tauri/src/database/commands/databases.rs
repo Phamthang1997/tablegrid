@@ -6,7 +6,7 @@ use sqlx::{MySqlPool, PgPool, Row};
 
 use crate::database::{
     DbConnection, DbKind, all_string_values, apply_ssh_tunnel, build_mysql_url, build_pg_url,
-    execute_raw_sql_generic, rows_of, sql_str,
+    execute_raw_sql_generic, quote_ident, rows_of, sql_str,
 };
 
 use super::connection::probe_pg_schema;
@@ -287,44 +287,117 @@ pub async fn set_current_schema(conn_id: String, name: String) -> Result<Value, 
     .await
 }
 
-// Create a new database (using the current connection). encoding/collation are optional.
+/// Everything the create-database dialog can ask for. Fields absent (or blank) mean "server default",
+/// so a payload carrying only `name` produces the exact statement this command produced before the
+/// dialog grew its option rows.
+struct CreateDbOpts {
+    name: String,
+    encoding: Option<String>,
+    collation: Option<String>,
+    ctype: Option<String>,
+    owner: Option<String>,
+    template: Option<String>,
+}
+
+fn create_db_opts(payload: &Value) -> Result<CreateDbOpts, String> {
+    fn field(payload: &Value, key: &str) -> Option<String> {
+        payload
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+    Ok(CreateDbOpts {
+        name: field(payload, "name").ok_or("Thiếu tên database")?,
+        encoding: field(payload, "encoding"),
+        collation: field(payload, "collation"),
+        ctype: field(payload, "ctype"),
+        owner: field(payload, "owner"),
+        template: field(payload, "template"),
+    })
+}
+
+/// The single definition of the statement. `create_database` runs it and `preview_create_database`
+/// only shows it, so what the dialog displays can never drift from what executes — the same reason
+/// `preview_alter_schema` exists next to `alter_table_schema` instead of a second builder in TS.
+fn build_create_database_sql(conn: &DbConnection, o: &CreateDbOpts) -> Result<String, String> {
+    match &conn.kind {
+        DbKind::Mysql(_) => {
+            let mut s = format!("CREATE DATABASE {}", quote_ident(conn, &o.name));
+            if let Some(e) = &o.encoding {
+                s.push_str(&format!(" CHARACTER SET {}", e));
+            }
+            if let Some(c) = &o.collation {
+                s.push_str(&format!(" COLLATE {}", c));
+            }
+            Ok(s)
+        }
+        DbKind::Postgres(_) => {
+            let mut s = format!("CREATE DATABASE {}", quote_ident(conn, &o.name));
+            let mut opts: Vec<String> = Vec::new();
+            if let Some(owner) = &o.owner {
+                opts.push(format!("OWNER {}", quote_ident(conn, owner)));
+            }
+            if let Some(e) = &o.encoding {
+                opts.push(format!("ENCODING '{}'", sql_str(e)));
+            }
+            if let Some(c) = &o.collation {
+                opts.push(format!("LC_COLLATE '{}'", sql_str(c)));
+            }
+            if let Some(c) = &o.ctype {
+                opts.push(format!("LC_CTYPE '{}'", sql_str(c)));
+            }
+            // A locale/encoding differing from the default template is only allowed from template0,
+            // so it is added unless the user picked a template explicitly.
+            let locale_given = o.encoding.is_some() || o.collation.is_some() || o.ctype.is_some();
+            match &o.template {
+                Some(t) => opts.push(format!("TEMPLATE {}", quote_ident(conn, t))),
+                None if locale_given => opts.push("TEMPLATE template0".to_string()),
+                None => {}
+            }
+            if !opts.is_empty() {
+                s.push_str(&format!(" WITH {}", opts.join(" ")));
+            }
+            Ok(s)
+        }
+        DbKind::Sqlite(_) => {
+            Err("SQLite không hỗ trợ tạo database (mỗi tệp là một database)".to_string())
+        }
+    }
+}
+
+// Create a new database (using the current connection). Every option beyond the name is optional.
 #[tauri::command]
 pub async fn create_database(conn_id: String, payload: Value) -> Result<Value, String> {
     Box::pin(async move {
-    let state = crate::state::require_state()?;
-    let conn_type = {
-        let ctx = state.connections.acquire(&conn_id)?;
-        ctx.conn().clone()
-    };
+        let state = crate::state::require_state()?;
+        let conn_type = {
+            let ctx = state.connections.acquire(&conn_id)?;
+            ctx.conn().clone()
+        };
 
-    let name = payload.get("name").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()).ok_or("Thiếu tên database")?;
-    let encoding = payload.get("encoding").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
-    let collation = payload.get("collation").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+        let sql = build_create_database_sql(&conn_type, &create_db_opts(&payload)?)?;
+        execute_raw_sql_generic(&conn_type, sql).await?;
+        Ok(json!({ "success": true }))
+    })
+    .await
+}
 
-    let sql = match &conn_type.kind {
-        DbKind::Mysql(_) => {
-            let mut s = format!("CREATE DATABASE `{}`", name);
-            if let Some(e) = encoding { s.push_str(&format!(" CHARACTER SET {}", e)); }
-            if let Some(c) = collation { s.push_str(&format!(" COLLATE {}", c)); }
-            s
-        }
-        DbKind::Postgres(_) => {
-            let mut s = format!("CREATE DATABASE \"{}\"", name);
-            let mut opts: Vec<String> = Vec::new();
-            if let Some(e) = encoding { opts.push(format!("ENCODING '{}'", e.replace('\'', "''"))); }
-            if let Some(c) = collation { opts.push(format!("LC_COLLATE '{}'", c.replace('\'', "''"))); }
-            if !opts.is_empty() {
-                // TEMPLATE template0 is needed when the LC_* settings differ from the default template
-                s.push_str(&format!(" WITH {} TEMPLATE template0", opts.join(" ")));
-            }
-            s
-        }
-        DbKind::Sqlite(_) => return Err("SQLite không hỗ trợ tạo database (mỗi tệp là một database)".to_string()),
-    };
+// The statement `create_database` would run, as text — the dialog's live SQL preview.
+#[tauri::command]
+pub async fn preview_create_database(conn_id: String, payload: Value) -> Result<Value, String> {
+    Box::pin(async move {
+        let state = crate::state::require_state()?;
+        let conn_type = {
+            let ctx = state.connections.acquire(&conn_id)?;
+            ctx.conn().clone()
+        };
 
-    execute_raw_sql_generic(&conn_type, sql).await?;
-    Ok(json!({ "success": true }))
-}).await
+        let sql = build_create_database_sql(&conn_type, &create_db_opts(&payload)?)?;
+        Ok(json!({ "success": true, "sql": sql }))
+    })
+    .await
 }
 
 // Drop a database (using the current connection). The connected database cannot be dropped.
@@ -431,7 +504,25 @@ pub async fn get_db_charsets(conn_id: String) -> Result<Value, String> {
             let coll_res = execute_raw_sql_generic(&conn_type,
                 "SELECT DISTINCT datcollate AS c FROM pg_database WHERE datcollate IS NOT NULL ORDER BY 1".to_string()).await?;
             let collations = col_values(&coll_res, "c");
-            Ok(json!({ "success": true, "encodings": encodings, "collations": collations }))
+
+            let ctype_res = execute_raw_sql_generic(&conn_type,
+                "SELECT DISTINCT datctype AS c FROM pg_database WHERE datctype IS NOT NULL ORDER BY 1".to_string()).await?;
+            let ctypes = col_values(&ctype_res, "c");
+
+            // Only databases that may be cloned. `datallowconn = false` (template0 by default) still
+            // works as a TEMPLATE, which is exactly the one needed for a non-default locale.
+            let tpl_res = execute_raw_sql_generic(&conn_type,
+                "SELECT datname AS n FROM pg_database WHERE datistemplate ORDER BY 1".to_string()).await?;
+            let mut templates = col_values(&tpl_res, "n");
+            if !templates.iter().any(|t| t == "template0") { templates.push("template0".to_string()); }
+
+            // Roles that can own a database. The `pg_` prefixed ones are the built-in system roles.
+            let owner_res = execute_raw_sql_generic(&conn_type,
+                "SELECT rolname AS n FROM pg_roles WHERE rolname !~ '^pg_' ORDER BY 1".to_string()).await?;
+            let owners = col_values(&owner_res, "n");
+
+            Ok(json!({ "success": true, "encodings": encodings, "collations": collations,
+                       "ctypes": ctypes, "templates": templates, "owners": owners }))
         }
         DbKind::Sqlite(_) => {
             Ok(json!({ "success": true, "encodings": [], "collations": [] }))

@@ -183,6 +183,14 @@ export interface DockerContainerInfo {
   matched_host_port: boolean;
   /** Only the container's internal port matches, i.e. same image on another published port. */
   matched_container_port: boolean;
+  /** A pod sandbox ("pause"). The backend already drops these; the flag is here for completeness. */
+  is_sandbox: boolean;
+  /** Set only for a cri-dockerd name — the container's own name inside the pod, its pod, its namespace. */
+  k8s_container: string;
+  k8s_pod: string;
+  k8s_namespace: string;
+  /** The name says this is the dialect being connected to — the only evidence Kubernetes leaves. */
+  matched_name: boolean;
 }
 
 /** The answer of `probe_log_path`: where a detected log path actually exists. */
@@ -432,6 +440,32 @@ export interface SchemaInfo {
   columns: ColumnInfo[];
   indexes: { name: string; columns: string; unique: boolean }[];
   foreignKeys: { name?: string; column: string; refTable: string; refColumn: string }[];
+}
+
+/**
+ * What the create-database dialog sends. Only `name` is required — an omitted or blank field means
+ * "server default", and `owner`/`template`/`ctype` are Postgres-only (the Rust builder ignores them
+ * on MySQL rather than emitting invalid SQL).
+ */
+export interface CreateDbPayload {
+  name: string;
+  encoding?: string;
+  collation?: string;
+  ctype?: string;
+  owner?: string;
+  template?: string;
+}
+
+/** The option lists that dialog fills its selects from. Everything but `encodings` is dialect-specific. */
+export interface DbCharsets {
+  encodings: string[];
+  /** Postgres: one flat list. */
+  collations?: string[];
+  /** MySQL: a collation belongs to a charset, so the list is filtered by the chosen encoding. */
+  collationsByEncoding?: Record<string, string[]>;
+  ctypes?: string[];
+  templates?: string[];
+  owners?: string[];
 }
 
 export interface GridChange {
@@ -1360,8 +1394,15 @@ export const dbHelper = {
   // Deliberately NOT wrapped in a catch that returns []: "no CLI installed", "the daemon is not
   // running" and "there are no containers" are three different answers needing three different
   // things from the user, and an empty array makes them one. The caller shows the reason.
-  async listDockerContainers(targetPort?: number): Promise<DockerContainerInfo[]> {
-    return await invoke('list_docker_containers', { targetPort });
+  async listDockerContainers(targetPort?: number, nameHint?: string): Promise<DockerContainerInfo[]> {
+    return await invoke('list_docker_containers', { targetPort, nameHint });
+  },
+
+  // Whether anything can be executed inside the container at all. Asked before a command is typed
+  // into the terminal, because a pod sandbox and a distroless image both fail with
+  // `exec: "tail": executable file not found`, which blames the wrong thing.
+  async containerHasShell(container: string): Promise<boolean> {
+    return await invoke('container_has_shell', { container });
   },
 
   // Where a log path really is: on this machine, or inside one of `candidates` (best-first, since
@@ -1640,10 +1681,21 @@ export const dbHelper = {
     }
   },
 
-  async createDatabase(connId: string, payload: { name: string; encoding?: string; collation?: string }): Promise<{ success: boolean; error?: string }> {
+  async createDatabase(connId: string, payload: CreateDbPayload): Promise<{ success: boolean; error?: string }> {
     try {
       const res: any = await invoke('create_database', { connId, payload });
       return { success: !!res.success, error: res.message };
+    } catch (err: any) {
+      return { success: false, error: err.toString() };
+    }
+  },
+
+  // The statement createDatabase would run, as text. The builder lives in Rust so the dialog's
+  // preview cannot drift from what executes (same split as previewAlterSchema).
+  async previewCreateDatabase(connId: string, payload: CreateDbPayload): Promise<{ success: boolean; sql?: string; error?: string }> {
+    try {
+      const res: any = await invoke('preview_create_database', { connId, payload });
+      return { success: !!res.success, sql: res.sql, error: res.message };
     } catch (err: any) {
       return { success: false, error: err.toString() };
     }
@@ -1667,14 +1719,20 @@ export const dbHelper = {
     }
   },
 
-  async getDbCharsets(): Promise<{ success: boolean; encodings: string[]; collations?: string[]; collationsByEncoding?: Record<string, string[]>; error?: string }> {
+  // The lists behind the create-database dialog's selects. `connId` is required by the command and
+  // used to be omitted here, which made every call fail with a missing-argument error — i.e. the
+  // dialog's encoding/collation selects only ever offered "server default".
+  async getDbCharsets(connId: string): Promise<DbCharsets & { success: boolean; error?: string }> {
     try {
-      const res: any = await invoke('get_db_charsets');
+      const res: any = await invoke('get_db_charsets', { connId });
       return {
         success: !!res.success,
         encodings: res.encodings || [],
         collations: res.collations,
         collationsByEncoding: res.collationsByEncoding,
+        ctypes: res.ctypes,
+        templates: res.templates,
+        owners: res.owners,
         error: res.message,
       };
     } catch (err: any) {

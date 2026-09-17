@@ -18,7 +18,7 @@ import type { SavedProfile } from './ConnectionManager';
 import { dbHelper } from '../utils/dbHelper';
 import type { ConnectionStatus } from '../utils/dbHelper';
 import type { ConnEnv } from '../utils/connEnv';
-import { Modal, ModalBody, ModalFooter } from './Modal';
+import { CreateDatabaseModal } from './CreateDatabaseModal';
 import { ConfirmDialog } from './ConfirmDialog';
 
 /** Stable empty default for the `openConns` prop: a fresh `[]` each render breaks memoisation downstream. */
@@ -128,7 +128,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   const [showCreateDbModal, setShowCreateDbModal] = useState(false);
   /** Database awaiting drop confirmation — see handleDropDb. */
   const [dropDbTarget, setDropDbTarget] = useState<string | null>(null);
-  const [newDbName, setNewDbName] = useState('');
 
   // Connection details popover state
   const [showConnPopover, setShowConnPopover] = useState(false);
@@ -278,16 +277,11 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     if (!res.success) alert(t('sidebar.errDropDb', { message: res.error || '' }));
   };
 
-  const handleCreateDbSubmit = async () => {
-    if (!newDbName.trim()) return;
-    const res = await dbHelper.createDatabase(connId || '', { name: newDbName.trim() });
-    if (res.success) {
-      setShowCreateDbModal(false);
-      setNewDbName('');
-      handleSwitchDb(newDbName.trim());
-    } else {
-      alert(t('quickSwitcher.errCreateDb', { message: res.error || '' }));
-    }
+  // The dialog itself reports its own failure, so there is nothing to do here but close and
+  // (unless the user unticked it) open what was just created.
+  const handleDbCreated = (name: string, open: boolean) => {
+    setShowCreateDbModal(false);
+    if (open) handleSwitchDb(name);
   };
 
   // The text in the middle of the title bar. It prefers the session's real figures and falls back to
@@ -794,37 +788,13 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         />
       )}
 
-      {/* Modal Create New Database */}
       {showCreateDbModal && (
-        <Modal
-          title={t('quickSwitcher.createDbTitle')}
+        <CreateDatabaseModal
+          connId={connId || ''}
+          dbType={(connStatus?.dbType || activeConnectionInfo?.dbType || '').toLowerCase()}
+          onCreated={handleDbCreated}
           onClose={() => setShowCreateDbModal(false)}
-          width="420px"
-          zIndex={99999}
-        >
-          <ModalBody>
-            <div className="form-group">
-              <label>{t('quickSwitcher.createDbNameLabel')}</label>
-              <input
-                type="text"
-                className="form-input"
-                placeholder={t('quickSwitcher.createDbPlaceholder')}
-                value={newDbName}
-                onChange={(e) => setNewDbName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && newDbName.trim()) void handleCreateDbSubmit(); }}
-                autoFocus
-              />
-            </div>
-          </ModalBody>
-          <ModalFooter>
-            <button className="btn btn-secondary" onClick={() => setShowCreateDbModal(false)}>
-              {t('common.cancel')}
-            </button>
-            <button className="btn btn-primary" onClick={handleCreateDbSubmit} disabled={!newDbName.trim()}>
-              {t('quickSwitcher.createDbSubmit')}
-            </button>
-          </ModalFooter>
-        </Modal>
+        />
       )}
 
       {/* Drop-database confirmation. requireText: the name must be typed — dropping a

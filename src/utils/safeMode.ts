@@ -135,9 +135,11 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   list_connections: 'internal',
   list_databases: 'internal',
   list_schemas: 'internal',
+  container_has_shell: 'internal',
   probe_log_path: 'internal',
-  // Both return SQL text without running it.
+  // These return SQL text (or rows) without running anything.
   preview_alter_schema: 'internal',
+  preview_create_database: 'internal',
   preview_generated_data: 'internal',
   compare_data_overview: 'internal',
   compare_schemas: 'internal',

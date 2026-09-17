@@ -7,7 +7,6 @@ import type { TableItem, SchemaInfo, TriggerInfo, CheckConstraintInfo } from '..
 import { Search, Table, TerminalSquare, RefreshCw, Layers, Plus, ChevronDown, ChevronRight, Braces, Cog, Key, Sliders, FileCode, Trash2, CheckCircle2, Copy, AlertTriangle, History, Bookmark, Columns3, ArrowDownAZ, Link2, Zap, Code2, Database, Sparkles, GitCompare, ArrowLeftRight, HardDriveDownload, HardDriveUpload, Plug, Network, Activity, Timer } from 'lucide-react';
 import { CreateTableModal } from './CreateTableModal';
 import { Modal, ModalBody, ModalFooter } from './Modal';
-import { ConfirmDialog } from './ConfirmDialog';
 import { RoutineEditorModal } from './RoutineEditorModal';
 import { ViewEditorModal } from './ViewEditorModal';
 import { SequenceManagerModal } from './SequenceManagerModal';
@@ -560,7 +559,6 @@ interface SidebarProps {
    * pool on the same `ServerHandle` (same tunnel, same credentials, no re-auth), so there is nothing
    * to refuse and the old database keeps its tabs and its transaction.
    */
-  onDatabaseOpened?: (connId: string, name: string, schema?: string | null) => void;
   /** The selected schema (Postgres only). The backend is the source of truth — see App.tsx. */
   schema?: string | null;
   /** After a schema change: App updates state and the localStorage key, and the Sidebar reloads its list. */
@@ -596,7 +594,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onGenerateData,
   onTableRenamed,
   onTableDropped,
-  onDatabaseOpened,
   schema,
   onSchemaChanged,
   onOpenQueryWithSql,
@@ -907,12 +904,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // Database state
   const [_dbList, setDbList] = useState<string[]>([]);
-  const [showCreateDb, setShowCreateDb] = useState(false);
-  const [newDb, setNewDb] = useState({ name: '', encoding: '', collation: '' });
-  const [dbCharsets, _setDbCharsets] = useState<{ encodings: string[]; collations?: string[]; collationsByEncoding?: Record<string, string[]> }>({ encodings: [] });
   const [renameDbState, setRenameDbState] = useState<{ oldName: string; value: string } | null>(null);
-  /** Freshly created database, waiting on the "switch to it now?" answer. */
-  const [switchToNewDb, setSwitchToNewDb] = useState<string | null>(null);
 
 
   const handleRenameDatabase = async () => {
@@ -928,26 +920,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       setDbList(list.databases || []);
     } else {
       alert(t('sidebar.errRenameDb', { message: res.error }));
-    }
-  };
-
-  const handleCreateDatabase = async () => {
-    if (blockedByReadOnly()) return;
-    const name = newDb.name.trim();
-    if (!name) { alert(t('sidebar.promptDbName')); return; }
-    const res = await dbHelper.createDatabase(connId, {
-      name,
-      encoding: newDb.encoding.trim() || undefined,
-      collation: newDb.collation.trim() || undefined,
-    });
-    if (res.success) {
-      setShowCreateDb(false);
-      setNewDb({ name: '', encoding: '', collation: '' });
-      // "Created — switch to it now?" — window.confirm shows nothing in the Tauri webview,
-      // so this question used to return undefined silently and never switched database.
-      setSwitchToNewDb(name);
-    } else {
-      alert(t('sidebar.errCreateDb', { message: res.error }));
     }
   };
 
@@ -2843,60 +2815,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </Modal>
       )}
 
-      {showCreateDb && (
-        <Modal
-          title={t('sidebar.createDbTitle', { dbType: dbType.toUpperCase() })}
-          onClose={() => setShowCreateDb(false)}
-          width="400px"
-          zIndex={999999}
-        >
-          <ModalBody style={{ gap: '12px' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <label style={{ fontSize: '11px', color: 'var(--win-text-secondary)' }}>{t('sidebar.dbName')}</label>
-              <input
-                type="text" autoFocus value={newDb.name}
-                onChange={(e) => setNewDb({ ...newDb, name: e.target.value })}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleCreateDatabase(); if (e.key === 'Escape') setShowCreateDb(false); }}
-                placeholder={t('sidebar.dbNamePlaceholder')}
-                style={{ fontSize: '11px', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--win-border)', background: 'var(--win-bg-input)', color: 'var(--win-text-primary)', outline: 'none' }}
-              />
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <label style={{ fontSize: '11px', color: 'var(--win-text-secondary)' }}>{t('sidebar.encodingOptional')}</label>
-              <select
-                value={newDb.encoding}
-                onChange={(e) => setNewDb({ ...newDb, encoding: e.target.value, collation: '' })}
-                style={{ fontSize: '11px', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--win-border)', background: 'var(--win-bg-input)', color: 'var(--win-text-primary)', outline: 'none', cursor: 'pointer' }}
-              >
-                <option value="">{t('common.defaultOption')}</option>
-                {dbCharsets.encodings.map((enc) => (
-                  <option key={enc} value={enc}>{enc}</option>
-                ))}
-              </select>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <label style={{ fontSize: '11px', color: 'var(--win-text-secondary)' }}>{t('sidebar.collationOptional')}</label>
-              <select
-                value={newDb.collation}
-                onChange={(e) => setNewDb({ ...newDb, collation: e.target.value })}
-                style={{ fontSize: '11px', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--win-border)', background: 'var(--win-bg-input)', color: 'var(--win-text-primary)', outline: 'none', cursor: 'pointer' }}
-              >
-                <option value="">{t('common.defaultOption')}</option>
-                {(dbType === 'mysql'
-                  ? (dbCharsets.collationsByEncoding?.[newDb.encoding] || [])
-                  : (dbCharsets.collations || [])
-                ).map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
-            </div>
-          </ModalBody>
-          <ModalFooter>
-            <button className="btn btn-secondary" onClick={() => setShowCreateDb(false)} style={{ padding: '0 12px' }}>{t('common.cancel')}</button>
-            <button className="btn btn-primary" onClick={handleCreateDatabase} style={{ padding: '0 12px', background: 'var(--win-accent)', color: '#fff', border: 'none' }}>{t('common.create')}</button>
-          </ModalFooter>
-        </Modal>
-      )}
 
       {renameDbState && (
         <Modal
@@ -3131,23 +3049,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </Modal>
       )}
 
-      {/* zIndex above the sidebar's own 999999 dialogs. */}
-      <ConfirmDialog
-        open={!!switchToNewDb}
-        tone="success"
-        zIndex={1000000}
-        title={t('sidebar.createdDbTitle')}
-        message={t('sidebar.createdDbSwitch', { name: switchToNewDb || '' })}
-        onConfirm={async () => {
-          const name = switchToNewDb;
-          setSwitchToNewDb(null);
-          if (!name) return;
-          const res = await dbHelper.openDatabase(connId, name);
-          if (res.success && res.connId) onDatabaseOpened?.(res.connId, res.database || name, res.schema);
-          else alert(t('sidebar.errOpenDb', { message: res.error || '' }));
-        }}
-        onCancel={() => setSwitchToNewDb(null)}
-      />
     </div>
   );
 };
