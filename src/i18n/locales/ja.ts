@@ -2131,6 +2131,7 @@ const ja: typeof en = {
     dockerStreamLogs: 'ログをストリーミング',
     dockerShell: 'シェル',
     errNoContainerSelected: '先にコンテナを選択または入力してください。',
+    errContainerNoShell: 'コンテナ {{n}} にはシェルがありません — 内部で何も実行できません (Pod サンドボックスまたは distroless イメージ)。ログのストリーミングを使うか、別のコンテナを選んでください。',
     errPathNotLocal: 'このパスはこのマシンではなくデータベースサーバー上にあります ({{n}})。ログソースを Docker または SSH に切り替えてください。',
     autoPickedDocker: 'サーバーはコンテナ {{n}} で動作しています — ログソースを Docker に切り替えました。',
     autoPickedSsh: 'サーバーは別のホスト ({{n}}) にあります — ログソースを SSH に切り替えました。接続先を確認してください。',

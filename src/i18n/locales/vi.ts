@@ -2136,6 +2136,7 @@ const vi: typeof en = {
     dockerStreamLogs: 'Xem Log',
     dockerShell: 'Vào Shell',
     errNoContainerSelected: 'Vui lòng chọn hoặc nhập tên container trước.',
+    errContainerNoShell: 'Container {{n}} không có shell — không chạy được lệnh nào bên trong (pod sandbox, hoặc image distroless). Hãy dùng Xem Log, hoặc chọn container khác.',
     errPathNotLocal: 'Đường dẫn này nằm trên máy chủ database, không phải trên máy này ({{n}}). Hãy đổi nguồn log sang Docker hoặc SSH.',
     autoPickedDocker: 'Server đang chạy trong container {{n}} — đã chuyển nguồn log sang Docker.',
     autoPickedSsh: 'Server nằm ở máy khác ({{n}}) — đã chuyển nguồn log sang SSH; kiểm tra lại đích kết nối.',

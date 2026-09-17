@@ -2150,6 +2150,7 @@ const en = {
     dockerStreamLogs: 'Stream Logs',
     dockerShell: 'Shell',
     errNoContainerSelected: 'Please enter or select a container first.',
+    errContainerNoShell: 'Container {{n}} has no shell — nothing can be run inside it (a pod sandbox, or a distroless image). Use Stream Logs, or pick another container.',
     errPathNotLocal: 'This path lives on the database server, not on this machine ({{n}}). Switch the log source to Docker or SSH.',
     autoPickedDocker: 'The server runs in container {{n}} — log source switched to Docker.',
     autoPickedSsh: 'The server is on another host ({{n}}) — log source switched to SSH; check the target.',

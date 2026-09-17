@@ -151,16 +151,27 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
         setDockerError(tRef.current('backend.dockerCliMissing'));
         return [];
       }
-      const list = await dbHelper.listDockerContainers(config.port);
+      const list = await dbHelper.listDockerContainers(config.port, config.type);
       setDockerContainers(list);
       setDockerError(list.length === 0 ? tRef.current('terminal.dockerNoContainers') : null);
-      // Pick the best guess, but never overrule a name the user is already pointing at: `prev` is
-      // kept whenever it names a container that came back. The list arrives best-first from Rust,
-      // so `list[0]` is the same choice the badge marks.
+      // Preselect only what there is EVIDENCE for, and never overrule a name the user is already
+      // pointing at (`prev` is kept whenever it names a container that came back).
+      //
+      // This used to take `list[0]` whenever nothing was selected, on the reasoning that the list
+      // arrives best-first. It does -- but only while something matched. When nothing matches, every
+      // tiebreaker in the Rust sort collapses and the order is alphabetical, so `list[0]` is the
+      // first container by NAME. On a k3s node that is how `k8s_POD_coredns-…` -- a pod sandbox in
+      // kube-system, with no shell in it -- came to be selected for a MySQL connection and then
+      // executed. A guess rendered as an answer is worse than an empty field: `runItem` already
+      // refuses politely when no container is chosen, and that refusal is a question the user can
+      // answer, while a wrong container is a command that runs.
       setDockerContainer(prev => {
         if (prev.trim() && list.some(c => c.name === prev || c.id === prev)) return prev;
-        if (!prev.trim() && list.length > 0) return list[0].name || list[0].id;
-        return prev;
+        if (prev.trim()) return prev;
+        const sure = list.find(c => c.matched_host_port && c.running)
+          || list.find(c => c.matched_name && c.running)
+          || (list.length === 1 ? list[0] : undefined);
+        return sure ? sure.name || sure.id : prev;
       });
       return list;
     } catch (err) {
@@ -175,7 +186,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     // `t` is read through `tRef`, not taken as a dependency: this callback feeds an effect, and
     // `t` changes identity on every language switch — depending on it would re-scan (and so
     // re-spawn docker processes) each time the user switches language.
-  }, [config.port]);
+  }, [config.port, config.type]);
 
   useEffect(() => {
     if (logSource === 'docker' && logMenu) {
@@ -596,7 +607,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     if (sendCommand(`${dockerExe()} exec -it ${target} sh`)) setLogMenu(false);
   };
 
-  const runItem = (lp: { label: string; path: string }) => {
+  const runItem = async (lp: { label: string; path: string }) => {
     if (src() === 'docker' && !dockerContainer.trim()) {
       note(t('terminal.errNoContainerSelected'), 'err');
       return;
@@ -605,6 +616,15 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     // source switch sitting at the top of that same menu.
     if (unreachableLocalPath(lp.path)) {
       note(t('terminal.errPathNotLocal', { n: lp.path }), 'err');
+      return;
+    }
+    // `tail` and `ls` are binaries INSIDE the container, and plenty of containers have neither: a
+    // pod sandbox, and any distroless or `scratch` image, which are ordinary in Kubernetes. The
+    // shell would answer `exec: "tail": executable file not found in $PATH`, which reads as a
+    // problem with the log path and is not one. The path is deliberately NOT what gets probed here
+    // -- `tail -F` is chosen precisely so it can wait for a file that does not exist yet.
+    if (src() === 'docker' && !(await dbHelper.containerHasShell(dockerContainer.trim()))) {
+      note(t('terminal.errContainerNoShell', { n: dockerContainer.trim() }), 'err');
       return;
     }
     if (sendCommand(isFolder(lp) ? listCommand(lp.path) : tailCommand(lp.path))) setLogMenu(false);
@@ -871,7 +891,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                                     ? `[${t('terminal.dockerMatchedImageBadge')}] `
                                     : ''}
                                 {c.running ? '' : `[${t('terminal.dockerStopped')}] `}
-                                {c.name || c.id} ({c.image})
+                                {c.k8s_container
+                                  ? `${c.k8s_container} · pod ${c.k8s_pod} · ns ${c.k8s_namespace}`
+                                  : c.name || c.id}{' '}
+                                ({c.image})
                               </option>
                             ))}
                             <option value="__custom__">
@@ -943,7 +966,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                           <div
                             key={i}
                             className="context-menu-item tp-log-item"
-                            onClick={() => runItem(lp)}
+                            onClick={() => void runItem(lp)}
                             title={folder ? t('terminal.listInFolder', { path: lp.path }) : t('terminal.tailPath', { path: lp.path })}
                           >
                             {folder ? <FolderOpen size={14} className="tp-folder-icon" /> : <FileSearch size={14} className="tp-file-icon" />}

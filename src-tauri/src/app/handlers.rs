@@ -49,6 +49,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         crate::terminal::docker::get_docker_cli_info,
         crate::terminal::docker::list_docker_containers,
         crate::terminal::docker::probe_log_path,
+        crate::terminal::docker::container_has_shell,
         crate::database::commit_changes,
         crate::app::ai::ai_chat,
         crate::database::restore_backup,

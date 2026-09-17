@@ -183,6 +183,14 @@ export interface DockerContainerInfo {
   matched_host_port: boolean;
   /** Only the container's internal port matches, i.e. same image on another published port. */
   matched_container_port: boolean;
+  /** A pod sandbox ("pause"). The backend already drops these; the flag is here for completeness. */
+  is_sandbox: boolean;
+  /** Set only for a cri-dockerd name — the container's own name inside the pod, its pod, its namespace. */
+  k8s_container: string;
+  k8s_pod: string;
+  k8s_namespace: string;
+  /** The name says this is the dialect being connected to — the only evidence Kubernetes leaves. */
+  matched_name: boolean;
 }
 
 /** The answer of `probe_log_path`: where a detected log path actually exists. */
@@ -1386,8 +1394,15 @@ export const dbHelper = {
   // Deliberately NOT wrapped in a catch that returns []: "no CLI installed", "the daemon is not
   // running" and "there are no containers" are three different answers needing three different
   // things from the user, and an empty array makes them one. The caller shows the reason.
-  async listDockerContainers(targetPort?: number): Promise<DockerContainerInfo[]> {
-    return await invoke('list_docker_containers', { targetPort });
+  async listDockerContainers(targetPort?: number, nameHint?: string): Promise<DockerContainerInfo[]> {
+    return await invoke('list_docker_containers', { targetPort, nameHint });
+  },
+
+  // Whether anything can be executed inside the container at all. Asked before a command is typed
+  // into the terminal, because a pod sandbox and a distroless image both fail with
+  // `exec: "tail": executable file not found`, which blames the wrong thing.
+  async containerHasShell(container: string): Promise<boolean> {
+    return await invoke('container_has_shell', { container });
   },
 
   // Where a log path really is: on this machine, or inside one of `candidates` (best-first, since
