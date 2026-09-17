@@ -1868,6 +1868,7 @@ const vi: typeof en = {
     disableConstraints: 'Tắt ràng buộc',
     disableConstraintsHint:
       'Tắt kiểm tra khóa ngoại trong lúc sinh để thứ tự chèn không gây lỗi. Xong sẽ bật lại.',
+    cycleDetected: 'Có chu trình tham chiếu (bấm để tắt ràng buộc)',
     summary: '{{tables}} bảng · {{rows}} dòng',
 
     paneTables: 'Bảng',

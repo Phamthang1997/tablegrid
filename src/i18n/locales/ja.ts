@@ -1863,6 +1863,7 @@ const ja: typeof en = {
     modeTruncate: '先に削除する',
     disableConstraints: '制約を無効化',
     disableConstraintsHint: '生成中は外部キーのチェックを切り、挿入順で失敗しないようにします。終了後に戻します。',
+    cycleDetected: '循環参照を検出（クリックで制約無効化）',
     summary: '{{tables}} テーブル · {{rows}} 行',
 
     paneTables: 'テーブル',

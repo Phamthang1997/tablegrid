@@ -443,8 +443,22 @@ export const DataGeneratorDialog: React.FC<DataGeneratorDialogProps> = ({
             disabled={running}
             onChange={(e) => setDisableConstraints(e.target.checked)}
           />
-          {t('dataGen.disableConstraints')}
+          <span>{t('dataGen.disableConstraints')}</span>
+          {!!targets?.warnings?.length && (
+            <span
+              className={disableConstraints ? 'dgen-dim' : 'dgen-cycle-warn-icon'}
+              title={targets.warnings.join('\n\n')}
+            >
+              <AlertTriangle size={12} />
+            </span>
+          )}
         </label>
+        {loadError && (
+          <div className="dgen-error-badge" title={loadError}>
+            <AlertTriangle size={12} />
+            <span className="dgen-error-badge-text">{loadError}</span>
+          </div>
+        )}
         <div className="dgen-bar-right">
           <div className="dgen-foot-db">
             <Database size={13} /> {dbName ?? ''}
@@ -473,17 +487,6 @@ export const DataGeneratorDialog: React.FC<DataGeneratorDialogProps> = ({
           )}
         </div>
       </div>
-
-      {loadError && (
-        <div className="dgen-msg error">
-          <AlertTriangle size={12} /> {loadError}
-        </div>
-      )}
-      {(targets?.warnings ?? []).map((w) => (
-        <div key={w} className="dgen-msg warn">
-          <AlertTriangle size={12} /> {w}
-        </div>
-      ))}
 
       {/* ---- master-detail layout: unified single block ---- */}
       <div className="dgen-block">

@@ -1882,6 +1882,7 @@ const en = {
     disableConstraints: 'Disable constraints',
     disableConstraintsHint:
       'Turns foreign key checks off while generating, so the insert order cannot fail. Turned back on afterwards.',
+    cycleDetected: 'Cycle detected (click to disable constraints)',
     summary: '{{tables}} tables · {{rows}} rows',
 
     paneTables: 'Tables',
