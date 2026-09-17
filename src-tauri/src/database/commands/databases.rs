@@ -350,8 +350,7 @@ fn build_create_database_sql(conn: &DbConnection, o: &CreateDbOpts) -> Result<St
             }
             // A locale/encoding differing from the default template is only allowed from template0,
             // so it is added unless the user picked a template explicitly.
-            let locale_given =
-                o.encoding.is_some() || o.collation.is_some() || o.ctype.is_some();
+            let locale_given = o.encoding.is_some() || o.collation.is_some() || o.ctype.is_some();
             match &o.template {
                 Some(t) => opts.push(format!("TEMPLATE {}", quote_ident(conn, t))),
                 None if locale_given => opts.push("TEMPLATE template0".to_string()),
