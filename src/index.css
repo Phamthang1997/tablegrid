@@ -6811,7 +6811,9 @@ input.rename-input {
   position: absolute;
   top: 36px;
   right: 12px;
-  background: var(--win-bg-card);
+  background: var(--win-bg-popover, var(--win-bg-card));
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
   border: 1px solid var(--win-border-strong);
   border-radius: 6px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
@@ -7129,7 +7131,7 @@ input.rename-input {
   padding: 4px;
   border-radius: 10px;
   border: 1px solid var(--win-border-strong);
-  background: var(--win-bg-card);
+  background: var(--win-bg-popover, var(--win-bg-card));
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.38);
   backdrop-filter: blur(30px) saturate(180%);
 }
@@ -7947,7 +7949,7 @@ input.rename-input {
   padding: 4px;
   border-radius: 9px;
   border: 1px solid var(--win-border-strong);
-  background: var(--win-bg-card);
+  background: var(--win-bg-popover, var(--win-bg-card));
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(30px) saturate(180%);
 }
@@ -12793,14 +12795,11 @@ input.rename-input {
   display: flex;
   flex-direction: column;
   border-radius: 8px;
-  background: var(--win-bg-window, #ffffff);
+  background: var(--win-bg-popover, var(--win-bg-card));
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
   border: 1px solid var(--win-border-strong);
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2), 0 2px 6px rgba(0, 0, 0, 0.1);
-}
-
-[data-theme='dark'] .gp-io-popover {
-  background: var(--win-bg-popover, #1e1e1e);
-  border-color: var(--win-border-strong);
 }
 
 .gp-io-item {
@@ -14024,7 +14023,9 @@ input.rename-input {
    ========================================================================== */
 .monaco-menu-container,
 .context-view .monaco-menu {
-  background: var(--win-bg-popup, #ffffff) !important;
+  /* Was --win-bg-popup, a token no stylesheet defines — it had always fallen through to the
+     literal below. Same resolved colour, one less name that looks like it does something. */
+  background: var(--win-bg-popover, #ffffff) !important;
   color: var(--win-text-primary, #0f172a) !important;
   border: 1px solid var(--win-border-strong, rgba(0, 0, 0, 0.12)) !important;
   border-radius: 8px !important;
@@ -15949,7 +15950,9 @@ input.rename-input {
   left: 18px;
   margin-bottom: 4px;
   z-index: 5;
-  background: var(--win-bg-card);
+  background: var(--win-bg-popover, var(--win-bg-card));
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
   border: 1px solid var(--win-border-strong, var(--win-border));
   border-radius: 4px;
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
@@ -19040,11 +19043,17 @@ input.rename-input {
   position: relative;
 }
 
+/* --win-bg-popover, not --win-bg-card: a menu is read exactly, so it is opaque, and the glass
+   comes from the blur and the hairline rather than from transparency — the convention spelled
+   out at `.ws-menu`. --win-bg-card is 0.88 alpha in the light theme, which let the ER cards
+   underneath show straight through the table list. */
 .er-popover-menu {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  background: var(--win-bg-card);
+  background: var(--win-bg-popover, var(--win-bg-card));
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
   border: 1px solid var(--win-border);
   border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
