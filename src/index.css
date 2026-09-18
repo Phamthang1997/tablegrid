@@ -18780,6 +18780,12 @@ input.rename-input {
   height: 100%;
   min-height: 450px;
   overflow: hidden;
+  /* The size the floating toolbar has to fit into. It is queried rather than the window,
+     because the sidebar is resizable and collapsible — window width says nothing about how
+     much room is left here. Safe as a container: the box is width/height 100% of its parent,
+     so nothing about its own size comes from its contents. */
+  container-type: inline-size;
+  container-name: er-canvas;
   user-select: none;
   background-color: var(--win-bg-window);
   background-image: radial-gradient(var(--win-border) 1px, transparent 1px);
@@ -18846,6 +18852,58 @@ input.rename-input {
   overflow: visible;
   white-space: nowrap;
   user-select: none;
+  /* Stays nowrap, and that is not a style preference — flex-wrap: wrap BREAKS this box. It is
+     absolutely positioned with left: 50% and right: auto, so its available width is only HALF the
+     canvas, and width: auto resolves by shrink-to-fit = min(max(min-content, available),
+     max-content). While nowrap, min-content is the whole row, so the row wins. Turn wrapping on
+     and min-content collapses to the widest single item, available width wins, and the bar folds
+     onto two lines at half the canvas with room to spare on both sides. The collapse steps below
+     are what keeps it on one line instead. */
+  flex-wrap: nowrap;
+}
+
+/* The row holds ~17 controls and every one of them is flex-shrink: 0, so a canvas narrower than
+   the row clipped it at BOTH ends — justify-content: center splits the overflow, and the select
+   tool and the Export button vanished with nothing on screen saying they had. It now sheds weight
+   in steps as the canvas narrows, cheapest thing first: the labelled buttons keep only their icon
+   (their title attribute already carries the name, and an aria-label was added so hiding the text
+   costs no accessible name), then the two purely informational count pills go. The search box is
+   shrinkable instead of stepped, since it degrades continuously. */
+@container er-canvas (max-width: 1080px) {
+  /* Only the icon+label buttons: Full / Keys only / Compact render bare text, not a <span>, so
+     they keep their labels — they have no icon, and hiding the text would leave empty boxes.
+
+     The picker trigger is exempt until step 2, where the relations pill goes: the two are both
+     counts sitting next to each other, and stripping one's word a whole step before the other
+     read as `23   22 relations`, which looks like a mistake rather than a narrow window. */
+  .er-toolbar-btn:not(.er-picker-trigger) > span {
+    display: none;
+  }
+
+  .er-toolbar-btn {
+    padding: 0 6px;
+  }
+}
+
+/* Step 2 takes the words off both counts at once: the relations pill goes entirely, the picker
+   trigger drops to its icon and number. The tables count itself is never lost — that is what let
+   the old `23 tables` pill be REPLACED by this button instead of kept beside it. */
+@container er-canvas (max-width: 920px) {
+  .er-stat-pill,
+  .er-picker-trigger > span {
+    display: none;
+  }
+}
+
+/* The last step, and the floor: below this the row would clip again. It drops the group dividers
+   (decoration) and the two fit buttons, the only controls here a keyboard shortcut already covers
+   — Shift+1 fits the view and Shift+2 the selection. Leaves ~545px of row, i.e. a canvas of about
+   570px: a window of ~870px with the sidebar open, narrower than this app is usable at. */
+@container er-canvas (max-width: 660px) {
+  .er-toolbar-divider,
+  .er-btn-optional {
+    display: none;
+  }
 }
 
 .er-stat-pill {
@@ -18879,7 +18937,10 @@ input.rename-input {
   padding: 0 8px;
   height: 26px;
   width: 130px;
-  flex-shrink: 0;
+  /* The one item in the row allowed to give ground: everything else is flex-shrink: 0, so this
+     absorbs the last of the overflow on its own, continuously, instead of at a breakpoint. */
+  flex-shrink: 1;
+  min-width: 64px;
   transition: border-color 0.15s ease;
 }
 

@@ -363,7 +363,7 @@ const ERToolbarInner: React.FC<ERToolbarProps> = ({
         </button>
         <button
           type="button"
-          className="er-toolbar-icon-btn"
+          className="er-toolbar-icon-btn er-btn-optional"
           onClick={onFitView}
           title={t('er.fitView')}
         >
@@ -371,7 +371,7 @@ const ERToolbarInner: React.FC<ERToolbarProps> = ({
         </button>
         <button
           type="button"
-          className="er-toolbar-icon-btn"
+          className="er-toolbar-icon-btn er-btn-optional"
           onClick={onFitSelection}
           disabled={!hasSelection}
           title={t('er.fitSelection')}
@@ -388,6 +388,7 @@ const ERToolbarInner: React.FC<ERToolbarProps> = ({
           className={`er-toolbar-btn ${showFilterMenu ? 'active' : ''}`}
           onClick={() => setShowFilterMenu(!showFilterMenu)}
           title={t('er.filtersHint')}
+          aria-label={t('er.filters')}
         >
           <Filter size={12} />
           <span>{t('er.filters')}</span>
@@ -418,6 +419,7 @@ const ERToolbarInner: React.FC<ERToolbarProps> = ({
           className="er-toolbar-btn primary"
           onClick={() => setShowExportMenu(!showExportMenu)}
           title={t('er.exportHint')}
+          aria-label={t('er.exportLabel')}
         >
           <Download size={13} />
           <span>{t('er.exportLabel')}</span>
