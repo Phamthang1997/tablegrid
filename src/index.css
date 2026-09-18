@@ -19115,6 +19115,111 @@ input.rename-input {
   cursor: pointer;
 }
 
+/* The count on the picker button. It carried its own fill and border once, which put a rounded
+   box inside a rounded box and made the button read as heavier than the `22 relations` pill it
+   sits beside — while saying the same kind of thing. It is now bare text weighted like
+   `.er-stat-pill b`, and a <b> rather than a <span> only so the narrow-canvas rule that strips
+   button labels leaves the number alone. */
+.er-count-badge {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--win-text-primary);
+}
+
+/* Something IS hidden, and the diagram is therefore partial. The accent is the only thing on
+   screen saying so once the popover is shut, so it is not decoration. */
+.er-count-badge.is-filtered {
+  color: var(--win-accent);
+}
+
+/* The table picker. Wider than the other two popovers because it holds table names, and it is
+   the one popover with a scrolling region: the list is capped and scrolls while the filter box,
+   the bulk actions and the related-tables button stay put. A sticky header would not do — every
+   input fill in this app is translucent, so the rows would scroll visibly through it, which is
+   the same trap `OptionSelect` hit. */
+.er-table-picker {
+  width: 232px;
+  max-width: 232px;
+}
+
+.er-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  margin: 0 2px 4px;
+  background: var(--win-bg-window);
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+}
+
+.er-picker-search:focus-within {
+  border-color: var(--win-accent);
+}
+
+.er-picker-actions {
+  display: flex;
+  gap: 4px;
+  padding: 0 2px 4px;
+}
+
+.er-picker-action {
+  flex: 1;
+  height: 22px;
+  background: var(--win-bg-window);
+  border: 1px solid var(--win-border);
+  border-radius: 5px;
+  color: var(--win-text-secondary);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.er-picker-action:hover {
+  border-color: var(--win-accent);
+  color: var(--win-accent);
+}
+
+.er-picker-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border-top: 1px solid var(--win-border);
+  padding-top: 4px;
+  margin-top: 2px;
+}
+
+.er-picker-list .er-filter-item:hover {
+  background: var(--win-bg-hover);
+  border-radius: 4px;
+}
+
+/* The name takes the slack and truncates; the kind tag never shrinks out of existence. */
+.er-picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.er-picker-kind {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--win-text-disabled);
+}
+
+.er-picker-empty {
+  padding: 10px 8px;
+  font-size: 11px;
+  color: var(--win-text-disabled);
+  text-align: center;
+}
+
 .er-green {
   color: #10b981;
 }
