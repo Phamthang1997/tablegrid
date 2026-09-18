@@ -2122,6 +2122,7 @@ const vi: typeof en = {
     findLogs: 'Dò log',
     logSource: 'Nguồn log',
     sshPlaceholder: 'vd: dev@localhost -p 2222',
+    sshPlaceholderDefault: 'mặc định: {{n}}',
     dockerContainerPlaceholder: 'tên container (vd: mysql8)',
     dockerSelectContainer: 'Chọn container...',
     dockerCustomInput: 'Nhập tên container thủ công...',
