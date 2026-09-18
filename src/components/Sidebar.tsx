@@ -181,6 +181,9 @@ const SEG_TABS = [
   ['tools', 'sidebar.tabTools'],
 ] as const;
 
+/** The tab ids above, derived so the two can never drift apart. */
+type SidebarTab = (typeof SEG_TABS)[number][0];
+
 type DetailGroup = 'fields' | 'indexes' | 'fks' | 'checks' | 'triggers';
 
 interface GroupNodeProps {
@@ -624,11 +627,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [objDef, setObjDef] = useState<{ name: string; kind: 'view' | 'function' | 'procedure'; sql: string } | null>(null);
   const [showSequencesModal, setShowSequencesModal] = useState<boolean>(false);
   const [showCreateRoutine, setShowCreateRoutine] = useState<boolean>(false);
-  const [searchTerm, setSearchTerm] = useState('');
   const [refreshing, setRefreshing] = useState(false);
 
   // Top 4-tab segmented control (Items | Queries | History | Tools)
-  const [activeTab, setActiveTab] = useState<'items' | 'queries' | 'history' | 'tools'>('items');
+  const [activeTab, setActiveTab] = useState<SidebarTab>('items');
+
+  // One search box on screen, but one term PER tab: the four tabs filter unrelated lists (objects,
+  // saved queries, history, tools), so a term typed while looking for a table used to narrow the
+  // history list too. Keyed by tab, so switching back also restores what was typed there.
+  const [searchTerms, setSearchTerms] = useState<Record<SidebarTab, string>>({
+    items: '',
+    queries: '',
+    history: '',
+    tools: '',
+  });
+  const searchTerm = searchTerms[activeTab];
+  const setSearchTerm = (value: string) =>
+    setSearchTerms((prev) => ({ ...prev, [activeTab]: value }));
   const [savedQueriesList, setSavedQueriesList] = useState<SavedQueryEntry[]>([]);
   const [historyList, setHistoryList] = useState<HistoryEntry[]>([]);
   const [historyScope, setHistoryScope] = useState<'database' | 'connection' | 'all'>('database');

@@ -29,7 +29,14 @@ import {
   visibleWorldRect,
   zoomAtPoint,
 } from './erViewport';
-import { erLayoutKey, loadSavedLayout, saveCurrentLayout } from './erPersistence';
+import {
+  erHiddenKey,
+  erLayoutKey,
+  loadHiddenTables,
+  loadSavedLayout,
+  saveCurrentLayout,
+  saveHiddenTables,
+} from './erPersistence';
 import { ERCardCache, chevronHitBox, quantizeRasterScale } from './erCardRenderer';
 import { erPalette, invalidateErPalette } from './erTheme';
 import { drawScene, hitTestCards, hitTestRelationships, resolveRelationships } from './erScene';
@@ -526,9 +533,51 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   }, []);
 
   // ---------------------------------------------------------------------------------------
+  // The table picker
+  //
+  // Stored per (server, database, schema) beside the layout, and reconciled in the render pass
+  // for the same reason the layout is: an effect would paint one frame of the previous
+  // database/schema selection before correcting itself.
+  // ---------------------------------------------------------------------------------------
+  const hiddenKey = useMemo(
+    () => erHiddenKey(storageScope || connId, database, schema),
+    [storageScope, connId, database, schema]
+  );
+
+  const [hidden, setHidden] = useState<{ key: string; names: Set<string> }>(() => ({
+    key: hiddenKey,
+    names: new Set(loadHiddenTables(hiddenKey)),
+  }));
+  if (hidden.key !== hiddenKey) {
+    setHidden({ key: hiddenKey, names: new Set(loadHiddenTables(hiddenKey)) });
+  }
+  const hiddenTables = hidden.names;
+
+  /**
+   * Writes storage here rather than from an effect watching the state: an effect cannot tell the
+   * selection the user just changed from the one it has only finished LOADING, so every diagram
+   * opened would write its own selection straight back.
+   */
+  /** Set when the picker changes something, read when it closes — see `handleTablesApplied`. */
+  const pendingFitRef = useRef(false);
+
+  const applyHidden = useCallback(
+    (next: Set<string>) => {
+      setHidden({ key: hiddenKey, names: next });
+      saveHiddenTables(hiddenKey, [...next]);
+      pendingFitRef.current = true;
+    },
+    [hiddenKey]
+  );
+  // ---------------------------------------------------------------------------------------
   // Filtering
   // ---------------------------------------------------------------------------------------
-  const visibleTables = useMemo(() => {
+  /**
+   * What the coarse switches in the Filters popover leave on the table. The picker lists exactly
+   * this, so a name it offers is always a name that can actually appear — ticking a view while
+   * `Show views` is off would otherwise do nothing and look broken.
+   */
+  const pickableTables = useMemo(() => {
     let list = tables;
     if (!showViews) list = list.filter((table) => table.kind !== 'view');
     if (!showIsolated) {
@@ -541,6 +590,56 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
     }
     return list;
   }, [tables, relationships, showViews, showIsolated]);
+
+  const visibleTables = useMemo(
+    () =>
+      hiddenTables.size === 0
+        ? pickableTables
+        : pickableTables.filter((table) => !hiddenTables.has(table.name)),
+    [pickableTables, hiddenTables]
+  );
+
+  const handleToggleTable = useCallback(
+    (name: string) => {
+      const next = new Set(hiddenTables);
+      // delete() reports whether it removed anything, so one call covers both directions.
+      if (!next.delete(name)) next.add(name);
+      applyHidden(next);
+    },
+    [hiddenTables, applyHidden]
+  );
+
+  const handleShowAllTables = useCallback(() => applyHidden(new Set()), [applyHidden]);
+
+  const handleHideAllTables = useCallback(
+    () => applyHidden(new Set(pickableTables.map((table) => table.name))),
+    [pickableTables, applyHidden]
+  );
+
+  const handleInvertTables = useCallback(
+    () =>
+      applyHidden(
+        new Set(
+          pickableTables.filter((table) => !hiddenTables.has(table.name)).map((table) => table.name)
+        )
+      ),
+    [pickableTables, hiddenTables, applyHidden]
+  );
+
+  /**
+   * One hop out from what is on screen: unhide every table a foreign key joins to a visible one.
+   * This is how a diagram gets built up from a table of interest — pick `rental`, press it, and
+   * `customer`, `inventory` and `staff` come with it — without hunting their names in the list.
+   */
+  const handleShowRelatedTables = useCallback(() => {
+    const shown = new Set(visibleTables.map((table) => table.name));
+    const next = new Set(hiddenTables);
+    for (const rel of relationships) {
+      if (shown.has(rel.sourceTable)) next.delete(rel.targetTable);
+      if (shown.has(rel.targetTable)) next.delete(rel.sourceTable);
+    }
+    applyHidden(next);
+  }, [visibleTables, relationships, hiddenTables, applyHidden]);
 
   const visibleNames = useMemo(
     () => new Set(visibleTables.map((table) => table.name)),
@@ -748,6 +847,23 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   const handleFitSelection = useCallback(() => {
     const selected = selectedRef.current;
     fitTo(selected.size > 0 ? selected : null);
+  }, [fitTo]);
+
+  /**
+   * The picker has been shut after changing something. Hiding tables does NOT move the ones
+   * that stay — their coordinates were computed for the whole diagram and keeping them is what
+   * makes unhiding put a table back where it was, and what protects a hand-dragged layout. The
+   * cost is that the survivors can sit far apart with the gaps of everything hidden between
+   * them, so the viewport comes to them. Auto layout is still the separate, destructive answer
+   * to "put these near each other".
+   *
+   * On close rather than on each tick: fitting under every checkbox would make the diagram jump
+   * while the pointer is still travelling down the list.
+   */
+  const handleTablesApplied = useCallback(() => {
+    if (!pendingFitRef.current) return;
+    pendingFitRef.current = false;
+    fitTo(null);
   }, [fitTo]);
 
   const handleResetView = useCallback(() => {
@@ -1389,6 +1505,8 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
       <ERToolbar
         tool={tool}
         tableCount={visibleTables.length}
+        pickableTables={pickableTables}
+        hiddenTables={hiddenTables}
         relationCount={relationships.length}
         detailLevel={detailLevel}
         showViews={showViews}
@@ -1408,6 +1526,12 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
         onToggleViews={handleToggleViews}
         onToggleIsolated={handleToggleIsolated}
         onToggleMinimap={handleToggleMinimap}
+        onToggleTable={handleToggleTable}
+        onShowAllTables={handleShowAllTables}
+        onHideAllTables={handleHideAllTables}
+        onInvertTables={handleInvertTables}
+        onShowRelatedTables={handleShowRelatedTables}
+        onTablesApplied={handleTablesApplied}
         onExport={handleExport}
       />
 
