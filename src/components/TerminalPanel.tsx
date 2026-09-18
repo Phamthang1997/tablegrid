@@ -200,6 +200,26 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
   const useSsh = !!(config.sshEnabled && config.sshHost);
 
+  /**
+   * Where an SSH log command goes when the box is empty, and the box's own value when it is not.
+   *
+   * Computed at use time rather than written into `sshTarget`, for two reasons that happen to
+   * point the same way. The behaviour one: `term_ssh_target` is a SINGLE localStorage key, not
+   * scoped by connection the way everything else in this app is (`connKey`/`scopeKey`), so
+   * seeding the state from the host meant connecting to server A, then to server B, and tailing
+   * B's log over an SSH session to A — the box was no longer empty, so it was never corrected.
+   * Derived, the default is always the CURRENT connection's host.
+   *
+   * The analysis one: `config` arrives merged with the credentials from the OS secret store
+   * (`configWithSecrets` -> `mergeSecrets`), and CodeQL taints the whole object there and then
+   * propagates to every property read off it — so `config.host` reaching localStorage was
+   * reported as `js/clear-text-storage-of-sensitive-data`. Nothing secret was ever stored (a
+   * hostname is not in SECRET_FIELDS), but the alert is unanswerable while the edge exists.
+   * Now `sshTarget` only ever holds what the user typed, and the only path to disk is that.
+   */
+  const defaultSshTarget = (config.host || '').trim();
+  const effectiveSshTarget = sshTarget.trim() || defaultSshTarget;
+
   useEffect(() => {
     if (!containerRef.current) return;
     // Every reconnect needs a fresh sessionId: the backend keys sessions by id, and reusing an old
@@ -354,9 +374,10 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
     // A remote server cannot be a container of THIS daemon -- the CLI here talks to the daemon
     // here -- so the probe would spend spawns to learn nothing. SSH is the only answer there.
     if (!hostIsLocal()) {
-      if (!sshTarget.trim()) setSshTarget((config.host || '').trim());
+      // The target is NOT written here — `effectiveSshTarget` already falls back to this host,
+      // and the box stays empty so it keeps meaning "what the user chose".
       setLogSource(prev => (prev === 'local' ? 'ssh' : prev));
-      note(t('terminal.autoPickedSsh', { n: (config.host || '').trim() }), 'ok');
+      note(t('terminal.autoPickedSsh', { n: defaultSshTarget }), 'ok');
       return;
     }
 
@@ -443,7 +464,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   // - ssh: run ssh to tail or list on VM
   // - local: run straight in current shell (remote Linux when SSH, or host OS)
   const src = (): 'local' | 'ssh' | 'docker' =>
-    (logSource === 'ssh' && sshTarget.trim()) ? 'ssh'
+    (logSource === 'ssh' && effectiveSshTarget) ? 'ssh'
       : logSource === 'docker' ? 'docker'
         : 'local';
 
@@ -453,7 +474,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   // what the next caller copies.
   const tailCommand = (p: string) => {
     switch (src()) {
-      case 'ssh': return `ssh ${sshTarget.trim()} "tail -f '${p}'"`;
+      case 'ssh': return `ssh ${effectiveSshTarget} "tail -f '${p}'"`;
       // `-F`, not `-f`: the path most often chosen here is `general_log_file`, whose value MySQL
       // reports whether or not the log is ON -- so the file frequently does not exist yet and `-f`
       // would exit at once with "No such file or directory". `-F` waits for it, which also means
@@ -483,7 +504,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
   const listCommand = (p: string) => {
     switch (src()) {
-      case 'ssh': return `ssh ${sshTarget.trim()} "ls -lah '${p}'"`;
+      case 'ssh': return `ssh ${effectiveSshTarget} "ls -lah '${p}'"`;
       case 'docker': return `${dockerExe()} exec ${dockerContainer.trim()} ls -lah '${p}'`;
       default: return (useSsh || !isWindows)
         ? `ls -lah "${p}"`
@@ -841,7 +862,11 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
                       <input
                         value={sshTarget}
                         onChange={(e) => setSshTarget(e.target.value)}
-                        placeholder={t('terminal.sshPlaceholder')}
+                        placeholder={
+                          defaultSshTarget
+                            ? t('terminal.sshPlaceholderDefault', { n: defaultSshTarget })
+                            : t('terminal.sshPlaceholder')
+                        }
                         className="tp-ssh-input"
                       />
                     )}

@@ -2136,6 +2136,7 @@ const en = {
     findLogs: 'Find logs',
     logSource: 'Log source',
     sshPlaceholder: 'e.g. dev@localhost -p 2222',
+    sshPlaceholderDefault: 'default: {{n}}',
     dockerContainerPlaceholder: 'container name (e.g. mysql8)',
     dockerSelectContainer: 'Select container...',
     dockerCustomInput: 'Enter container name manually...',

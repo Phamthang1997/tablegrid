@@ -2117,6 +2117,7 @@ const ja: typeof en = {
     findLogs: 'ログを検出',
     logSource: 'ログソース',
     sshPlaceholder: '例: dev@localhost -p 2222',
+    sshPlaceholderDefault: '既定: {{n}}',
     dockerContainerPlaceholder: 'コンテナ名 (例: mysql8)',
     dockerSelectContainer: 'コンテナを選択...',
     dockerCustomInput: '手動でコンテナ名を入力...',
