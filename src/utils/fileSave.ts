@@ -43,7 +43,7 @@ export async function pickOpenFile(options?: {
       options: {
         directory: false,
         multiple: false,
-        title: options?.title || 'Chọn tệp',
+        title: options?.title || i18n.t('fileDialog.pickFileTitle'),
         defaultPath: options?.defaultPath || undefined,
         filters: options?.filters,
       },
@@ -60,15 +60,15 @@ export async function pickOpenFile(options?: {
  */
 export async function pickSqliteDatabaseFile(defaultPath?: string): Promise<string | null> {
   return pickOpenFile({
-    title: 'Chọn tệp SQLite',
+    title: i18n.t('fileDialog.pickSqliteTitle'),
     defaultPath,
     filters: [
       {
-        name: 'SQLite Database (*.db, *.sqlite, *.sqlite3, *.db3, *.s3db)',
+        name: i18n.t('fileDialog.sqliteFilter'),
         extensions: ['db', 'sqlite', 'sqlite3', 'db3', 's3db'],
       },
       {
-        name: 'All Files (*.*)',
+        name: i18n.t('fileDialog.allFilesFilter'),
         extensions: ['*'],
       },
     ],
@@ -86,7 +86,7 @@ export async function pickExportFolder(defaultPath?: string): Promise<string | n
         directory: true,
         multiple: false,
         recursive: false,
-        title: 'Chọn thư mục lưu tệp xuất',
+        title: i18n.t('fileDialog.pickFolderTitle'),
         defaultPath: defaultPath || undefined,
       },
     });
@@ -106,7 +106,7 @@ export async function pickExportFolder(defaultPath?: string): Promise<string | n
 export async function pickSaveFilePath(
   defaultName: string,
   ext: string,
-  filterName = 'Tệp'
+  filterName?: string
 ): Promise<string | null> {
   try {
     const fullName = defaultName.endsWith(`.${ext}`) ? defaultName : `${defaultName}.${ext}`;
@@ -115,11 +115,11 @@ export async function pickSaveFilePath(
 
     const res = await invoke<string | null>('plugin:dialog|save', {
       options: {
-        title: 'Lưu tệp',
+        title: i18n.t('fileDialog.saveFileTitle'),
         defaultPath,
         filters: [
           {
-            name: filterName,
+            name: filterName || i18n.t('fileDialog.defaultFilter'),
             extensions: [ext],
           },
         ],

@@ -383,6 +383,7 @@ const ja: typeof en = {
     errNoProfilesToExport: 'エクスポートする接続がありません。',
     confirmExportPlainPasswords:
       'ファイルパスワードが未設定のため、エクスポートファイルにはパスワードが平文で含まれます。\n続行しますか？',
+    exportFileFilter: 'TableGrid 接続ファイル (*.tablegridconnection)',
     exportSuccess: '{{n}} 件の接続をエクスポートしました。',
     errExport: '接続のエクスポートに失敗しました: {{message}}',
     errImport: '接続のインポートに失敗しました: {{message}}',
@@ -2468,8 +2469,18 @@ const ja: typeof en = {
     ttlOver7d: "7 日以上",
   },
 
+  fileDialog: {
+    pickFileTitle: 'ファイルを選択',
+    pickSqliteTitle: 'SQLite ファイルを選択',
+    pickFolderTitle: 'エクスポート先のフォルダーを選択',
+    saveFileTitle: 'ファイルを保存',
+    defaultFilter: 'ファイル',
+    sqliteFilter: 'SQLite データベース (*.db, *.sqlite, *.sqlite3, *.db3, *.s3db)',
+    allFilesFilter: 'すべてのファイル (*.*)',
+  },
+
   errors: {
-    invalidConnFileFormat: 'ファイル形式が不正です (JSON/TablePlus の接続ファイルではありません)。',
+    invalidConnFileFormat: 'ファイル形式が不正です (JSON/TableGrid の接続ファイルではありません)。',
     connFilePasswordProtected: '接続ファイルはパスワードで保護されています。復号するにはパスワードを入力してください。',
     wrongPasswordOrCorrupt: 'パスワードが違うか、接続ファイルが壊れています。',
     noGzipSupport: 'この WebView は gzip 圧縮に対応していません。',
