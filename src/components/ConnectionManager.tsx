@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { activeConnId, dbHelper, setActiveConnId } from '../utils/dbHelper';
 import type { DbConnectionConfig } from '../utils/dbHelper';
-import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, Check, Cloud, DatabaseBackup, LogIn } from 'lucide-react';
+import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, Check, Cloud, DatabaseBackup, LogIn, KeyRound } from 'lucide-react';
 import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './DbIcons';
 import { encryptConnectionExport, decryptConnectionExport } from '../utils/cryptoHelper';
 import { CONN_ENVS, envLabelKey, legacyEnvOfColor, normalizeEnv, type ConnEnv } from '../utils/connEnv';
@@ -24,6 +24,8 @@ import { startJob } from '../utils/jobs';
 import { connKey } from '../utils/connKey';
 import { formatRestoreEta, makeRestoreReporter } from '../utils/restoreProgress';
 import { ConfirmDialog } from './ConfirmDialog';
+import { MasterPasswordModal } from './MasterPasswordModal';
+import { refreshVaultStatus } from '../utils/vault';
 import {
   SECRET_FIELDS,
   hasInlineSecrets,
@@ -540,6 +542,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   const [profileEnv, setProfileEnv] = useState<ConnEnv>('none');
   const [profileGroup, setProfileGroup] = useState('');
   const [secretError, setSecretError] = useState<string | null>(null); // an error while working with the OS secret store
+  const [showMasterPassword, setShowMasterPassword] = useState(false);
 
   // The ONE place profiles are written: it always strips the secrets out of the config before
   // touching localStorage, and pushes them into the OS secret store at the same time. The in-memory
@@ -562,6 +565,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       setSecretError(null);
     } catch (e: any) {
       // The config was still saved; only the secrets failed to reach the OS store -> say so plainly.
+      void refreshVaultStatus();
       setSecretError(t('connection.errSaveSecrets', { message: e?.message || e }));
     }
     return stripped;
@@ -573,6 +577,10 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       const secrets = await dbHelper.getSecrets(profile.id, SECRET_FIELD_LIST);
       return mergeSecrets(profile.config, secrets);
     } catch (e: any) {
+      // A master password that locked itself is one reason the store refuses. Ask the backend
+      // rather than reading the message — see `utils/vault.ts` — and the lock screen comes back on
+      // its own if that is what happened.
+      void refreshVaultStatus();
       setSecretError(t('connection.errReadSecrets', { message: e?.message || e }));
       return profile.config;
     }
@@ -2748,6 +2756,11 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                   <button className="cm-icon-btn" title={t('connection.exportAll')} onClick={() => openExportModal('all')}>
                     <Download size={13} />
                   </button>
+                  {/* The master password sits with these two because all three are about the whole
+                      SET of saved connections rather than about the one being edited. */}
+                  <button className="cm-icon-btn" title={t('vault.title')} onClick={() => setShowMasterPassword(true)}>
+                    <KeyRound size={13} />
+                  </button>
                 </>
               )}
             </div>
@@ -3144,6 +3157,10 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
           floating
           onClose={() => setTerminalProfile(null)}
         />
+      )}
+
+      {showMasterPassword && (
+        <MasterPasswordModal onClose={() => setShowMasterPassword(false)} />
       )}
 
       {/* ————— Modal: connection export options ————— */}

@@ -20973,3 +20973,206 @@ input.rename-input {
   color: var(--win-text-disabled);
   font-style: italic;
 }
+/* ---------------------------------------------------------------------------
+   Master Password: the lock overlay and the settings dialog.
+
+   The overlay covers the real title bar, so it carries its own drag strip and
+   window buttons -- an app that cannot be moved or closed while locked is stuck,
+   not secured. `.title-bar-btn` is reused rather than copied so the three
+   buttons keep matching the real ones.
+   --------------------------------------------------------------------------- */
+.vault-lock {
+  position: fixed;
+  inset: 0;
+  z-index: 2000000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--win-bg-popover, #1c202a);
+  /* Opaque, not translucent: the point of the lock is that what is behind it
+     cannot be read, and a blurred screenshot of a grid is still a leak. */
+}
+
+.vault-lock-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 12px;
+  -webkit-app-region: drag;
+}
+
+.vault-lock-bar-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+.vault-lock-bar-btns {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.vault-lock-card {
+  width: min(360px, 88vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: center;
+}
+
+.vault-lock-icon {
+  align-self: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--win-accent);
+  background: color-mix(in srgb, var(--win-accent) 14%, transparent);
+}
+
+.vault-lock-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+
+.vault-lock-sub,
+.vault-lock-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--win-text-secondary);
+}
+
+.vault-lock-hint {
+  text-align: left;
+  color: var(--win-text-disabled);
+}
+
+.vault-lock-remember {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+}
+
+.vault-lock-error {
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: left;
+  color: var(--win-danger, #ef4444);
+}
+
+.vault-lock-submit {
+  width: 100%;
+  justify-content: center;
+}
+
+.vault-lock-forgot {
+  align-self: center;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  font-size: 11.5px;
+  color: var(--win-text-disabled);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.vault-lock-forgot:hover {
+  color: var(--win-text-secondary);
+}
+
+/* ---- The settings dialog ---- */
+.vault-note {
+  display: flex;
+  gap: 9px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--win-accent) 9%, transparent);
+  color: var(--win-text-secondary);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.vault-note p {
+  margin: 0;
+}
+
+.vault-note-limit {
+  margin-top: 6px !important;
+  color: var(--win-text-disabled);
+}
+
+.vault-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+}
+
+.vault-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+}
+
+.vault-hint {
+  margin: -6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--win-text-disabled);
+}
+
+.vault-warn {
+  padding: 8px 11px;
+  border-radius: 6px;
+  border-left: 3px solid var(--win-danger, #ef4444);
+  background: color-mix(in srgb, var(--win-danger, #ef4444) 10%, transparent);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--win-text-secondary);
+}
+
+.vault-on {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--st-ok, #10b981);
+}
+
+.vault-error {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--win-danger, #ef4444);
+}
+
+.vault-ok {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--st-ok, #10b981);
+}
+
+.vault-sep {
+  height: 1px;
+  background: var(--win-border);
+}

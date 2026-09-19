@@ -2586,6 +2586,62 @@ const ja: typeof en = {
   },
 
   // Statement timeout setting — shared popover with Safe Mode. See stmtTimeout.ts.
+  // Master Password — OS のシークレットストアの背後にある暗号化保管庫。utils/vault.ts を参照。
+  vault: {
+    title: 'マスターパスワード',
+    menu: 'マスターパスワード…',
+    explain:
+      'マスターパスワードは、保存されたパスワード・SSH 鍵・AWS シークレットを暗号化ファイルに封じます。その鍵がディスクに書かれることはありません。設定しない場合、これらは OS の資格情報ストアに置かれ、自分の権限で動くあらゆるプロセスから読み取れます。',
+    limits:
+      'ホスト名・ポート・ユーザー・データベース名は隠しません。これらは通常の設定として残ります。解除後は、鍵はセッション中メモリ上に置かれます。',
+    currentlyOn: 'マスターパスワードは有効です。シークレットは暗号化保管庫にあります。',
+
+    newPassword: '新しいパスワード',
+    confirmPassword: 'パスワードの確認',
+    currentPassword: '現在のパスワード',
+    masterPassword: 'マスターパスワード',
+    mismatch: 'パスワードが一致しません。',
+    noRecovery:
+      '忘れたマスターパスワードを復旧する方法はありません。失うと、保存済みの認証情報をすべて入力し直すことになります。',
+
+    enable: '有効にする',
+    change: 'パスワードを変更',
+    disable: '無効にする',
+    lockNow: '今すぐロック',
+    enabledOk: 'マスターパスワードを有効にしました。既存のシークレットは保管庫へ移しました。',
+    changedOk: 'マスターパスワードを変更しました。',
+    disabledOk: 'マスターパスワードを無効にしました。シークレットは OS の資格情報ストアに戻りました。',
+
+    rememberDevice: 'このデバイスで記憶する',
+    rememberDeviceHint:
+      '解除鍵をこのマシンの資格情報ストアに保存するため、起動時に尋ねません。保管庫ファイルを他所へ持ち出した場合は、引き続きパスワードが必要です。',
+    rememberOnOk: 'このデバイスでは自動で解除されます。',
+    rememberOffOk: 'このデバイスではパスワードを尋ねます。',
+
+    autoLock: '無操作でロック',
+    autoLockNever: 'しない',
+    autoLockMinutes: '{{n}} 分',
+    autoLockHint: 'ロックはウィンドウを覆い、シークレットの読み取りを止めます。開いている接続はそのまま動き続け、アプリを再起動してもパスワードを尋ねます。',
+
+    disableTitle: 'マスターパスワードを無効にしますか？',
+    disableMessage: 'すべてのシークレットが OS の資格情報ストアに戻り、自分の権限で動くあらゆるプロセスから読み取れるようになります。',
+    disableNote: '接続そのものには影響しません。',
+
+    appLocked: 'ロック中',
+    unlockTitle: 'ロック解除',
+    unlockSubtitle: '保存した接続を開くには、マスターパスワードを入力してください。',
+    unlock: 'ロック解除',
+    unlocking: '解除しています…',
+    forgot: 'パスワードをお忘れですか？',
+    resetTitle: '保管庫を消去しますか？',
+    resetMessage:
+      '忘れたマスターパスワードは復旧できません。保管庫を消去すると、保存されたパスワード・SSH 鍵・AWS シークレットがすべて削除されます。',
+    resetNote:
+      '接続は一覧に残ります。それぞれ認証情報を入力し直すだけです。',
+    resetConfirm: '保管庫を消去',
+    resetTypeWord: 'ERASE',
+  },
+
   stmtTimeout: {
     menuTitle: 'ステートメントの制限時間',
     off: 'なし',
@@ -2802,6 +2858,33 @@ const ja: typeof en = {
     rxQuantInvalid: "量指定子 '{{a}}' が不正です。",
     rxQuantMax: '量指定子の最大値は {{a}} です。',
     rxQuantMinMax: "量指定子 '{{a}}' の最小値が最大値より大きいです。",
+
+    // credentials/vault.rs — マスターパスワード
+    vaultLocked: 'シークレット保管庫はロックされています。マスターパスワードで解除してください。',
+    vaultAlreadyEnabled: 'マスターパスワードはすでに設定されています。',
+    vaultPasswordEmpty: 'マスターパスワードは空にできません。',
+    vaultWrongPassword: 'マスターパスワードが違います。',
+    vaultFileCorrupt: '保管庫ファイルが破損しています。',
+    vaultFileCorruptDetail: '保管庫ファイルが破損しています: {{a}}',
+    vaultRecordTooShort: '保管庫のレコードが短すぎます。',
+    vaultBadNonce: '保管庫のナンスの長さが不正です。',
+    vaultBadSalt: '保管庫のソルトの長さが不正です。',
+    vaultDecryptFailed: '保管庫のシークレットを復号できませんでした。',
+    vaultNoDataDir: 'アプリケーションのデータディレクトリを特定できませんでした。',
+    vaultSecretNotText: "保管庫のシークレット '{{a}}' は正しいテキストではありません。",
+    vaultBadArgonParams: 'Argon2 のパラメータが不正です: {{a}}',
+    vaultDeriveFailed: 'マスターパスワードから鍵を導出できませんでした: {{a}}',
+    vaultKeyInvalid: '保管庫の鍵が不正です: {{a}}',
+    vaultNonceGenFailed: '保管庫用のナンスを生成できませんでした: {{a}}',
+    vaultEncryptFailed: 'シークレットを暗号化できませんでした: {{a}}',
+    vaultRecordUnreadable: '保管庫のレコードを読み取れませんでした: {{a}}',
+    vaultSaltGenFailed: '保管庫用のソルトを生成できませんでした: {{a}}',
+    vaultSaltUnreadable: '保管庫のソルトを読み取れませんでした: {{a}}',
+    vaultReadFileFailed: '保管庫ファイルを読み込めませんでした: {{a}}',
+    vaultSerializeFailed: '保管庫ファイルを構築できませんでした: {{a}}',
+    vaultMkdirFailed: '保管庫のディレクトリを作成できませんでした: {{a}}',
+    vaultWriteFileFailed: '保管庫ファイルを書き込めませんでした: {{a}}',
+    vaultDeleteFileFailed: '保管庫ファイルを削除できませんでした: {{a}}',
 
     // data_generator.rs — データ生成
     dataGenNoTable: '生成対象のテーブルが選択されていません。',

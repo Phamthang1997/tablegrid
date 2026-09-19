@@ -110,6 +110,18 @@ export const EXACT: Record<string, string> = {
   "Regex không hỗ trợ neo '^' và '$'": 'backend.rxNoAnchors',
   'Lớp ký tự [...] rỗng': 'backend.rxEmptyClass',
   'Regex không hỗ trợ ký tự này trong [...]': 'backend.rxUnsupportedInClass',
+  // credentials/vault.rs — the master password. `vaultLocked` is the one the UI branches on
+  // (it is what puts the lock screen back up), so it must keep matching exactly.
+  'Kho bí mật đang khoá. Hãy mở khoá bằng mật khẩu chính.': 'backend.vaultLocked',
+  'Mật khẩu chính đã được bật.': 'backend.vaultAlreadyEnabled',
+  'Mật khẩu chính không được để trống.': 'backend.vaultPasswordEmpty',
+  'Mật khẩu chính không đúng.': 'backend.vaultWrongPassword',
+  'Tệp kho bí mật đã hỏng.': 'backend.vaultFileCorrupt',
+  'Bản ghi trong kho bí mật quá ngắn.': 'backend.vaultRecordTooShort',
+  'Nonce trong kho bí mật sai độ dài.': 'backend.vaultBadNonce',
+  'Muối trong kho bí mật sai độ dài.': 'backend.vaultBadSalt',
+  'Không giải mã được bí mật trong kho.': 'backend.vaultDecryptFailed',
+  'Chưa xác định được thư mục dữ liệu của ứng dụng.': 'backend.vaultNoDataDir',
 };
 
 /**
@@ -242,6 +254,25 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   },
   { re: /^Không xoá được dữ liệu cũ của bảng '([^']*)': ([\s\S]*)$/, key: 'backend.dataGenDeleteFailed' },
   { re: /^Lỗi khi chèn dữ liệu vào bảng '([^']*)': ([\s\S]*)$/, key: 'backend.dataGenInsertFailed' },
+  // credentials/vault.rs — the master password's own failures. The payload is a crypto, serde or
+  // filesystem error in its own words, passed through like every other driver text.
+  // `vaultFileCorruptDetail` carries serde's reason and must not be confused with the bare
+  // `Tệp kho bí mật đã hỏng.` in EXACT: that one ends in a full stop, this one in `: <reason>`.
+  { re: /^Bí mật '([^']*)' trong kho không phải văn bản hợp lệ\.$/, key: 'backend.vaultSecretNotText' },
+  { re: /^Tham số Argon2 không hợp lệ: ([\s\S]*)$/, key: 'backend.vaultBadArgonParams' },
+  { re: /^Không dẫn xuất được khoá từ mật khẩu chính: ([\s\S]*)$/, key: 'backend.vaultDeriveFailed' },
+  { re: /^Khoá kho bí mật không hợp lệ: ([\s\S]*)$/, key: 'backend.vaultKeyInvalid' },
+  { re: /^Không sinh được nonce cho kho bí mật: ([\s\S]*)$/, key: 'backend.vaultNonceGenFailed' },
+  { re: /^Không mã hoá được bí mật: ([\s\S]*)$/, key: 'backend.vaultEncryptFailed' },
+  { re: /^Bản ghi trong kho bí mật không đọc được: ([\s\S]*)$/, key: 'backend.vaultRecordUnreadable' },
+  { re: /^Không sinh được muối cho kho bí mật: ([\s\S]*)$/, key: 'backend.vaultSaltGenFailed' },
+  { re: /^Muối trong kho bí mật không đọc được: ([\s\S]*)$/, key: 'backend.vaultSaltUnreadable' },
+  { re: /^Không đọc được tệp kho bí mật: ([\s\S]*)$/, key: 'backend.vaultReadFileFailed' },
+  { re: /^Tệp kho bí mật đã hỏng: ([\s\S]*)$/, key: 'backend.vaultFileCorruptDetail' },
+  { re: /^Không dựng được tệp kho bí mật: ([\s\S]*)$/, key: 'backend.vaultSerializeFailed' },
+  { re: /^Không tạo được thư mục kho bí mật: ([\s\S]*)$/, key: 'backend.vaultMkdirFailed' },
+  { re: /^Không ghi được tệp kho bí mật: ([\s\S]*)$/, key: 'backend.vaultWriteFileFailed' },
+  { re: /^Không xoá được tệp kho bí mật: ([\s\S]*)$/, key: 'backend.vaultDeleteFileFailed' },
 ];
 
 /**

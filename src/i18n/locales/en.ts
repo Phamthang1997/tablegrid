@@ -2617,6 +2617,62 @@ const en = {
     cancelled: 'Cancelled — Safe Mode asked for confirmation.',
   },
 
+  // Master Password — the encrypted vault behind the OS keyring. See utils/vault.ts.
+  vault: {
+    title: 'Master Password',
+    menu: 'Master Password…',
+    explain:
+      'A master password seals every saved password, SSH key and AWS secret in an encrypted file whose key is never written to disk. Without it, those secrets live in the OS credential store, where anything running as you can read them.',
+    limits:
+      'It does not hide host names, ports, users or database names — those stay in plain settings. Once unlocked, the key is in memory for the rest of the session.',
+    currentlyOn: 'The master password is on. Secrets are stored in the encrypted vault.',
+
+    newPassword: 'New password',
+    confirmPassword: 'Confirm password',
+    currentPassword: 'Current password',
+    masterPassword: 'Master password',
+    mismatch: 'The two passwords do not match.',
+    noRecovery:
+      'There is no way to recover a forgotten master password. Losing it means retyping every saved credential.',
+
+    enable: 'Turn on',
+    change: 'Change password',
+    disable: 'Turn off',
+    lockNow: 'Lock now',
+    enabledOk: 'Master password turned on. Existing secrets were moved into the vault.',
+    changedOk: 'Master password changed.',
+    disabledOk: 'Master password turned off. Secrets are back in the OS credential store.',
+
+    rememberDevice: 'Remember on this device',
+    rememberDeviceHint:
+      'Stores the unlock key in this machine’s credential store, so the app does not ask on launch. The vault file taken anywhere else still needs the password.',
+    rememberOnOk: 'This device will unlock automatically.',
+    rememberOffOk: 'This device will ask for the password.',
+
+    autoLock: 'Lock after idle',
+    autoLockNever: 'Never',
+    autoLockMinutes: '{{n}} minutes',
+    autoLockHint: 'Locking covers the window and stops secrets being read. Open connections keep running, and the password is asked for again even after restarting the app.',
+
+    disableTitle: 'Turn off the master password?',
+    disableMessage: 'Every secret moves back into the OS credential store, where any process running as you can read it.',
+    disableNote: 'The connections themselves are unaffected.',
+
+    appLocked: 'Locked',
+    unlockTitle: 'Unlock',
+    unlockSubtitle: 'Enter your master password to reach your saved connections.',
+    unlock: 'Unlock',
+    unlocking: 'Unlocking…',
+    forgot: 'Forgotten your password?',
+    resetTitle: 'Erase the vault?',
+    resetMessage:
+      'A forgotten master password cannot be recovered. Erasing the vault deletes every stored password, SSH key and AWS secret.',
+    resetNote:
+      'Your connections stay in the list — each one simply needs its credentials typed again.',
+    resetConfirm: 'Erase the vault',
+    resetTypeWord: 'ERASE',
+  },
+
   // Statement timeout setting — shared popover with Safe Mode. See stmtTimeout.ts.
   stmtTimeout: {
     menuTitle: 'Statement timeout',
@@ -2834,6 +2890,33 @@ const en = {
     rxQuantInvalid: "The quantifier '{{a}}' is not valid.",
     rxQuantMax: 'The largest supported quantifier is {{a}}.',
     rxQuantMinMax: "The quantifier '{{a}}' has min greater than max.",
+
+    // credentials/vault.rs — the master password
+    vaultLocked: 'The secret vault is locked. Unlock it with your master password.',
+    vaultAlreadyEnabled: 'A master password is already set.',
+    vaultPasswordEmpty: 'The master password cannot be empty.',
+    vaultWrongPassword: 'Wrong master password.',
+    vaultFileCorrupt: 'The vault file is damaged.',
+    vaultFileCorruptDetail: 'The vault file is damaged: {{a}}',
+    vaultRecordTooShort: 'A record in the vault is too short.',
+    vaultBadNonce: 'A nonce in the vault has the wrong length.',
+    vaultBadSalt: 'The salt in the vault has the wrong length.',
+    vaultDecryptFailed: 'A secret in the vault could not be decrypted.',
+    vaultNoDataDir: "The application's data directory could not be determined.",
+    vaultSecretNotText: "The secret '{{a}}' in the vault is not valid text.",
+    vaultBadArgonParams: 'Invalid Argon2 parameters: {{a}}',
+    vaultDeriveFailed: 'Could not derive a key from the master password: {{a}}',
+    vaultKeyInvalid: 'The vault key is not valid: {{a}}',
+    vaultNonceGenFailed: 'Could not generate a nonce for the vault: {{a}}',
+    vaultEncryptFailed: 'Could not encrypt the secret: {{a}}',
+    vaultRecordUnreadable: 'A record in the vault could not be read: {{a}}',
+    vaultSaltGenFailed: 'Could not generate a salt for the vault: {{a}}',
+    vaultSaltUnreadable: 'The salt in the vault could not be read: {{a}}',
+    vaultReadFileFailed: 'Could not read the vault file: {{a}}',
+    vaultSerializeFailed: 'Could not build the vault file: {{a}}',
+    vaultMkdirFailed: 'Could not create the vault directory: {{a}}',
+    vaultWriteFileFailed: 'Could not write the vault file: {{a}}',
+    vaultDeleteFileFailed: 'Could not delete the vault file: {{a}}',
 
     // data_generator.rs — generation
     dataGenNoTable: 'No table was selected for generation.',

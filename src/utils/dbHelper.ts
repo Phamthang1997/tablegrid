@@ -73,6 +73,21 @@ export interface OpenConnection {
 }
 
 /** State of the built-in MCP server. `url` is empty while stopped, so no one copies a dead address. */
+/**
+ * The master password's three booleans. Mirrors `credentials/vault.rs`'s `VaultStatus`.
+ *
+ * `enabled && !unlocked` is the only state that hides the app behind the lock screen, and it is
+ * derived here rather than sent as a fourth field so there is no way for the two to disagree.
+ */
+export interface VaultStatus {
+  /** A vault file exists, i.e. the master password is turned on. */
+  enabled: boolean;
+  /** The derived key is in the backend's memory, i.e. secrets are readable right now. */
+  unlocked: boolean;
+  /** The key is parked in the OS keyring, so launching this machine's app does not ask. */
+  remembered: boolean;
+}
+
 export interface McpStatus {
   running: boolean;
   port: number;
@@ -1290,6 +1305,57 @@ export const dbHelper = {
   // Deletes a profile's secrets (when the profile itself is deleted).
   async deleteSecrets(profileId: string, fields: string[]): Promise<void> {
     await invoke('secret_delete_many', { profileId, fields });
+  },
+
+  // ---- Master Password (the vault behind the three methods above) ----
+  // Turning it on moves every secret out of the OS keyring and into an encrypted file whose key is
+  // derived from the password and never written to disk. See src-tauri/src/credentials/vault.rs.
+  //
+  // Nothing here reads or reports the derived key: the frontend only ever learns three booleans.
+  // The `locked` state is discovered by ASKING (`vaultStatus`) after a secret call fails, never by
+  // matching the error text — that text is translated at this very boundary, so comparing it would
+  // break the moment the UI language changes.
+
+  async vaultStatus(): Promise<VaultStatus> {
+    return await invoke('vault_status');
+  },
+
+  /**
+   * Turns the master password on. `profileIds` × `fields` is the set to migrate out of the keyring;
+   * only localStorage knows which profiles exist, so the list has to come from here.
+   */
+  async vaultEnable(
+    password: string,
+    remember: boolean,
+    profileIds: string[],
+    fields: string[],
+  ): Promise<VaultStatus> {
+    return await invoke('vault_enable', { password, remember, profileIds, fields });
+  },
+
+  async vaultUnlock(password: string, remember: boolean): Promise<VaultStatus> {
+    return await invoke('vault_unlock', { password, remember });
+  },
+
+  async vaultLock(): Promise<VaultStatus> {
+    return await invoke('vault_lock');
+  },
+
+  async vaultDisable(password: string): Promise<VaultStatus> {
+    return await invoke('vault_disable', { password });
+  },
+
+  async vaultChangePassword(oldPassword: string, newPassword: string): Promise<VaultStatus> {
+    return await invoke('vault_change_password', { oldPassword, newPassword });
+  },
+
+  async vaultSetRemember(remember: boolean): Promise<VaultStatus> {
+    return await invoke('vault_set_remember', { remember });
+  },
+
+  /** Throws the vault away, secrets and all — the answer to a forgotten password. */
+  async vaultReset(): Promise<VaultStatus> {
+    return await invoke('vault_reset');
   },
 
   // ---- SSH Terminal ----

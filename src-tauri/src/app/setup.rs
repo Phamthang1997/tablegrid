@@ -27,7 +27,13 @@ pub fn init(app: &tauri::App) {
     // silent here and reported through `mcp_audit_file_status` instead: the app and the MCP server
     // must not fail to start because a log file could not be opened.
     if let Ok(dir) = app.path().app_data_dir() {
-        crate::mcp::audit_file::init(dir);
+        crate::mcp::audit_file::init(dir.clone());
+        // The master-password vault lives in the same directory and is told about it here for the
+        // same reason: a Tauri path can only be asked of the app handle, and this file is the only
+        // one allowed to ask. It also auto-unlocks from the device key when there is one, which has
+        // to happen before the first frame or a "remember on this device" user sees the lock screen
+        // flash past.
+        crate::credentials::vault::init(dir);
     }
 }
 

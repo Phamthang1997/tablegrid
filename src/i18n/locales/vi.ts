@@ -2591,6 +2591,62 @@ const vi: typeof en = {
   },
 
   // Giới hạn thời gian câu lệnh — cùng popover với Safe Mode. Xem stmtTimeout.ts.
+  // Master Password — kho mã hoá nằm sau kho bí mật của HĐH. Xem utils/vault.ts.
+  vault: {
+    title: 'Mật khẩu chính',
+    menu: 'Mật khẩu chính…',
+    explain:
+      'Mật khẩu chính niêm phong mọi mật khẩu, khoá SSH và AWS secret đã lưu vào một tệp mã hoá, khoá giải mã không bao giờ nằm trên đĩa. Không bật thì các bí mật đó nằm trong kho của hệ điều hành, nơi mọi tiến trình chạy dưới tài khoản của bạn đều đọc được.',
+    limits:
+      'Nó KHÔNG che host, cổng, user hay tên database — những thứ đó vẫn nằm ở cấu hình thường. Sau khi mở khoá, khoá giải mã nằm trong bộ nhớ suốt phiên làm việc.',
+    currentlyOn: 'Mật khẩu chính đang bật. Bí mật được cất trong kho mã hoá.',
+
+    newPassword: 'Mật khẩu mới',
+    confirmPassword: 'Nhập lại mật khẩu',
+    currentPassword: 'Mật khẩu hiện tại',
+    masterPassword: 'Mật khẩu chính',
+    mismatch: 'Hai mật khẩu không khớp.',
+    noRecovery:
+      'Quên mật khẩu chính thì không có cách nào lấy lại. Mất nó nghĩa là phải gõ lại toàn bộ thông tin đăng nhập đã lưu.',
+
+    enable: 'Bật',
+    change: 'Đổi mật khẩu',
+    disable: 'Tắt',
+    lockNow: 'Khoá ngay',
+    enabledOk: 'Đã bật mật khẩu chính. Bí mật cũ đã được chuyển vào kho mã hoá.',
+    changedOk: 'Đã đổi mật khẩu chính.',
+    disabledOk: 'Đã tắt mật khẩu chính. Bí mật quay lại kho của hệ điều hành.',
+
+    rememberDevice: 'Ghi nhớ trên máy này',
+    rememberDeviceHint:
+      'Cất khoá mở kho vào kho bí mật của máy này, nên mở app không bị hỏi. Tệp kho mang sang máy khác thì vẫn cần mật khẩu.',
+    rememberOnOk: 'Máy này sẽ tự mở khoá.',
+    rememberOffOk: 'Máy này sẽ hỏi mật khẩu.',
+
+    autoLock: 'Khoá sau khi không dùng',
+    autoLockNever: 'Không bao giờ',
+    autoLockMinutes: '{{n}} phút',
+    autoLockHint: 'Khoá sẽ che cửa sổ và chặn đọc bí mật. Các kết nối đang mở vẫn chạy bình thường, và phải nhập lại mật khẩu kể cả sau khi khởi động lại app.',
+
+    disableTitle: 'Tắt mật khẩu chính?',
+    disableMessage: 'Mọi bí mật sẽ quay về kho của hệ điều hành, nơi mọi tiến trình chạy dưới tài khoản của bạn đều đọc được.',
+    disableNote: 'Các kết nối không bị ảnh hưởng.',
+
+    appLocked: 'Đang khoá',
+    unlockTitle: 'Mở khoá',
+    unlockSubtitle: 'Nhập mật khẩu chính để vào các kết nối đã lưu.',
+    unlock: 'Mở khoá',
+    unlocking: 'Đang mở khoá…',
+    forgot: 'Quên mật khẩu?',
+    resetTitle: 'Xoá kho bí mật?',
+    resetMessage:
+      'Mật khẩu chính đã quên thì không lấy lại được. Xoá kho sẽ xoá mọi mật khẩu, khoá SSH và AWS secret đã lưu.',
+    resetNote:
+      'Danh sách kết nối vẫn còn — chỉ là mỗi kết nối phải gõ lại thông tin đăng nhập.',
+    resetConfirm: 'Xoá kho',
+    resetTypeWord: 'XOA',
+  },
+
   stmtTimeout: {
     menuTitle: 'Giới hạn câu lệnh',
     off: 'Tắt',
@@ -2807,6 +2863,34 @@ const vi: typeof en = {
     rxQuantInvalid: "Lượng từ '{{a}}' không hợp lệ",
     rxQuantMax: 'Lượng từ tối đa là {{a}}',
     rxQuantMinMax: "Lượng từ '{{a}}' có min > max",
+
+    // credentials/vault.rs — mật khẩu chính. Nguyên văn literal bên Rust, không sửa chữ nào:
+    // `backendErrors.test.ts` bắt round-trip phải trùng từng byte.
+    vaultLocked: 'Kho bí mật đang khoá. Hãy mở khoá bằng mật khẩu chính.',
+    vaultAlreadyEnabled: 'Mật khẩu chính đã được bật.',
+    vaultPasswordEmpty: 'Mật khẩu chính không được để trống.',
+    vaultWrongPassword: 'Mật khẩu chính không đúng.',
+    vaultFileCorrupt: 'Tệp kho bí mật đã hỏng.',
+    vaultFileCorruptDetail: 'Tệp kho bí mật đã hỏng: {{a}}',
+    vaultRecordTooShort: 'Bản ghi trong kho bí mật quá ngắn.',
+    vaultBadNonce: 'Nonce trong kho bí mật sai độ dài.',
+    vaultBadSalt: 'Muối trong kho bí mật sai độ dài.',
+    vaultDecryptFailed: 'Không giải mã được bí mật trong kho.',
+    vaultNoDataDir: 'Chưa xác định được thư mục dữ liệu của ứng dụng.',
+    vaultSecretNotText: "Bí mật '{{a}}' trong kho không phải văn bản hợp lệ.",
+    vaultBadArgonParams: 'Tham số Argon2 không hợp lệ: {{a}}',
+    vaultDeriveFailed: 'Không dẫn xuất được khoá từ mật khẩu chính: {{a}}',
+    vaultKeyInvalid: 'Khoá kho bí mật không hợp lệ: {{a}}',
+    vaultNonceGenFailed: 'Không sinh được nonce cho kho bí mật: {{a}}',
+    vaultEncryptFailed: 'Không mã hoá được bí mật: {{a}}',
+    vaultRecordUnreadable: 'Bản ghi trong kho bí mật không đọc được: {{a}}',
+    vaultSaltGenFailed: 'Không sinh được muối cho kho bí mật: {{a}}',
+    vaultSaltUnreadable: 'Muối trong kho bí mật không đọc được: {{a}}',
+    vaultReadFileFailed: 'Không đọc được tệp kho bí mật: {{a}}',
+    vaultSerializeFailed: 'Không dựng được tệp kho bí mật: {{a}}',
+    vaultMkdirFailed: 'Không tạo được thư mục kho bí mật: {{a}}',
+    vaultWriteFileFailed: 'Không ghi được tệp kho bí mật: {{a}}',
+    vaultDeleteFileFailed: 'Không xoá được tệp kho bí mật: {{a}}',
 
     // data_generator.rs — sinh dữ liệu
     dataGenNoTable: 'Chưa chọn bảng nào để sinh dữ liệu',
