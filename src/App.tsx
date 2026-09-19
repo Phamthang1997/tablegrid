@@ -4,6 +4,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { TitleBar } from './components/TitleBar';
 import { SafeModeGate } from './components/SafeModeGate';
 import { McpApprovalGate } from './components/McpApprovalGate';
+import { LockScreen } from './components/LockScreen';
+import {
+  isVaultLocked,
+  refreshVaultStatus,
+  startVaultIdleWatch,
+  subscribeVault,
+  vaultSnapshot,
+} from './utils/vault';
 import { ConnectionManager } from './components/ConnectionManager';
 import { Sidebar } from './components/Sidebar';
 import { DbRail } from './components/DbRail';
@@ -261,6 +269,17 @@ export const App: React.FC = () => {
   React.useEffect(() => {
     activeConnIdRef.current = activeConnIdState;
   }, [activeConnIdState]);
+
+  /**
+   * The master password. Asked for once at startup — the backend may already have unlocked itself
+   * from this machine's device key during `app/setup.rs`, so the answer decides whether the lock
+   * overlay appears at all.
+   */
+  const vault = React.useSyncExternalStore(subscribeVault, vaultSnapshot);
+  React.useEffect(() => {
+    void refreshVaultStatus();
+    return startVaultIdleWatch();
+  }, []);
   /**
    * Every open connection, with the config it was opened from.
    *
@@ -2140,6 +2159,12 @@ export const App: React.FC = () => {
           the question still appears wherever the command came from. */}
       <SafeModeGate />
       <McpApprovalGate />
+
+      {/* The master-password gate. An overlay ON TOP of the mounted app rather than an early
+          return: every query tab stays mounted so a run's results survive a tab switch, and an idle
+          lock that unmounted the tree would throw that away to protect secrets the backend has
+          already sealed. See `utils/vault.ts`. */}
+      {isVaultLocked(vault) && <LockScreen />}
 
       {/* Adding another connection while one is already open (the rail's `+` button). It reuses
           `ConnectionManager` whole rather than writing a second screen; `handleConnect` already does

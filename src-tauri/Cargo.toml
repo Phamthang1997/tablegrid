@@ -70,6 +70,15 @@ base64 = "0.23.1"
 # lập chỉ mục trên máy. Chọn aes-gcm vì nó ĐÃ có sẵn trong Cargo.lock (qua `pkcs5`), nên khai báo
 # trực tiếp không kéo thêm crate nào vào cây — cùng lý lẽ với `base64` ở trên.
 aes-gcm = "0.11"
+# Master Password (`credentials/vault.rs`): dẫn xuất khoá từ mật khẩu người dùng. Argon2id chứ không
+# PBKDF2 vì đây là mật khẩu do người gõ — hàm memory-hard là thứ duy nhất làm GPU/ASIC đắt lên.
+# Cả hai crate ĐÃ có trong Cargo.lock từ trước (argon2 qua `pkcs5`, zeroize qua đám RustCrypto), nên
+# khai báo trực tiếp không kéo thêm gì vào cây — cùng lý lẽ với `base64`/`aes-gcm` ở trên.
+# `default-features = false` bỏ `password-hash` + `getrandom`: chỉ dùng API thô `hash_password_into`,
+# còn muối thì sinh bằng chính CSPRNG của `aes-gcm` (xem `random_salt` trong vault.rs).
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc"] }
+# Khoá đã dẫn xuất phải biến mất khỏi RAM khi khoá kho lại, chứ không nằm chờ bị đọc.
+zeroize = "1.9"
 # Kho bí mật của HĐH (Windows Credential Manager / Keychain / Secret Service).
 # Tắt default-features rồi bật đúng backend theo từng nền tảng bên dưới, tránh kéo
 # zbus + secret-service vào bản build Windows.

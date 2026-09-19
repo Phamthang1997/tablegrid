@@ -207,6 +207,18 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   secret_delete_many: 'internal',
   secret_get_many: 'internal',
   secret_set_many: 'internal',
+  // The master password. Not database access at all, and the destructive ones
+  // (`vault_disable`, `vault_reset`) already ask for the password or a typed confirmation in their
+  // own dialog — a Safe Mode prompt on top would be a second question about the same act, worded
+  // in terms of a connection that is not involved.
+  vault_status: 'internal',
+  vault_unlock: 'internal',
+  vault_lock: 'internal',
+  vault_enable: 'internal',
+  vault_disable: 'internal',
+  vault_change_password: 'internal',
+  vault_set_remember: 'internal',
+  vault_reset: 'internal',
   // --- The built-in MCP server. Configuring it is not a statement anyone ran on a database, so
   //     these are `internal` - gating them would prompt while the user is setting up a guard.
   //     `mcp_regenerate_token` is the exception: it cuts off every client on the old token and
