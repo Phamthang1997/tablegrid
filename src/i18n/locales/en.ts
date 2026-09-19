@@ -392,6 +392,7 @@ const en = {
     errNoProfilesToExport: 'There is no connection to export.',
     confirmExportPlainPasswords:
       'The exported file will contain passwords in the clear because you did not set a file password.\nContinue anyway?',
+    exportFileFilter: 'TableGrid Connections (*.tablegridconnection)',
     exportSuccess: 'Exported {{n}} connections.',
     errExport: 'Failed to export connections: {{message}}',
     errImport: 'Failed to import connections: {{message}}',
@@ -2491,12 +2492,22 @@ const en = {
     ttlOver7d: "≥ 7 days",
   },
 
+  fileDialog: {
+    pickFileTitle: 'Select a file',
+    pickSqliteTitle: 'Select a SQLite file',
+    pickFolderTitle: 'Select the folder to export into',
+    saveFileTitle: 'Save file',
+    defaultFilter: 'File',
+    sqliteFilter: 'SQLite Database (*.db, *.sqlite, *.sqlite3, *.db3, *.s3db)',
+    allFilesFilter: 'All Files (*.*)',
+  },
+
   /**
    * Errors thrown from plain modules under `src/utils/` and `src/sql/`. Those files
    * have no React hook, so they call `i18n.t()` on the shared instance directly.
    */
   errors: {
-    invalidConnFileFormat: 'Invalid file format (not a JSON/TablePlus connection file).',
+    invalidConnFileFormat: 'Invalid file format (not a JSON/TableGrid connection file).',
     connFilePasswordProtected: 'The connection file is password-protected. Enter the password to decrypt it.',
     wrongPasswordOrCorrupt: 'Wrong password, or the connection file is corrupt.',
     noGzipSupport: 'This WebView cannot gzip.',

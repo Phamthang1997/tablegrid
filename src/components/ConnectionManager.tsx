@@ -4,7 +4,7 @@ import { activeConnId, dbHelper, setActiveConnId } from '../utils/dbHelper';
 import type { DbConnectionConfig } from '../utils/dbHelper';
 import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, Check, Cloud, DatabaseBackup, LogIn, KeyRound } from 'lucide-react';
 import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './DbIcons';
-import { encryptConnectionExport, decryptConnectionExport } from '../utils/cryptoHelper';
+import { encryptConnectionExport, decryptConnectionExport, CONNECTION_FILE_EXT, CONNECTION_FILE_ACCEPT } from '../utils/cryptoHelper';
 import { CONN_ENVS, envLabelKey, legacyEnvOfColor, normalizeEnv, type ConnEnv } from '../utils/connEnv';
 import {
   parseDumpObjects,
@@ -18,7 +18,7 @@ import {
 } from '../utils/dumpPreview';
 import { splitStatements } from '../sql/statements';
 import { buildDump, dumpReaderFor } from '../utils/dumpBuilder';
-import { gzipText, getLastExportDir, saveExportFile, pickOpenFile, pickSqliteDatabaseFile } from '../utils/fileSave';
+import { gzipText, getLastExportDir, saveExportFile, saveExportFileAtPath, pickOpenFile, pickSaveFilePath, pickSqliteDatabaseFile } from '../utils/fileSave';
 import { fileBaseFromPath, fileStamp, safeFileBase } from '../utils/exportHelper';
 import { startJob } from '../utils/jobs';
 import { connKey } from '../utils/connKey';
@@ -683,6 +683,17 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
         return;
       }
 
+      // Asking for the destination BEFORE reading any secret, for the same reason the plaintext
+      // warning above is asked first: cancelling the dialog must not have touched the keychain.
+      const baseName = exportScope === 'group' ? `TableGrid_${exportGroupTarget.replace(/[^a-zA-Z0-9]/g, '_')}_Connections` :
+        exportScope === 'single' ? `TableGrid_${exportSingleProfile?.name.replace(/[^a-zA-Z0-9]/g, '_')}_Connection` :
+          'TableGrid_All_Connections';
+      const targetPath = await pickSaveFilePath(baseName, CONNECTION_FILE_EXT, t('connection.exportFileFilter'));
+      if (!targetPath) {
+        setExporting(false);
+        return;
+      }
+
       // The in-memory profiles no longer hold secrets -> exporting with passwords means reading them
       // back from the OS secret store. Without them, the stripped version is used as-is.
       const processedProfiles = await Promise.all(
@@ -695,21 +706,14 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
 
       const encryptedText = await encryptConnectionExport(processedProfiles, exportFilePassword);
 
-      const blob = new Blob([encryptedText], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const filenameStr = exportScope === 'group' ? `TablePlus_${exportGroupTarget.replace(/[^a-zA-Z0-9]/g, '_')}_Connections.tableplusconnection` :
-        exportScope === 'single' ? `TablePlus_${exportSingleProfile?.name.replace(/[^a-zA-Z0-9]/g, '_')}_Connection.tableplusconnection` :
-          'TablePlus_All_Connections.tableplusconnection';
-      a.download = filenameStr;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // `false` = the direct write was refused and it fell back to a WebView download, so the path
+      // it returned is not where the file landed and must not be reported as if it were.
+      const writtenAtPath = await saveExportFileAtPath(targetPath, encryptedText, 'application/json');
 
       setShowExportModal(false);
-      setSuccessMsg(t('connection.exportSuccess', { n: processedProfiles.length }));
+      setSuccessMsg(writtenAtPath
+        ? `${t('connection.exportSuccess', { n: processedProfiles.length })} — ${targetPath}`
+        : t('connection.exportSuccess', { n: processedProfiles.length }));
     } catch (e: any) {
       alert(t('connection.errExport', { message: e.message }));
     } finally {
@@ -2752,7 +2756,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                   <button className="cm-icon-btn" title={t('connection.importFromFile')} onClick={() => document.getElementById('cm-import-file')?.click()}>
                     <Upload size={13} />
                   </button>
-                  <input id="cm-import-file" type="file" accept=".tableplusconnection,.tableforgeconnection,.json" onChange={handleFileImportSelect} className="cm-hidden-file" />
+                  <input id="cm-import-file" type="file" accept={CONNECTION_FILE_ACCEPT} onChange={handleFileImportSelect} className="cm-hidden-file" />
                   <button className="cm-icon-btn" title={t('connection.exportAll')} onClick={() => openExportModal('all')}>
                     <Download size={13} />
                   </button>

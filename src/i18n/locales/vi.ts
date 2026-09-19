@@ -384,6 +384,7 @@ const vi: typeof en = {
     errNoProfilesToExport: 'Không có kết nối nào để xuất.',
     confirmExportPlainPasswords:
       'Tệp xuất sẽ chứa mật khẩu ở dạng thô vì bạn chưa đặt mật khẩu bảo vệ tệp.\nVẫn tiếp tục?',
+    exportFileFilter: 'Tệp kết nối TableGrid (*.tablegridconnection)',
     exportSuccess: 'Đã xuất {{n}} kết nối thành công!',
     errExport: 'Lỗi xuất kết nối: {{message}}',
     errImport: 'Lỗi nhập kết nối: {{message}}',
@@ -2473,8 +2474,18 @@ const vi: typeof en = {
     ttlOver7d: "≥ 7 ngày",
   },
 
+  fileDialog: {
+    pickFileTitle: 'Chọn tệp',
+    pickSqliteTitle: 'Chọn tệp SQLite',
+    pickFolderTitle: 'Chọn thư mục lưu tệp xuất',
+    saveFileTitle: 'Lưu tệp',
+    defaultFilter: 'Tệp',
+    sqliteFilter: 'SQLite Database (*.db, *.sqlite, *.sqlite3, *.db3, *.s3db)',
+    allFilesFilter: 'Tất cả tệp (*.*)',
+  },
+
   errors: {
-    invalidConnFileFormat: 'Định dạng tệp không hợp lệ (Không phải tệp JSON/TablePlus connection).',
+    invalidConnFileFormat: 'Định dạng tệp không hợp lệ (Không phải tệp JSON/TableGrid connection).',
     connFilePasswordProtected: 'Tệp kết nối được bảo vệ bằng mật khẩu. Vui lòng nhập mật khẩu để giải mã.',
     wrongPasswordOrCorrupt: 'Mật khẩu không chính xác hoặc tệp kết nối bị hỏng.',
     noGzipSupport: 'WebView không hỗ trợ nén gzip.',
