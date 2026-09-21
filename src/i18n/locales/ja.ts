@@ -746,6 +746,7 @@ const ja: typeof en = {
     quickSearchNoMatches: '0 件',
     quickSearchClear: '検索をクリア (Esc)',
     quickSearchClose: 'クイック検索を閉じる',
+    quickSearchEscKey: 'Esc',
     filtersBtn: 'フィルタ',
     filtersTitle: 'データフィルタの表示/非表示 (Ctrl+Shift+F)',
     prevPage: '前のページ',
