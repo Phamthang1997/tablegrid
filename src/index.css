@@ -366,7 +366,15 @@ body {
   font-family: var(--win-font-mono);
   font-size: 12.5px;
   color: var(--win-text-primary);
-  flex: 1;
+  /* Sizes to its text, and only shrinks. It used to be `flex: 1`, which made a fixed 700px slab of
+     white with the status line floating in the middle of it — the wider the window, the more empty
+     pill. Centring is the WRAPPER's job (`justify-content: center` on the flex:1 box around it), so
+     the capsule does not need to stretch to stay in the middle.
+     `min-width: 0` is what makes the shrink legal: `white-space: nowrap` puts min-content at the
+     full string, and a flex item's automatic minimum size would otherwise refuse to go below it and
+     push the toolbars aside on a narrow window. */
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 700px;
   margin: 0 10px;
   white-space: nowrap;
@@ -1136,12 +1144,18 @@ select.form-input {
   opacity: 1 !important;
 }
 
-/* Workspace Layout */
+/* Workspace Layout.
+
+   No `height` here. It used to say `calc(100vh - 34px)` while `.title-bar` is 40px — a number that
+   never applied (`flex: 1` means `flex-basis: 0%`, and a flex item's basis beats its height on the
+   main axis) but that read as a real constraint and would have been six pixels wrong the moment
+   anyone changed `flex`. `#root` is a 100vh flex column and the title bar is `flex-shrink: 0`, so
+   "everything the title bar left over" is exactly what `flex: 1` already means. */
 .workspace-container {
   display: flex;
   flex: 1;
   overflow: hidden;
-  height: calc(100vh - 34px);
+  min-height: 0;
 }
 
 /* Database rail: the narrow column of databases sitting left of the sidebar.
@@ -21175,4 +21189,49 @@ input.rename-input {
 .vault-sep {
   height: 1px;
   background: var(--win-border);
+}
+
+/* The "Change password" disclosure. A row, not a `.btn`: it opens a section of this dialog rather
+   than acting on the vault, and at button weight it competed with the three real actions in the
+   footer. The caret is the only thing that says which state it is in. */
+.vault-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 0;
+  border: none;
+  background: transparent;
+  color: var(--win-text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vault-disclosure:hover:not(:disabled) {
+  color: var(--win-text-primary);
+}
+
+.vault-disclosure:disabled {
+  color: var(--win-text-disabled);
+  cursor: not-allowed;
+}
+
+.vault-disclosure-caret {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+
+.vault-disclosure-caret.is-open {
+  transform: rotate(90deg);
+}
+
+/* The wrapper exists so the section can be scrolled to as one thing; it repeats `ModalBody`'s own
+   14px gap, which the fields lost the moment they stopped being its direct children. */
+.vault-change-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
