@@ -757,6 +757,9 @@ const en = {
     quickSearchNoMatches: '0 results',
     quickSearchClear: 'Clear search (Esc)',
     quickSearchClose: 'Close quick search',
+    // The keycap shown beside the close button. A key name, so all three languages say Esc — it is
+    // here because every user-facing string goes through i18n, not because it is expected to differ.
+    quickSearchEscKey: 'Esc',
     filtersBtn: 'Filters',
     filtersTitle: 'Show/hide the data filter (Ctrl+Shift+F)',
     prevPage: 'Previous page',

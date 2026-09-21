@@ -34,6 +34,8 @@ import { LazyModalFallback } from './LazyEditorFallback';
 import { MediaCellPreview, MediaViewerModal, detectMedia, type MediaInfo } from './media';
 import { DataVisualizer } from './chart';
 import { TablePropertiesView } from './TablePropertiesView';
+import { SearchHighlight } from './SearchHighlight';
+import { rowMatchesQuery } from '../utils/gridSearch';
 
 // Lazy because `RowDocumentModal` has a JSON tab built on `@monaco-editor/react`: a static import
 // here is a static path from the entry to Monaco, and it undoes the `React.lazy` of `SqlEditor` and
@@ -416,6 +418,18 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   const [quickSearchQuery, setQuickSearchQuery] = useState('');
   const [showQuickSearch, setShowQuickSearch] = useState(false);
   const quickSearchInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * Column widths measured when quick search opens, so filtering cannot move them.
+   *
+   * `.grid-table` is `table-layout: auto`: a column is as wide as the widest cell CURRENTLY
+   * RENDERED, so hiding rows re-lays out the grid on every keystroke and the columns jump under the
+   * text being typed. Filtering only removes rows, so the widths taken before the first keystroke
+   * are the widest this row set can need — freezing them can leave a column roomier than its
+   * content, never clip it. Carried with the `of` array so a refetch (paging is server-side here)
+   * drops them without an effect to do the invalidating. SqlEditor's result grid does the same.
+   */
+  const [frozenCols, setFrozenCols] = useState<{ of: any[]; widths: number[] } | null>(null);
+  const gridTableRef = useRef<HTMLTableElement>(null);
 
   // Import & Export Combined Popover State
   const [showIoPopover, setShowIoPopover] = useState(false);
@@ -708,7 +722,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
       // 1b. Open Quick Search (Search Anything) (Ctrl/Cmd + F)
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault();
-        setShowQuickSearch(true);
+        openQuickSearchBar();
         setTimeout(() => {
           quickSearchInputRef.current?.focus();
           quickSearchInputRef.current?.select();
@@ -1558,47 +1572,49 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     }
   }, [showQuickSearch]);
 
-  const activeColumns = columns.filter(c => visibleColumns.includes(c.name));
-
-  // ————— Quick Search (Search Anything) Helpers —————
-  const normalizeSearch = (val: any): string => {
-    if (val === null || val === undefined) return '';
-    return String(val)
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
+  /**
+   * The two doors into quick search (Ctrl+F and the toolbar button) and the three out of it (Esc,
+   * the bar's ×, the toolbar button again) all go through these, because the width measurement has
+   * to happen on EVERY open — a door that skips it is a door that still lets the columns jump.
+   */
+  const openQuickSearchBar = () => {
+    // Read against the unfiltered grid, before the bar renders. Once per open, never per keystroke.
+    const heads = gridTableRef.current ? Array.from(gridTableRef.current.querySelectorAll('thead th')) : [];
+    if (heads.length > 0) {
+      setFrozenCols({ of: rows, widths: heads.map(th => Math.round(th.getBoundingClientRect().width)) });
+    }
+    setShowQuickSearch(true);
   };
 
-  const rowMatchesSearch = useCallback((row: any, query: string, rowUpdates: any = {}) => {
-    const trimmed = query.trim();
-    if (!trimmed) return true;
-    const q = normalizeSearch(trimmed);
-    return activeColumns.some(col => {
-      const cellVal = col.name in rowUpdates ? rowUpdates[col.name] : row[col.name];
-      return normalizeSearch(cellVal).includes(q);
-    });
-  }, [activeColumns]);
+  const closeQuickSearchBar = () => {
+    setShowQuickSearch(false);
+    setQuickSearchQuery('');
+    // Back to the browser's own sizing: with every row on screen again, the measurements are only a
+    // stale copy of what auto layout is about to compute anyway.
+    setFrozenCols(null);
+  };
 
+  const activeColumns = columns.filter(c => visibleColumns.includes(c.name));
+  const frozenColWidths = showQuickSearch && frozenCols?.of === rows ? frozenCols.widths : null;
+
+  // Matching and the match's position live in `utils/gridSearch.ts`, shared with SqlEditor's result
+  // grid. What stays here is the one part that is this grid's own: searching a row by its BUFFERED
+  // edits rather than by what the database returned, so a row the user has just typed into does not
+  // vanish from their own filter.
+  const rowMatchesSearch = useCallback(
+    (row: any, query: string, rowUpdates: any = {}) =>
+      rowMatchesQuery(row, activeColumns.map(c => c.name), query, rowUpdates),
+    [activeColumns],
+  );
+
+  // The old body sliced the ORIGINAL string with an index found in the NFD-NORMALIZED one. Those
+  // two are not the same length — NFD splits `ễ` into a letter plus a combining mark that the strip
+  // then removes — so on any text with diacritics the highlight landed a few characters off, further
+  // off with every mark before it. `findMatchRange` maps the index back; see `gridSearch.ts`.
   const renderCellWithHighlight = (cellVal: any, query: string): React.ReactNode => {
     if (cellVal === null || cellVal === undefined || cellVal === '') return cellVal;
-    const trimmed = query.trim();
-    if (!trimmed) return String(cellVal);
-    const str = String(cellVal);
-    const normStr = normalizeSearch(str);
-    const normQ = normalizeSearch(trimmed);
-    const matchIdx = normStr.indexOf(normQ);
-    if (matchIdx === -1) return str;
-
-    const before = str.slice(0, matchIdx);
-    const matched = str.slice(matchIdx, matchIdx + trimmed.length);
-    const after = str.slice(matchIdx + trimmed.length);
-    return (
-      <>
-        {before}
-        <mark className="grid-search-mark">{matched}</mark>
-        {renderCellWithHighlight(after, query)}
-      </>
-    );
+    if (!query.trim()) return String(cellVal);
+    return <SearchHighlight text={String(cellVal)} query={query} />;
   };
 
   const displayedRows = React.useMemo(() => {
@@ -1863,7 +1879,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
                     if (quickSearchQuery) {
                       setQuickSearchQuery('');
                     } else {
-                      setShowQuickSearch(false);
+                      closeQuickSearchBar();
                     }
                   }
                 }}
@@ -1890,10 +1906,10 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
             </div>
           </div>
           <div className="grid-quick-search-right">
-            <span className="grid-quick-search-kbd">Esc</span>
+            <span className="grid-quick-search-kbd">{t('dataGrid.quickSearchEscKey')}</span>
             <button
               className="grid-quick-search-btn-close"
-              onClick={() => { setShowQuickSearch(false); setQuickSearchQuery(''); }}
+              onClick={closeQuickSearchBar}
               title={t('dataGrid.quickSearchClose', 'Close quick search')}
             >
               <X size={14} />
@@ -1929,7 +1945,17 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
               <span className="grid-loading-text">{t('dataGrid.loadingData')}</span>
             </div>
           ) : (
-            <table className="grid-table">
+            <table className="grid-table" ref={gridTableRef}>
+              {/* Only while quick search is open — see `frozenCols`. `<col>` sets a whole column's
+                  width without touching a single cell, and it lines up 1:1 with the header cells
+                  below. Keyed by position because a column IS its position here. */}
+              {frozenColWidths && (
+                <colgroup>
+                  {frozenColWidths.map((w, i) => (
+                    <col key={i} style={{ width: `${w}px` }} />
+                  ))}
+                </colgroup>
+              )}
               <thead>
                 <tr>
                   {activeColumns.map(col => {
@@ -2598,8 +2624,9 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
             <button
               className={`gp-btn ${showQuickSearch ? 'on' : ''}`}
               onClick={() => {
-                setShowQuickSearch(prev => !prev);
-                if (!showQuickSearch) {
+                if (showQuickSearch) closeQuickSearchBar();
+                else {
+                  openQuickSearchBar();
                   setTimeout(() => quickSearchInputRef.current?.focus(), 50);
                 }
               }}

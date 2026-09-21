@@ -2887,6 +2887,12 @@ select.form-input {
   overflow: auto;
   background: var(--win-bg-window);
   position: relative;
+  /* The gutter is reserved whether or not a scrollbar is showing. `.grid-table` is
+     `min-width: 100%`, so the moment a filter (or a shorter page) leaves too few rows to overflow,
+     the scrollbar disappears, the container gains its ~15px back and every column stretches into
+     it — a small sideways jerk with no cause the user can see. Reserving it costs a strip of
+     background and removes the whole class of shifts. */
+  scrollbar-gutter: stable;
 }
 
 /* The SQL result grid carries tabIndex={-1} so it can own Ctrl+C and Escape for its row
@@ -2986,6 +2992,15 @@ select.form-input {
   cursor: default;
   vertical-align: middle;
   position: relative;
+  /* The one place in this app where text is selectable. `body` sets `user-select: none` for the
+     desktop feel, which is right for chrome and wrong for the DATA: a result the app judges
+     read-only (a join, an aggregate, anything `sql/editableResult.ts` cannot map to one table)
+     has no cell editor to open, and without a selection there was no way to get a value out by
+     hand at all. Both grids' Ctrl+C handlers already yield to a live text selection — that branch
+     was unreachable until this line existed.
+     Headers and the row-number column stay unselectable below, so dragging across rows copies the
+     values and not the row numbers. */
+  user-select: text;
 }
 
 [data-theme='light'] .grid-table td {
@@ -3001,6 +3016,9 @@ select.form-input {
   border-right: 1px solid #333a45 !important;
   border-bottom: none !important;
   font-weight: 400;
+  /* Overrides the `user-select: text` the cell rule above hands every td: a row number is a label
+     the grid drew, not data, and dragging down a column of values must not interleave it. */
+  user-select: none;
 }
 
 [data-theme='light'] .grid-row-index {
@@ -13015,12 +13033,16 @@ input.rename-input {
   color: #ffffff;
 }
 
+/* The quick-search highlight must not change the text's METRICS. `padding: 0 1px` plus
+   `font-weight: 600` made every matched cell wider than the same cell unmatched, so a column could
+   grow past the width frozen when the search opened — the grid still shifted a little, and only
+   while typing something that matched. The background is what marks a hit; the radius costs no
+   width, and the 1px of air comes back as a box-shadow, which does not take part in layout. */
 .grid-search-mark {
   background: rgba(255, 210, 0, 0.4);
   color: inherit;
-  padding: 0 1px;
   border-radius: 2px;
-  font-weight: 600;
+  box-shadow: 0 0 0 1px rgba(255, 210, 0, 0.4);
 }
 
 [data-theme='dark'] .grid-search-mark {

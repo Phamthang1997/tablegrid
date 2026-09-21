@@ -749,6 +749,7 @@ const vi: typeof en = {
     quickSearchNoMatches: '0 kết quả',
     quickSearchClear: 'Xóa tìm kiếm (Esc)',
     quickSearchClose: 'Đóng tìm nhanh',
+    quickSearchEscKey: 'Esc',
     filtersBtn: 'Filters',
     filtersTitle: 'Bật/Tắt bộ lọc dữ liệu (Ctrl+Shift+F)',
     prevPage: 'Trang trước',

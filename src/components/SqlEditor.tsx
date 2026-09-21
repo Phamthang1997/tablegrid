@@ -38,6 +38,8 @@ import { willPromptForSql } from '../utils/safeMode';
 import { resolveResultEditability, type ResultEditability, type NotEditableReason } from '../sql/editableResult';
 import { SqlSnippetPanel } from './SqlSnippetPanel';
 import { MediaCellPreview } from './media';
+import { SearchHighlight } from './SearchHighlight';
+import { filterRowsByQuery } from '../utils/gridSearch';
 import { DataVisualizer } from './chart';
 
 // Registers smart completion + hover + theme + rename provider (shared, run once)
@@ -105,7 +107,7 @@ function registerSqlFormatter(dbType: string) {
     monaco.languages.registerDocumentFormattingEditProvider(lang, formatProvider)
   );
 }
-import { Play, Clipboard, Trash2, CheckCircle2, AlertTriangle, ChevronLeft, ChevronRight, Copy, AlignLeft, History, X, Bookmark, ChevronDown, MoreHorizontal, SlidersHorizontal, Star, Columns, Rows, Settings, Network, Zap, FileText, Square, Calendar, BarChart2 } from 'lucide-react';
+import { Play, Clipboard, Trash2, CheckCircle2, AlertTriangle, ChevronLeft, ChevronRight, Copy, AlignLeft, History, X, Bookmark, ChevronDown, MoreHorizontal, SlidersHorizontal, Star, Columns, Rows, Settings, Network, Zap, FileText, Square, Calendar, BarChart2, Search } from 'lucide-react';
 import { getQueryParamsConfig, saveQueryParamsConfig, extractQueryParams, buildParameterizedSql, type QueryParamsConfig } from '../utils/queryParamHelper';
 import { buildExplainQuery, explainJsonLabel, parseExplainOutput, supportsJsonExplain, type ExplainResult } from '../utils/explainHelper';
 import {
@@ -2201,6 +2203,97 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const [rowSel1, setRowSel1] = useState<RowSelection>(EMPTY_ROW_SELECTION);
   const [rowSel2, setRowSel2] = useState<RowSelection>(EMPTY_ROW_SELECTION);
 
+  /**
+   * Quick search — the same Ctrl+F filter `DataGrid` has, per pane.
+   *
+   * It filters the rows ALREADY IN MEMORY and never touches the database. That is the honest thing
+   * for this grid: a result set is whatever the statement returned, there is no `WHERE` to push a
+   * filter into (it may be a join, an aggregate or a `SELECT 1`), and re-running the statement to
+   * narrow it would put a second row in the history and could be arbitrarily expensive. It is also
+   * why the badge counts against the ROWS RETURNED and not against the table.
+   */
+  const [quickSearch1, setQuickSearch1] = useState('');
+  const [quickSearch2, setQuickSearch2] = useState('');
+  const [showQuickSearch1, setShowQuickSearch1] = useState(false);
+  const [showQuickSearch2, setShowQuickSearch2] = useState(false);
+  const quickSearchRef1 = useRef<HTMLInputElement>(null);
+  const quickSearchRef2 = useRef<HTMLInputElement>(null);
+
+  const quickSearchOf = (paneId: 1 | 2) => (paneId === 1 ? quickSearch1 : quickSearch2);
+  const setQuickSearchOf = (paneId: 1 | 2) => (paneId === 1 ? setQuickSearch1 : setQuickSearch2);
+  const setShowQuickSearchOf = (paneId: 1 | 2) => (paneId === 1 ? setShowQuickSearch1 : setShowQuickSearch2);
+
+  /**
+   * What the grid shows: sorted, then filtered.
+   *
+   * Every consumer of the sorted list moved here on purpose — paging, the Shift+click range, the
+   * Ctrl+C copy, the context menu's column copy. A copy that took the rows the search had hidden
+   * would be a copy of something not on screen, and a pager counting them would page past the end.
+   */
+  const visibleResults1 = React.useMemo(
+    () => filterRowsByQuery(sortedResults1, columns, quickSearch1),
+    [sortedResults1, columns, quickSearch1],
+  );
+  const visibleResults2 = React.useMemo(
+    () => filterRowsByQuery(sortedResults2, columns2, quickSearch2),
+    [sortedResults2, columns2, quickSearch2],
+  );
+
+  /**
+   * Column widths measured the moment quick search opens, so filtering cannot move them.
+   *
+   * `.grid-table` is `table-layout: auto`, i.e. every column is as wide as the widest cell CURRENTLY
+   * RENDERED. Hiding rows therefore re-lays out the whole grid on each keystroke — columns jump
+   * narrower, and the row-number column shrinks as 3-digit numbers drop out, which reads as the grid
+   * twitching under the text being typed. Filtering only ever removes rows, so the widths taken
+   * before the first keystroke are the widest the result will ever need: freezing them can only
+   * leave a column roomier than its content, never clip it.
+   *
+   * Carried with the `of` array the way `RowSelection` is — widths belong to one result set, and a
+   * new run must not be laid out to the old one's measurements. That also means no effect is needed
+   * to invalidate them.
+   */
+  const [frozenCols1, setFrozenCols1] = useState<{ of: any[]; widths: number[] } | null>(null);
+  const [frozenCols2, setFrozenCols2] = useState<{ of: any[]; widths: number[] } | null>(null);
+  const gridTableRef1 = useRef<HTMLTableElement>(null);
+  const gridTableRef2 = useRef<HTMLTableElement>(null);
+
+  const frozenColsOf = (paneId: 1 | 2): number[] | null => {
+    const frozen = paneId === 1 ? frozenCols1 : frozenCols2;
+    if (!frozen) return null;
+    return frozen.of === (paneId === 1 ? results : results2) ? frozen.widths : null;
+  };
+
+  /** Opens the bar and puts the caret in it; also the Ctrl+F handler, so the shortcut re-focuses an open one. */
+  const openQuickSearch = (paneId: 1 | 2) => {
+    // Measured BEFORE the bar renders, i.e. against the unfiltered grid. One read of the layout per
+    // open — not per keystroke.
+    const table = paneId === 1 ? gridTableRef1.current : gridTableRef2.current;
+    const heads = table ? Array.from(table.querySelectorAll('thead th')) : [];
+    if (heads.length > 0) {
+      const widths = heads.map((th) => Math.round(th.getBoundingClientRect().width));
+      (paneId === 1 ? setFrozenCols1 : setFrozenCols2)({
+        of: paneId === 1 ? results : results2,
+        widths,
+      });
+    }
+    setShowQuickSearchOf(paneId)(true);
+    // The input does not exist yet on the first open — it is rendered by this same state.
+    setTimeout(() => {
+      const el = paneId === 1 ? quickSearchRef1.current : quickSearchRef2.current;
+      el?.focus();
+      el?.select();
+    }, 30);
+  };
+
+  const closeQuickSearch = (paneId: 1 | 2) => {
+    setShowQuickSearchOf(paneId)(false);
+    setQuickSearchOf(paneId)('');
+    // Widths go back to the browser's own sizing: with every row on screen again, the measurements
+    // would only be a stale copy of what auto layout is about to compute anyway.
+    (paneId === 1 ? setFrozenCols1 : setFrozenCols2)(null);
+  };
+
   /** A pane's selection, empty as soon as that pane holds a different result set. */
   const rowSelectionOf = (paneId: 1 | 2): RowSelection => {
     const sel = paneId === 1 ? rowSel1 : rowSel2;
@@ -2211,7 +2304,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const selectedResultRows = (paneId: 1 | 2): any[] => {
     const sel = rowSelectionOf(paneId);
     if (sel.rows.size === 0) return [];
-    return (paneId === 1 ? sortedResults1 : sortedResults2).filter((r) => sel.rows.has(r));
+    return (paneId === 1 ? visibleResults1 : visibleResults2).filter((r) => sel.rows.has(r));
   };
 
   /**
@@ -2223,7 +2316,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     // Shift+click also drags the BROWSER's text selection across every row it spans, which reads
     // as a second highlight competing with the real one.
     if (e.shiftKey) window.getSelection()?.removeAllRanges();
-    const all = paneId === 1 ? sortedResults1 : sortedResults2;
+    const all = paneId === 1 ? visibleResults1 : visibleResults2;
     const next = resolveRowClick(all, rowSelectionOf(paneId), row, {
       shift: e.shiftKey,
       ctrl: e.ctrlKey || e.metaKey,
@@ -2245,6 +2338,14 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
    * rather than by a flag someone has to remember to check.
    */
   const handleResultGridKeyDown = (paneId: 1 | 2, e: React.KeyboardEvent) => {
+    // Ctrl+F opens quick search, the same binding the table grid uses. Container-scoped like the
+    // rest of this handler, which is also what keeps it out of Monaco's way: the editor has its own
+    // Ctrl+F (find in SQL), and the two never collide because only one of them can hold focus.
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
+      e.preventDefault();
+      openQuickSearch(paneId);
+      return;
+    }
     if (e.key === 'Escape') {
       if (rowSelectionOf(paneId).rows.size === 0) return;
       e.preventDefault();
@@ -2368,7 +2469,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     paneId: 1 | 2,
     col: string,
     as: 'values' | 'in' | 'json',
-    rows: any[] = paneId === 1 ? sortedResults1 : sortedResults2,
+    rows: any[] = paneId === 1 ? visibleResults1 : visibleResults2,
   ) => {
     if (as === 'in') {
       const result = buildInList(rows.map((r) => r[col]), dbType || 'mysql');
@@ -2458,7 +2559,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
 
   const copyResultAsMarkdown = (
     paneId: 1 | 2,
-    rows: any[] = paneId === 1 ? sortedResults1 : sortedResults2,
+    rows: any[] = paneId === 1 ? visibleResults1 : visibleResults2,
   ) => {
     const cols = paneId === 1 ? columns : columns2;
     if (rows.length === 0) return;
@@ -2797,11 +2898,17 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     const pSetActiveTabType = paneId === 1 ? setActiveTabType1 : setActiveTabType2;
 
     const activeResult = pAllResults[pActiveTabIndex] || { data: [], columns: [], affectedRows: 0, query: '' };
-    const totalPagesNum = Math.ceil(pResults.length / pPageSize) || 1;
     const pSortCol = paneId === 1 ? sortCol1 : sortCol2;
     const pSortDir = paneId === 1 ? sortDir1 : sortDir2;
-    const sortedResults = paneId === 1 ? sortedResults1 : sortedResults2;
+    const visibleResults = paneId === 1 ? visibleResults1 : visibleResults2;
     const pSelectedRows = rowSelectionOf(paneId).rows;
+    const pQuickSearch = quickSearchOf(paneId);
+    const pShowQuickSearch = paneId === 1 ? showQuickSearch1 : showQuickSearch2;
+    const pSearching = pQuickSearch.trim().length > 0;
+    const pFrozenCols = pShowQuickSearch ? frozenColsOf(paneId) : null;
+    // Paging counts the rows ON SCREEN, so a search that leaves three rows is one page of three and
+    // not page 1 of 100 with 97 of them unreachable.
+    const totalPagesNum = Math.ceil(visibleResults.length / pPageSize) || 1;
 
     const pEditability = editabilityInMode(activeResult.query || '', pColumns);
     const pTarget = pEditability.editable ? pEditability : null;
@@ -2912,6 +3019,22 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                 </button>
               </div>
 
+              {/* Quick search needs a button and not only Ctrl+F: the shortcut is scoped to the
+                  grid container, so it does nothing until the grid has been clicked, and a feature
+                  reachable only by a shortcut you must first know about is a feature nobody finds.
+                  Grid view only — the search filters ROWS, and the chart draws the whole result. */}
+              {pViewMode === 'grid' && pResults.length > 0 && (
+                <button
+                  type="button"
+                  className={`btn sql-view-btn ${pShowQuickSearch ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => (pShowQuickSearch ? closeQuickSearch(paneId) : openQuickSearch(paneId))}
+                  title={t('dataGrid.quickSearchTitle')}
+                >
+                  <Search size={12} />
+                  <span>{t('dataGrid.quickSearchBtn')}</span>
+                </button>
+              )}
+
               {pEditability.editable ? (
                 <span
                   className="sql-badge-editable"
@@ -2997,13 +3120,90 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                     title={t('sqlEditor.chartResultsTitle', 'Query Results Visualization')}
                   />
                 ) : (
+                  // A column, so the search bar can sit above the scrolling grid rather than
+                  // inside it — in the scroller it would slide away with the rows.
+                  <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                  {pShowQuickSearch && (
+                    // The bar reuses `.grid-quick-search-*` from DataGrid by selector, not by copy:
+                    // two search bars that drift apart read as two features.
+                    <div className="grid-quick-search-bar">
+                      <div className="grid-quick-search-left">
+                        <div className="grid-quick-search-wrap">
+                          <Search size={14} className="grid-quick-search-icon" />
+                          <input
+                            ref={paneId === 1 ? quickSearchRef1 : quickSearchRef2}
+                            type="text"
+                            className="grid-quick-search-input"
+                            placeholder={t('dataGrid.quickSearchPlaceholder')}
+                            value={pQuickSearch}
+                            onChange={(e) => {
+                              setQuickSearchOf(paneId)(e.target.value);
+                              // Back to page 1 on every keystroke: the page the user was on is a
+                              // position in the OLD row set and means nothing in the new one. Done
+                              // here rather than in an effect — this is an event, and an effect
+                              // setting state is what `react/set-state-in-effect` is about.
+                              pSetPage(1);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Escape') return;
+                              // Esc clears first and closes only when there is nothing to clear,
+                              // exactly as the table grid behaves.
+                              if (pQuickSearch) setQuickSearchOf(paneId)('');
+                              else closeQuickSearch(paneId);
+                            }}
+                          />
+                          <div className="grid-quick-search-actions">
+                            {pQuickSearch && (
+                              <button
+                                className="grid-quick-search-btn-clear"
+                                onClick={() => setQuickSearchOf(paneId)('')}
+                                title={t('dataGrid.quickSearchClear')}
+                                aria-label={t('dataGrid.quickSearchClear')}
+                              >
+                                <X size={13} />
+                              </button>
+                            )}
+                            {pSearching && (
+                              <span className={`grid-quick-search-badge ${visibleResults.length === 0 ? 'empty' : ''}`}>
+                                {visibleResults.length === 0
+                                  ? t('dataGrid.quickSearchNoMatches')
+                                  : t('dataGrid.quickSearchMatches', { matched: visibleResults.length, total: pResults.length })}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid-quick-search-right">
+                        <span className="grid-quick-search-kbd">{t('dataGrid.quickSearchEscKey')}</span>
+                        <button
+                          className="grid-quick-search-btn-close"
+                          onClick={() => closeQuickSearch(paneId)}
+                          title={t('dataGrid.quickSearchClose')}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <div
                     className="grid-table-container"
                     tabIndex={-1}
                     onKeyDown={(e) => handleResultGridKeyDown(paneId, e)}
-                    style={{ height: '100%' }}
+                    style={{ flex: 1, minHeight: 0 }}
                   >
-                    <table className="grid-table">
+                    <table className="grid-table" ref={paneId === 1 ? gridTableRef1 : gridTableRef2}>
+                      {/* Only while quick search is open. `<col>` is the one place a width applies
+                          to a whole column without touching every cell, and it maps 1:1 onto the
+                          header cells below — including the row-number one, whichever way
+                          `showRowNumbers` is set at measuring time. Keyed by position because a
+                          column IS its position here. */}
+                      {pFrozenCols && (
+                        <colgroup>
+                          {pFrozenCols.map((w, i) => (
+                            <col key={i} style={{ width: `${w}px` }} />
+                          ))}
+                        </colgroup>
+                      )}
                       <thead>
                         <tr>
                           {showRowNumbers && (
@@ -3059,7 +3259,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                         </tr>
                       </thead>
                       <tbody>
-                        {sortedResults.slice((pPage - 1) * pPageSize, pPage * pPageSize).map((row, index) => (
+                        {visibleResults.slice((pPage - 1) * pPageSize, pPage * pPageSize).map((row, index) => (
                           <tr
                             key={index}
                             className={pSelectedRows.has(row) ? 'selected' : undefined}
@@ -3210,7 +3410,14 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                                       value={cellVal}
                                       columnName={col}
                                       tableName={pTarget?.table}
-                                      fallbackText={String(cellVal)}
+                                      // `fallbackText` is a ReactNode, which is how the highlight
+                                      // gets in without MediaCellPreview knowing about searching —
+                                      // DataGrid passes its own marked-up text the same way.
+                                      fallbackText={
+                                        pSearching
+                                          ? <SearchHighlight text={String(cellVal)} query={pQuickSearch} />
+                                          : String(cellVal)
+                                      }
                                     />
                                   )}
                                 </td>
@@ -3220,6 +3427,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                         ))}
                       </tbody>
                     </table>
+                  </div>
                   </div>
                 )
               )}
@@ -3261,12 +3469,15 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
             {pResults.length > 0 && (
               <div className="pagination-controls" style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
                 <span style={{ fontSize: '11px', color: 'var(--win-text-secondary)', marginRight: '4px' }}>
+                  {/* Counts what is on screen. While a search is on, `total` is the number of
+                      MATCHING rows — the badge in the search bar is the one that says how many of
+                      the whole result that is, so the two numbers never contradict each other. */}
                   <Trans
                     i18nKey="sqlEditor.rowsRange"
                     values={{
-                      from: (pPage - 1) * pPageSize + 1,
-                      to: Math.min(pPage * pPageSize, pResults.length),
-                      total: pResults.length,
+                      from: visibleResults.length === 0 ? 0 : (pPage - 1) * pPageSize + 1,
+                      to: Math.min(pPage * pPageSize, visibleResults.length),
+                      total: visibleResults.length,
                     }}
                     components={{ strong: <b /> }}
                   />
@@ -3369,7 +3580,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   }, [
     results, columns, allResults, activeTabIndex, loading, hasRun, errorMsg, statusMsg,
     page, pageSize, showCopyDropdown, explainResult1, activeTabType1,
-    sortCol1, sortDir1, sortedResults1, rowSel1, cellEdits, editingCell, editValue, editMsg,
+    sortCol1, sortDir1, sortedResults1, visibleResults1, quickSearch1, showQuickSearch1, frozenCols1,
+    rowSel1, cellEdits, editingCell, editValue, editMsg,
     pane1ViewModes, showRowNumbers, autoFitColsPane1, userEditorHeight, dbType, locale, t
   ]);
 
@@ -3379,7 +3591,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   }, [
     results2, columns2, allResults2, activeTabIndex2, loading2, hasRun2, errorMsg2, statusMsg2,
     page2, pageSize2, showCopyDropdown2, explainResult2, activeTabType2,
-    sortCol2, sortDir2, sortedResults2, rowSel2, cellEdits, editingCell, editValue, editMsg,
+    sortCol2, sortDir2, sortedResults2, visibleResults2, quickSearch2, showQuickSearch2, frozenCols2,
+    rowSel2, cellEdits, editingCell, editValue, editMsg,
     pane2ViewModes, showRowNumbers, autoFitColsPane2, userEditorHeight2, dbType, locale, t
   ]);
 
