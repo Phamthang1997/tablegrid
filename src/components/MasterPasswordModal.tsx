@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
-import { KeyRound, ShieldCheck } from 'lucide-react';
+import { ChevronRight, KeyRound, ShieldCheck } from 'lucide-react';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { SECRET_FIELDS } from '../utils/secretFields';
@@ -38,6 +38,16 @@ export const MasterPasswordModal: React.FC<{ onClose: () => void }> = ({ onClose
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [askDisable, setAskDisable] = useState(false);
+  // The three change-password fields are collapsed by default. Expanded, they made the dialog taller
+  // than the window, so the state line and the two settings people actually come here for — remember
+  // on this device, lock after idle — sat above a scrollbar, and the footer buttons were cut off.
+  // Changing the master password is the rarest of the four things this dialog does.
+  const [changeOpen, setChangeOpen] = useState(false);
+  // Turning the vault off has its OWN password field, inside its confirmation. It used to borrow
+  // `oldPassword` from the change-password form, which is why "Turn off" was dead until you typed
+  // into a form for a different action — and with that form collapsed there is nothing to borrow.
+  const [disablePassword, setDisablePassword] = useState('');
+  const changeRef = useRef<HTMLDivElement | null>(null);
 
   // Locking closes this dialog, and this is the one place where the overlay's "keep everything
   // mounted" rule is exactly wrong. That rule exists so a lock cannot throw away the user's WORK —
@@ -52,6 +62,14 @@ export const MasterPasswordModal: React.FC<{ onClose: () => void }> = ({ onClose
     if (isVaultLocked(status)) onClose();
   }, [status, onClose]);
 
+  // Expanding the section adds three fields below the fold of `ModalBody`, so without this the
+  // dialog looks unchanged apart from a caret that turned. `block: 'end'` brings the last field and
+  // the footer's Change button into view together, which is the whole form.
+  useEffect(() => {
+    if (!changeOpen) return;
+    changeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [changeOpen]);
+
   // `() => unknown` rather than a promise-typed callback: every caller hands over an async vault
   // call, and `await` on its result is what runs it — the looser type costs nothing and keeps the
   // signature out of the way.
@@ -64,6 +82,8 @@ export const MasterPasswordModal: React.FC<{ onClose: () => void }> = ({ onClose
       setPassword('');
       setConfirm('');
       setOldPassword('');
+      setDisablePassword('');
+      setChangeOpen(false);
       setDone(message);
     } catch (err: any) {
       setError(String(err?.message || err));
@@ -92,8 +112,21 @@ export const MasterPasswordModal: React.FC<{ onClose: () => void }> = ({ onClose
 
   const handleDisable = () => {
     setAskDisable(false);
-    if (!oldPassword) return;
-    void run(() => disableVault(oldPassword), t('vault.disabledOk'));
+    if (!disablePassword) return;
+    void run(() => disableVault(disablePassword), t('vault.disabledOk'));
+  };
+
+  // Collapsing drops what was typed, for the reason the lock effect above gives: a half-typed master
+  // password must not sit in state waiting to be shown again.
+  const toggleChange = () => {
+    setChangeOpen((open) => {
+      if (open) {
+        setOldPassword('');
+        setPassword('');
+        setConfirm('');
+      }
+      return !open;
+    });
   };
 
   const handleRemember = (next: boolean) => {
@@ -196,34 +229,50 @@ export const MasterPasswordModal: React.FC<{ onClose: () => void }> = ({ onClose
 
             <div className="vault-sep" />
 
-            <label className="vault-field">
-              <span>{t('vault.currentPassword')}</span>
-              <input
-                type="password"
-                value={oldPassword}
-                disabled={busy}
-                onChange={(e) => setOldPassword(e.target.value)}
-              />
-            </label>
-            <label className="vault-field">
-              <span>{t('vault.newPassword')}</span>
-              <input
-                type="password"
-                value={password}
-                disabled={busy}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
-            <label className="vault-field">
-              <span>{t('vault.confirmPassword')}</span>
-              <input
-                type="password"
-                value={confirm}
-                disabled={busy}
-                onChange={(e) => setConfirm(e.target.value)}
-              />
-            </label>
-            {mismatch && <div className="vault-error">{t('vault.mismatch')}</div>}
+            <button
+              type="button"
+              className="vault-disclosure"
+              aria-expanded={changeOpen}
+              disabled={busy}
+              onClick={toggleChange}
+            >
+              <ChevronRight size={13} className={`vault-disclosure-caret${changeOpen ? ' is-open' : ''}`} />
+              <span>{t('vault.change')}</span>
+            </button>
+
+            {changeOpen && (
+              <div className="vault-change-fields" ref={changeRef}>
+                <label className="vault-field">
+                  <span>{t('vault.currentPassword')}</span>
+                  <input
+                    type="password"
+                    value={oldPassword}
+                    disabled={busy}
+                    autoFocus
+                    onChange={(e) => setOldPassword(e.target.value)}
+                  />
+                </label>
+                <label className="vault-field">
+                  <span>{t('vault.newPassword')}</span>
+                  <input
+                    type="password"
+                    value={password}
+                    disabled={busy}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </label>
+                <label className="vault-field">
+                  <span>{t('vault.confirmPassword')}</span>
+                  <input
+                    type="password"
+                    value={confirm}
+                    disabled={busy}
+                    onChange={(e) => setConfirm(e.target.value)}
+                  />
+                </label>
+                {mismatch && <div className="vault-error">{t('vault.mismatch')}</div>}
+              </div>
+            )}
           </>
         )}
 
@@ -236,21 +285,26 @@ export const MasterPasswordModal: React.FC<{ onClose: () => void }> = ({ onClose
           <>
             <button
               className="btn btn-secondary"
-              disabled={busy || !oldPassword}
-              onClick={() => setAskDisable(true)}
+              disabled={busy}
+              onClick={() => { setDisablePassword(''); setAskDisable(true); }}
             >
               {t('vault.disable')}
             </button>
             <button className="btn btn-secondary" disabled={busy} onClick={() => void lockVault()}>
               {t('vault.lockNow')}
             </button>
-            <button
-              className="btn btn-primary"
-              disabled={busy || !oldPassword || !password || mismatch}
-              onClick={handleChange}
-            >
-              {t('vault.change')}
-            </button>
+            {/* Only while the form it submits is open. A primary button standing over a collapsed
+                section would either do nothing or have to expand it, and a button whose meaning
+                changes with a state the user cannot see is worse than one that is not there. */}
+            {changeOpen && (
+              <button
+                className="btn btn-primary"
+                disabled={busy || !oldPassword || !password || mismatch}
+                onClick={handleChange}
+              >
+                {t('vault.change')}
+              </button>
+            )}
           </>
         ) : (
           <>
@@ -271,13 +325,27 @@ export const MasterPasswordModal: React.FC<{ onClose: () => void }> = ({ onClose
       <ConfirmDialog
         open={askDisable}
         title={t('vault.disableTitle')}
-        message={t('vault.disableMessage')}
+        message={
+          <>
+            <p style={{ margin: '0 0 10px' }}>{t('vault.disableMessage')}</p>
+            <label className="vault-field">
+              <span>{t('vault.currentPassword')}</span>
+              <input
+                type="password"
+                value={disablePassword}
+                autoFocus
+                onChange={(e) => setDisablePassword(e.target.value)}
+              />
+            </label>
+          </>
+        }
         note={t('vault.disableNote')}
         confirmLabel={t('vault.disable')}
+        confirmDisabled={!disablePassword}
         danger
         zIndex={10001}
         onConfirm={handleDisable}
-        onCancel={() => setAskDisable(false)}
+        onCancel={() => { setDisablePassword(''); setAskDisable(false); }}
       />
     </Modal>
   );

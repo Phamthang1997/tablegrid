@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import {
   Minus, Square, X, Plus, Unplug, FileCode, HardDriveDownload, HardDriveUpload,
   PanelLeft, SunMoon, RotateCw, Info, Keyboard, Check, Database,
-  GitBranch, PanelBottom, Bot, ChevronRight, ChevronLeft, BookOpen, Sparkles,
+  GitBranch, PanelBottom, Bot, ChevronRight, ChevronLeft, BookOpen, Sparkles, KeyRound,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -20,6 +20,7 @@ import type { ConnectionStatus } from '../utils/dbHelper';
 import type { ConnEnv } from '../utils/connEnv';
 import { CreateDatabaseModal } from './CreateDatabaseModal';
 import { ConfirmDialog } from './ConfirmDialog';
+import { isVaultLocked, lockVault, subscribeVault, vaultSnapshot } from '../utils/vault';
 
 /** Stable empty default for the `openConns` prop: a fresh `[]` each render breaks memoisation downstream. */
 const NO_CONNS: SwitcherConn[] = [];
@@ -115,6 +116,9 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onOpenCompare,
 }) => {
   const { t, i18n } = useTranslation();
+  // The vault store lives outside React (utils/vault.ts), so the bar can read it without the state
+  // being lifted into App and re-rendering every tab on a lock.
+  const vault = useSyncExternalStore(subscribeVault, vaultSnapshot);
   // Cascading menu: the root panel only lists category names; the items of a
   // category live in a submenu that opens to the right on hover.
   const [menuOpen, setMenuOpen] = useState(false);
@@ -654,8 +658,28 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         ),
       },
     ],
-    // Group 2: system utilities (Shortcuts and Reload)
+    // Group 2: system utilities (Lock the vault, Shortcuts and Reload)
     [
+      // "Lock now" lived only inside the Master Password dialog, which is only reachable from the
+      // Connection Manager — so the one moment locking is worth a click, while connected and about to
+      // step away, was the one moment it could not be done without disconnecting first. `offline` so
+      // the button does not disappear the moment the user goes back to the connection screen.
+      //
+      // `KeyRound`, the dialog's own icon, rather than a padlock: the padlock in the LEFT cluster is
+      // Safe Mode / read-only, and two padlocks in one bar is exactly the confusion SafeModeControl
+      // was built to end. Hidden entirely when there is no vault — nothing to lock — and while
+      // locked, where `LockScreen` covers the window anyway.
+      ...(vault.enabled && !isVaultLocked(vault)
+        ? [{
+            key: 'vault-lock',
+            offline: true,
+            el: (
+              <button className="tb-capsule-btn" onClick={() => void lockVault()} title={t('vault.lockNow')}>
+                <KeyRound size={13} />
+              </button>
+            ),
+          }]
+        : []),
       {
         key: 'shortcuts',
         offline: true,
@@ -694,10 +718,13 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       {/* Center Status Capsule: Merged Connection Info + Speed Status Pill into 1 single capsule */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0, justifyContent: 'center' }}>
         {hasConnection && (
+          // No `maxWidth` in the style below any more: it overrode the stylesheet's own cap with a
+          // bigger one, which is the kind of two-sources-of-truth that made the capsule wider than
+          // anyone had asked for. The cap lives in `.tb-status-capsule`.
           <button
             type="button"
             className="tb-status-capsule"
-            style={{ margin: 0, gap: '10px', justifyContent: 'center', maxWidth: '750px', padding: '0 14px' }}
+            style={{ margin: 0, gap: '10px', justifyContent: 'center', padding: '0 14px' }}
             onClick={handleOpenConnPopover}
             title={t('connInfo.openTitle')}
           >
@@ -713,7 +740,10 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                 }}
               />
             )}
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {/* `minWidth: 0` for the same reason the capsule has it: without it this flex item
+                refuses to go below its own min-content, so the text is clipped by the capsule's
+                `overflow: hidden` and the ellipsis never appears. */}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
               {statusLine}
             </span>
             <div style={{ height: '12px', width: '1px', background: 'var(--win-border)', opacity: 0.6, flexShrink: 0 }} />
