@@ -1049,23 +1049,26 @@ export const App: React.FC = () => {
     }
   }, [tabs, activeTabId, connection, activeConnConfig, activeConnIdState, queryCount, tabGroups]);
 
+  // The window is only resized on the way BACK to the Connection Manager, never on the way into a
+  // connection. `set_app_window_size` starts with `unmaximize()`, and this effect used to run on
+  // every identity change of `connection` — which is every DbRail switch, every quick-switcher
+  // database, every Postgres schema change and every Redis db index — so working in a maximized
+  // window and clicking another connection threw it back to a centered 1280x800.
+  //
+  // Keyed on the boolean rather than on `connection`, and the first run is skipped: a fresh window
+  // is already 1060x680 and centered (`tauri.conf.json`), so resizing at startup could only undo a
+  // maximize the user had just done.
+  const isConnected = !!connection;
+  const wasConnectedRef = React.useRef(isConnected);
   React.useEffect(() => {
-    const applyWindowSize = async () => {
-      try {
-        if (connection) {
-          // Connected to a database: widen the window to 1280 x 800px
-          await invoke('set_app_window_size', { width: 1280, height: 800 });
-        } else {
-          // The Connection Manager screen: shrink back to 1060 x 680px
-          await invoke('set_app_window_size', { width: 1060, height: 680 });
-        }
-      } catch (e) {
-        console.warn('Lỗi thay đổi kích thước cửa sổ qua Rust:', e);
-      }
-    };
-
-    applyWindowSize();
-  }, [connection]);
+    const wasConnected = wasConnectedRef.current;
+    wasConnectedRef.current = isConnected;
+    if (isConnected || !wasConnected) return;
+    // Back on the Connection Manager screen: shrink to 1060 x 680px.
+    invoke('set_app_window_size', { width: 1060, height: 680 }).catch((e) => {
+      console.warn('Lỗi thay đổi kích thước cửa sổ qua Rust:', e);
+    });
+  }, [isConnected]);
 
   // Restores a database's tabs (with the draft SQL inside them). The new key includes host:port so
   // two servers with a same-named database cannot collide; the old key is only ever READ, once, and
