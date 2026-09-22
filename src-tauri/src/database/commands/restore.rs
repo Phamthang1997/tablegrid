@@ -151,10 +151,25 @@ pub async fn restore_backup(
     // that is not in the file, a routine calling a function that does not exist yet, a data type this server does not know.
     // This mode rescues the part that can run, at the cost of atomicity.
     continue_on_error: Option<bool>,
+    // Replay EVERY statement of the dump, ignoring the `tables` filter.
+    //
+    // That filter exists for a dump the USER supplied: an .sql file of unknown provenance, where the
+    // only handle on "which tables" is a word-boundary match over the statement text. It is the wrong
+    // tool for a dump this app has just built from a chosen set of objects, and not merely redundant —
+    // `TableMatcher` cannot see a table's name in every statement that belongs to it. Postgres'
+    // `CREATE SEQUENCE IF NOT EXISTS film_film_id_seq;` contains no whole word `film` (an underscore
+    // is a word character), so filtering a generated dump drops the sequence, and the `CREATE TABLE
+    // film (… DEFAULT nextval('film_film_id_seq'))` right behind it then fails on a sequence that was
+    // never created.
+    //
+    // Used by the copy-database path, which passes an empty `tables`: the caller already decided what
+    // went into the dump, so a second filter can only subtract from it.
+    run_all: Option<bool>,
 ) -> Result<Value, String> {
     Box::pin(async move {
     let state = crate::state::require_state()?;
     let continue_on_error = continue_on_error.unwrap_or(false);
+    let run_all = run_all.unwrap_or(false);
     // Failing statements that were skipped: all of them are counted, but only the first few are kept to show the user.
     let mut failed_count: usize = 0;
     let mut failed_samples: Vec<Value> = Vec::new();
@@ -204,7 +219,7 @@ pub async fn restore_backup(
                 && let Some(db) = use_db_name(body) {
                     last_use_db = Some(db);
                 }
-        } else if !matcher.matches(&q) {
+        } else if !run_all && !matcher.matches(&q) {
             continue;
         }
         to_run.push((q, session_level));

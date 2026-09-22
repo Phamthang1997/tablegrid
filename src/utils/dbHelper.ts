@@ -1861,6 +1861,14 @@ export const dbHelper = {
     continueOnError?: boolean,
     /** The target connection, explicitly — the same reason as `generateData`: a background job can sit in the queue. */
     connId?: string,
+    /**
+     * Replay every statement, ignoring `tables` (which is then passed empty).
+     *
+     * Only for a dump this app built itself — see `run_all` in `restore_backup`. A user-supplied file
+     * must keep the filter: it is the only thing standing between "restore these four tables" and
+     * "replay the whole file".
+     */
+    runAll?: boolean,
   ): Promise<{
     success: boolean;
     statementsCount?: number;
@@ -1880,6 +1888,7 @@ export const dbHelper = {
         tables,
         onProgress: channel,
         continueOnError: !!continueOnError,
+        runAll: !!runAll,
       }, connId));
       return {
         success: !!res.success,

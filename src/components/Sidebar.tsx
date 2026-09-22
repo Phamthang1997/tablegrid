@@ -4,7 +4,7 @@ import { clampMenu, type MenuRect } from '../utils/menuPosition';
 import { dbHelper } from '../utils/dbHelper';
 import { isMariaDbVersion } from '../utils/serverFlavor';
 import type { TableItem, SchemaInfo, TriggerInfo, CheckConstraintInfo } from '../utils/dbHelper';
-import { Search, Table, TerminalSquare, RefreshCw, Layers, Plus, ChevronDown, ChevronRight, Braces, Cog, Key, Sliders, FileCode, Trash2, CheckCircle2, Copy, AlertTriangle, History, Bookmark, Columns3, ArrowDownAZ, Link2, Zap, Code2, Database, Sparkles, GitCompare, ArrowLeftRight, HardDriveDownload, HardDriveUpload, Plug, Network, Activity, Timer } from 'lucide-react';
+import { Search, Table, TerminalSquare, RefreshCw, Layers, Plus, ChevronDown, ChevronRight, Braces, Cog, Key, Sliders, FileCode, Trash2, CheckCircle2, Copy, AlertTriangle, History, Bookmark, Columns3, ArrowDownAZ, Link2, Zap, Code2, Database, Sparkles, GitCompare, ArrowLeftRight, HardDriveDownload, HardDriveUpload, DatabaseZap, Plug, Network, Activity, Timer } from 'lucide-react';
 import { CreateTableModal } from './CreateTableModal';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 import { RoutineEditorModal } from './RoutineEditorModal';
@@ -540,6 +540,8 @@ interface SidebarProps {
   onExportTable: (tableName: string) => void;
   onExportDatabase: () => void;
   onImportDatabase: () => void;
+  /** Copy this database into another OPEN connection of the same engine. */
+  onCopyDatabase?: () => void;
   /** Imports a CSV/JSON/XLSX file into a NEW table (unlike onImportDatabase, which restores a whole dump). */
   onImportNewTable?: () => void;
   onOpenDbInfo?: () => void;
@@ -586,6 +588,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onExportTable,
   onExportDatabase,
   onImportDatabase,
+  onCopyDatabase,
   onImportNewTable,
   onOpenDbInfo,
   onOpenProcessMonitor,
@@ -1639,9 +1642,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
           onClick: onImportDatabase,
           visible: true,
         },
+        {
+          id: 'copyDatabase',
+          label: t('sidebar.copyDatabase'),
+          icon: DatabaseZap,
+          colorClass: 'violet',
+          // Read-only refers to THIS connection, which is only the copy's default source; the guard
+          // that matters is on the target, and the dialog reads it off `list_connections`.
+          onClick: () => onCopyDatabase?.(),
+          visible: !!onCopyDatabase,
+        },
       ],
     },
-  ], [t, onNewQuery, onOpenTerminal, onOpenDbInfo, onOpenProcessMonitor, onSchemaMigration, onCompareDatabases, onOpenErDiagram, onMcpSettings, onGenerateData, onExportDatabase, onImportDatabase, blockedByReadOnly]);
+  ], [t, onNewQuery, onOpenTerminal, onOpenDbInfo, onOpenProcessMonitor, onSchemaMigration, onCompareDatabases, onOpenErDiagram, onMcpSettings, onGenerateData, onExportDatabase, onImportDatabase, onCopyDatabase, blockedByReadOnly]);
 
   return (
     <div className="sidebar-navigation" ref={rootRef} style={{ width: `${width}px` }}>
