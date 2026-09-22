@@ -17,7 +17,7 @@
 // (`title`, `result.message`, `progress.label`) arrives **already translated** from the call site,
 // the same rule `SafeModeRequest.detail` follows.
 
-export type JobKind = 'dump' | 'restore' | 'generate' | 'export-table' | 'redis-transfer';
+export type JobKind = 'dump' | 'restore' | 'generate' | 'export-table' | 'redis-transfer' | 'copy-db';
 
 /**
  * `queued` -> `running` -> one of `done` / `error` / `cancelled`. A job that is cancelled before it

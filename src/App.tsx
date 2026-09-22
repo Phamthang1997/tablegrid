@@ -58,6 +58,8 @@ import { ExportTableDialog } from './components/ExportTableDialog';
 import { ExportDatabaseDialog } from './components/ExportDatabaseDialog';
 import type { DatabaseExportOptions } from './components/ExportDatabaseDialog';
 import { ImportDatabaseDialog } from './components/ImportDatabaseDialog';
+import { CopyDatabaseDialog } from './components/CopyDatabaseDialog';
+import type { CopyDatabaseOptions } from './components/CopyDatabaseDialog';
 import { DocViewerModal } from './components/DocViewerModal';
 import { WhatsNewModal, WHATS_NEW_STORAGE_KEY, WHATS_NEW_AUTO_SHOW_KEY } from './components/WhatsNewModal';
 import { X } from 'lucide-react';
@@ -823,6 +825,110 @@ export const App: React.FC = () => {
       alert(t('app.errImport', { message: e.message }));
       return false;
     }
+  };
+
+  /**
+   * Copy one database into another of the same engine — the export half and the restore half wired
+   * straight together, with no file in between.
+   *
+   * **One job, not two.** The dump is a single string handed to `restore_backup`, so splitting the
+   * read and the write would only give the queue a chance to run something else against the target
+   * between them. It is a WRITE job keyed on the TARGET, which is what makes it exclusive with a
+   * restore or a data generation already running there while leaving the source free.
+   *
+   * Nothing here reads the ambient connection id: `dumpReaderFor` binds every read to the source and
+   * `restoreBackup` takes the target explicitly. That is the whole reason two connections can be in
+   * play at once, and it is also what keeps the job correct after it has sat in the queue — by the
+   * time it runs, the user may be looking at a third connection entirely.
+   */
+  const handleCopyDatabase = async (opts: CopyDatabaseOptions): Promise<boolean> => {
+    startJob({
+      kind: 'copy-db',
+      title: t('jobs.titleCopy', { from: opts.sourceLabel, to: opts.targetLabel }),
+      db: opts.targetDb,
+      write: true,
+      lockKey: `${opts.targetConnId}|${opts.targetDb}`,
+      run: async (ctx) => {
+        /**
+         * Close the connections the dialog opened for this copy — see `ownedConnIds`.
+         *
+         * In a `finally`, because a failed copy leaves exactly the same connections behind as a
+         * successful one. The active connection is skipped: the new database shows up in the rail
+         * while the job runs, and the user may well have clicked into it — closing what they are
+         * looking at to tidy up after ourselves would be worse than leaving it open.
+         */
+        const releaseOwned = async () => {
+          const ids = opts.ownedConnIds.filter((id) => id !== activeConnIdRef.current);
+          if (ids.length === 0) return;
+          await Promise.all(ids.map((id) => dbHelper.disconnect(id).catch(() => {})));
+        };
+
+        try {
+          // Phase 1 — read the source into a dump. The dump's own label ("Exporting table film…")
+          // becomes the detail line, so the phase stays legible while the table name keeps moving.
+          const sqlText = await buildDump({
+            dbType: opts.dbType,
+            tables: opts.tables,
+            views: opts.views,
+            routines: opts.routines,
+            triggers: opts.triggers,
+            events: opts.events,
+            sqlOptions: opts.sqlOptions,
+            // The SOURCE schema, exactly as the export path passes it: it is what the header names and
+            // therefore where the objects land on the target. The dialog warns when the two differ.
+            schema: opts.sourceSchema,
+            onProgress: (p) => ctx.report({
+              ...p,
+              label: t('copyDb.phaseRead', { n: opts.sourceLabel }),
+              detail: p.label,
+            }),
+          }, dumpReaderFor(dbHelper, opts.sourceConnId));
+          ctx.throwIfCancelled();
+
+          // Phase 2 — replay it onto the target. `runAll` with an empty `tables`: this dump was built
+          // from exactly the chosen objects, so `restore_backup`'s filter can only subtract from it —
+          // it cannot see `film` inside `CREATE SEQUENCE film_film_id_seq`, and dropping that statement
+          // makes the CREATE TABLE behind it fail on a sequence that was never created.
+          const toProgress = makeRestoreReporter(t);
+          const res = await dbHelper.restoreBackup(
+            sqlText,
+            [],
+            (msg) => ctx.report({ ...toProgress(msg), label: t('copyDb.phaseWrite', { n: opts.targetLabel }) }),
+            opts.continueOnError,
+            opts.targetConnId,
+            true,
+          );
+          if (!res.success) throw new Error(res.error || '');
+
+          // The TARGET's catalog changed. `invalidateCatalog` is global, but the event carries the id so
+          // only that connection's sidebar and grid refetch.
+          invalidateCatalog();
+          window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: opts.targetConnId } }));
+
+          const copied =
+            opts.tables.length + opts.routines.length + opts.triggers.length + opts.events.length;
+          // Skipped statements MUST be reported: a plain "done" while dozens are missing leaves the
+          // user believing the target is complete.
+          if (res.failedCount) {
+            return {
+              message: t('copyDb.partial', {
+                target: opts.targetLabel,
+                n: res.statementsCount || 0,
+                failed: res.failedCount,
+              }),
+              warning: (res.failedSamples || []).map((f) => `• ${f.error}`).join('\n'),
+            };
+          }
+          return { message: t('copyDb.done', { n: copied, target: opts.targetLabel }) };
+        } finally {
+          // The ONLY place they are released, so success, failure and cancellation all go through it
+          // once. It runs before the job settles, and the rail redraws on the event behind it.
+          await releaseOwned();
+          window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: '' } }));
+        }
+      },
+    });
+    return true;
   };
 
   /**
@@ -2029,6 +2135,25 @@ export const App: React.FC = () => {
     setActiveTabId(tabId);
   };
 
+  const handleOpenCopyDb = () => {
+    const tabId = `copy_db_${activeConnIdState}`;
+    const existing = visibleTabs.find((tb) => tb.id === tabId);
+    if (existing) {
+      setActiveTabId(tabId);
+      return;
+    }
+    const label = `Copy: ${connection?.dbName || 'Database'}`;
+    const newTab: TabInfo = {
+      id: tabId,
+      connId: activeConnIdState,
+      type: 'copy-db',
+      name: label,
+      label,
+    };
+    setTabs((prev) => [...prev, newTab]);
+    setActiveTabId(tabId);
+  };
+
   const handleOpenMcpServer = () => {
     const tabId = 'mcp_server';
     const existing = visibleTabs.find((tb) => tb.id === tabId);
@@ -2263,6 +2388,7 @@ export const App: React.FC = () => {
                 onExportTable={handleExportTableTrigger}
                 onExportDatabase={handleOpenExportDb}
                 onImportDatabase={handleOpenImportDb}
+                onCopyDatabase={handleOpenCopyDb}
                 onImportNewTable={() => { setGlobalImportTargetTable(null); setShowGlobalImportPicker(true); }}
                 onOpenDbInfo={() => handleOpenDbInfo('current')}
                 onOpenProcessMonitor={handleOpenProcessMonitor}
@@ -2463,6 +2589,14 @@ export const App: React.FC = () => {
                         asTab={true}
                         onClose={() => handleCloseTab(activeTab.id)}
                         onSubmit={handleImportDatabase}
+                      />
+                    ) : activeTab.type === 'copy-db' ? (
+                      <CopyDatabaseDialog
+                        key={activeConnIdState + '|' + activeTab.id}
+                        connId={activeTab.connId || activeConnIdState}
+                        asTab={true}
+                        onClose={() => handleCloseTab(activeTab.id)}
+                        onSubmit={handleCopyDatabase}
                       />
                     ) : activeTab.type === 'mcp-server' ? (
                       <McpServerSettingsModal

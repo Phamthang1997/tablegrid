@@ -44,6 +44,7 @@ export interface TabInfo {
     | 'db-info'
     | 'export-db'
     | 'import-db'
+    | 'copy-db'
     | 'mcp-server'
     | 'redis-key'
     | 'redis-console'

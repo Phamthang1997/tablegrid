@@ -322,6 +322,17 @@ export function registerConnection(connId: string, config?: DbConnectionConfig |
   if (connId && key) keyByConn.set(connId, key);
 }
 
+/**
+ * Which server a connection is on, as a `connKey` (`mysql:host:port`, or the normalized SQLite path).
+ *
+ * Read-only, and the only reason it is exported: `list_connections` returns an opaque `serverId`, so
+ * two connections both called `sakila` are indistinguishable in a picker without it. Never used to
+ * decide anything — `approveCommand` still resolves the key itself.
+ */
+export function serverKeyOf(connId: string): string | undefined {
+  return keyByConn.get(connId);
+}
+
 /** `open_database` mints a new id on the SAME server, so the mode carries over. */
 export function inheritConnection(fromConnId: string, toConnId: string): void {
   const key = keyByConn.get(fromConnId);

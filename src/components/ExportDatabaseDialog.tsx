@@ -4,6 +4,17 @@ import { FolderOpen } from 'lucide-react';
 import { dbHelper } from '../utils/dbHelper';
 import { getLastExportDir, pickExportFolder } from '../utils/fileSave';
 import { fileStamp, missingViewDeps, safeFileBase } from '../utils/exportHelper';
+import {
+  KIND_LABEL_KEY as LABEL_KEY,
+  KIND_ORDER,
+  buildDumpObjects,
+  isSqlOnlyKind,
+  keysWithTriggers as keysWithTriggersOf,
+  objKey,
+  splitSelection,
+  type DumpObj as ExportObj,
+  type DumpObjKind as ExportObjKind,
+} from '../utils/dumpObjects';
 import { Modal, ModalFooter } from './Modal';
 
 export type DatabaseExportFormat = 'sql' | 'json' | 'csv' | 'xlsx';
@@ -71,46 +82,9 @@ const labelStyle: React.CSSProperties = {
   marginBottom: '6px',
 };
 
-/**
- * One row of the selection list. It carries `kind` because a name is NOT enough to identify it: a
- * database can hold a table `payment` and a trigger `payment` at once, and each kind is written into
- * the dump differently (a table has data, a view only a definition, and routines and triggers need a
- * DELIMITER wrapper).
- */
-type ExportObjKind = 'table' | 'view' | 'function' | 'procedure' | 'trigger' | 'event';
-interface ExportObj {
-  name: string;
-  kind: ExportObjKind;
-  /** The trigger's owning table (present only when kind === 'trigger'). */
-  table?: string;
-}
-const objKey = (o: ExportObj) => `${o.kind}:${o.name}`;
-
-/** The small label next to a name; tables have none, since they are the default case. */
-const BADGE_KEY = {
-  view: 'exportDialog.viewBadge',
-  function: 'exportDialog.funcBadge',
-  procedure: 'exportDialog.procBadge',
-  trigger: 'exportDialog.triggerBadge',
-  event: 'exportDialog.eventBadge',
-} as const satisfies Record<Exclude<ExportObjKind, 'table'>, string>;
-
-/**
- * The order of the groups in the list, which is also the order they are written into the dump.
- *
- * The list is grouped rather than flat: a database the size of sakila has two dozen tables ahead of
- * everything else, so routines and triggers fall below the fold and the user assumes they are not
- * being exported. The summary line above the list exists for the same reason — it says how many of
- * each kind there are without any scrolling.
- */
-const KIND_ORDER = ['table', 'view', 'function', 'procedure', 'event', 'trigger'] as const;
-const LABEL_KEY = {
-  table: 'exportDialog.tableBadge',
-  ...BADGE_KEY,
-} as const satisfies Record<ExportObjKind, string>;
-
-// Routines and triggers can only go into .sql — the other formats are table data.
-const isSqlOnlyKind = (k: ExportObjKind) => k !== 'table' && k !== 'view';
+// The object model (kinds, keys, group order, the trigger-follows-table rule) lives in
+// `utils/dumpObjects.ts`: `CopyDatabaseDialog` builds the same list from the same three calls, and a
+// second copy of "what can go into a dump" would drift from this one silently.
 
 // Diacritics are stripped so table search ignores them (as the Sidebar's search box does).
 const COMBINING_MARKS = new RegExp('[\\u0300-\\u036f]', 'g');
@@ -166,15 +140,8 @@ export const ExportDatabaseDialog: React.FC<ExportDatabaseDialogProps> = ({ conn
         dbHelper.getAllTriggers(connId),
       ]);
       if (cancelled) return;
-      // Do not name the parameter `t` — that is the translation function.
       const viewSet = new Set(list.filter((item) => item.type === 'view').map((item) => item.name));
-      const all: ExportObj[] = [
-        ...list.map((item) => ({ name: item.name, kind: viewSet.has(item.name) ? ('view' as const) : ('table' as const) })),
-        ...dbObjs.functions.map((name) => ({ name, kind: 'function' as const })),
-        ...dbObjs.procedures.map((name) => ({ name, kind: 'procedure' as const })),
-        ...dbObjs.events.map((name) => ({ name, kind: 'event' as const })),
-        ...triggers.map((tr) => ({ name: tr.name, kind: 'trigger' as const, table: tr.table })),
-      ];
+      const all = buildDumpObjects(list, dbObjs, triggers);
       setObjects(all);
       setSelected(all.map(objKey));
       setTablesLoading(false);
@@ -212,23 +179,8 @@ export const ExportDatabaseDialog: React.FC<ExportDatabaseDialogProps> = ({ conn
     : listable;
   const allShownSelected = shown.length > 0 && shown.every((o) => selected.includes(objKey(o)));
 
-  /**
-   * A trigger follows its owning table.
-   *
-   * `mysqldump` exports triggers with their table by default, and it is what the user expects:
-   * clearing everything and ticking exactly one table has to put that table's triggers in the dump.
-   * Triggers still have rows of their own so they can be unticked individually, but acting on a table
-   * carries them along.
-   */
-  const triggerKeysOf = (tableName: string) =>
-    objects
-      .filter((o) => o.kind === 'trigger' && (o.table || '').toLowerCase() === tableName.toLowerCase())
-      .map(objKey);
-
-  const keysWithTriggers = (items: ExportObj[]) => [
-    ...items.map(objKey),
-    ...items.filter((o) => o.kind === 'table').flatMap((o) => triggerKeysOf(o.name)),
-  ];
+  // Acting on a table carries its triggers along — see `keysWithTriggers` in `utils/dumpObjects.ts`.
+  const keysWithTriggers = (items: ExportObj[]) => keysWithTriggersOf(objects, items);
 
   const toggleAllShown = () => {
     const keys = keysWithTriggers(shown);
@@ -297,13 +249,7 @@ export const ExportDatabaseDialog: React.FC<ExportDatabaseDialogProps> = ({ conn
       const ok = await onSubmit({
         format,
         // The old contract is kept: `tables` includes the views, and `views` merely marks which are views.
-        tables: chosen.filter((o) => o.kind === 'table' || o.kind === 'view').map((o) => o.name),
-        views: chosen.filter((o) => o.kind === 'view').map((o) => o.name),
-        routines: chosen
-          .filter((o): o is ExportObj & { kind: 'function' | 'procedure' } => o.kind === 'function' || o.kind === 'procedure')
-          .map((o) => ({ name: o.name, kind: o.kind })),
-        triggers: chosen.filter((o) => o.kind === 'trigger').map((o) => o.name),
-        events: chosen.filter((o) => o.kind === 'event').map((o) => o.name),
+        ...splitSelection(chosen),
         filename: effectiveFilename.trim() || suggestedName,
         sqlOptions: { dropTable, includeStructure, includeContent },
         compressGzip,
