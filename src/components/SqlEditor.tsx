@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import ReactDOM from 'react-dom';
 import { Trans, useTranslation } from 'react-i18next';
 import * as monaco from 'monaco-editor';
 import Editor from '@monaco-editor/react';
@@ -7,7 +6,8 @@ import Editor from '@monaco-editor/react';
 // Worker factory + loader binding, shared with the Redis console (see the module's header).
 import '../sql/monacoSetup';
 import { setupSqlCompletion, langIdForDbType, LANG_IDS } from '../sql/sqlLanguage';
-import { clampMenu, type MenuRect } from '../utils/menuPosition';
+import { GridContextMenu, MenuHeading, MenuItem, MenuSeparator, MenuSub } from './GridContextMenu';
+import { ColumnStatsDialog, TransposeDialog, ValueEditorDialog } from './GridToolDialogs';
 import { resolveRowClick, resolveRowContextMenu } from '../utils/rowSelection';
 import {
   buildCsvRows,
@@ -2401,28 +2401,19 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
      * not statements: without a table and a key there is nothing honest to offer.
      */
     target?: { table: string; primaryKey: string; columns: string[] } | null;
+    /** Cell menus only: what the value editor needs to write the cell back into `cellEdits`. */
+    cell?: { rowKey: string; original: unknown; canEdit: boolean; readOnlyReason?: string };
   } | null>(null);
 
   const menuSelectedRows = resultMenu ? rowSelectionOf(resultMenu.pane).rows.size : 0;
 
-  /**
-   * Where the menu actually goes, once it is kept inside the window.
-   *
-   * The height is computed from the sections it will show rather than measured: unlike the table
-   * grid's menu, which grows a row per foreign key and media column it finds, this one has only
-   * two shapes. Measuring it with a ref would cost a second render before the menu could appear.
-   */
-  const resultMenuAt: MenuRect | null = resultMenu
-    ? clampMenu(
-        resultMenu.x,
-        resultMenu.y,
-        280,
-        (menuSelectedRows > 0 ? (resultMenu.target ? 610 : 520) : 320) -
-          (resultMenu.value === undefined ? 46 : 0),
-        window.innerWidth,
-        window.innerHeight,
-      )
-    : null;
+  // The tools the result menu opens (GridToolDialogs.tsx), shared with the table grid.
+  const [resultValueEditor, setResultValueEditor] = useState<{
+    pane: 1 | 2; col: string; value: unknown;
+    cell?: { rowKey: string; original: unknown; canEdit: boolean; readOnlyReason?: string };
+  } | null>(null);
+  const [resultStats, setResultStats] = useState<{ column: string; values: unknown[]; scope: string } | null>(null);
+  const [resultTranspose, setResultTranspose] = useState<{ columns: string[]; rows: any[] } | null>(null);
 
   useEffect(() => {
     if (!showCopyDropdown && !showCopyDropdown2) return;
@@ -2807,17 +2798,22 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     }
     if (!editingCell) return;
     const { pane, rowKey, col } = editingCell;
+    applyResultCellValue(pane, rowKey, col, original, editValue);
+    setEditingCell(null);
+  };
+
+  /** One cell into `cellEdits` — shared by the inline editor and the value editor. */
+  const applyResultCellValue = (pane: 1 | 2, rowKey: string, col: string, original: unknown, text: string) => {
     setCellEdits(prev => {
       const paneEdits = { ...prev[pane] };
       const rowEdits = { ...paneEdits[rowKey] };
       // Typed back to the original value -> drop it, so the Save button never counts a no-op.
-      if (String(original ?? '') === editValue) delete rowEdits[col];
-      else rowEdits[col] = editValue;
+      if (String(original ?? '') === text) delete rowEdits[col];
+      else rowEdits[col] = text;
       if (Object.keys(rowEdits).length === 0) delete paneEdits[rowKey];
       else paneEdits[rowKey] = rowEdits;
       return { ...prev, [pane]: paneEdits };
     });
-    setEditingCell(null);
   };
 
   const discardEdits = (pane: 1 | 2) => {
@@ -3299,7 +3295,21 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                                     e.preventDefault();
                                     e.stopPropagation();
                                     selectResultRowForMenu(paneId, row);
-                                    setResultMenu({ pane: paneId, x: e.clientX, y: e.clientY, col, value: cellVal, target: pTarget });
+                                    setResultMenu({
+                                      pane: paneId, x: e.clientX, y: e.clientY, col, value: cellVal, target: pTarget,
+                                      cell: {
+                                        rowKey,
+                                        original: row[col],
+                                        canEdit,
+                                        readOnlyReason: canEdit
+                                          ? undefined
+                                          : pTarget
+                                            ? t('sqlEditor.editColumnReadOnly', { table: pTarget.table })
+                                            : !pEditability.editable
+                                              ? notEditableLabel(pEditability.reason, pEditability.table)
+                                              : undefined,
+                                      },
+                                    });
                                   }}
                                 >
                                   {isEditing ? (
@@ -4158,183 +4168,129 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
         is the one parent immune to that, which is why DataGrid keeps its own menu at the top level
         as well. One instance covers both panes: `resultMenu.pane` says which one opened it.
       */}
-      {resultMenu && typeof document !== 'undefined' &&
-        ReactDOM.createPortal(
-          <div className="grid-context-menu" onClick={(e) => e.stopPropagation()} style={resultMenuAt ?? undefined}>
-            <div className="context-menu-heading">
-              {resultMenu.value === undefined
-                ? t('sqlEditor.ctxResultColumn', { col: resultMenu.col })
-                : t('sqlEditor.ctxResultCell', { col: resultMenu.col })}
-            </div>
-            {resultMenu.value !== undefined && (
-              <button
-                className="context-menu-item"
-                onClick={() => {
-                  const rm = resultMenu;
-                  setResultMenu(null);
-                  copyResultCell(rm.pane, rm.value);
-                }}
-              >
-                <span>📄</span> {t('sqlEditor.ctxCopyCellValue')}
-              </button>
-            )}
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                copyResultColumnAs(rm.pane, rm.col, 'values');
-              }}
-            >
-              <span>📋</span> {t('sqlEditor.ctxCopyColumnValues', { col: resultMenu.col })}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                copyResultColumnAs(rm.pane, rm.col, 'in');
-              }}
-            >
-              <span>🔢</span> {t('sqlEditor.ctxCopyColumnIn', { col: resultMenu.col })}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                copyResultColumnAs(rm.pane, rm.col, 'json');
-              }}
-            >
-              <span>📦</span> {t('sqlEditor.ctxCopyColumnJson', { col: resultMenu.col })}
-            </button>
-            {menuSelectedRows > 0 && (
+      {resultMenu && (() => {
+        const rm = resultMenu;
+        const pane = rm.pane;
+        const cols = pane === 1 ? columns : columns2;
+        const onSelection = menuSelectedRows > 1;
+        return (
+          <GridContextMenu x={rm.x} y={rm.y} onClose={() => setResultMenu(null)}>
+            {rm.value !== undefined && (
               <>
-                <div className="context-menu-heading">
-                  {t('sqlEditor.ctxResultRows', { n: menuSelectedRows })}
-                </div>
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const rm = resultMenu;
-                    setResultMenu(null);
-                    copyResultColumnAs(rm.pane, rm.col, 'in', selectedResultRows(rm.pane));
-                  }}
-                >
-                  <span>🔢</span> {t('sqlEditor.ctxCopyRowsIn', { col: resultMenu.col })}
-                </button>
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const rm = resultMenu;
-                    setResultMenu(null);
-                    copySelectedRowsAs(rm.pane, 'tsv');
-                  }}
-                >
-                  <span>📋</span> {t('sqlEditor.ctxCopyRowsTsv')}
-                </button>
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const rm = resultMenu;
-                    setResultMenu(null);
-                    copyResultAsMarkdown(rm.pane, selectedResultRows(rm.pane));
-                  }}
-                >
-                  <span>📝</span> {t('sqlEditor.ctxCopyRowsMarkdown')}
-                </button>
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const rm = resultMenu;
-                    setResultMenu(null);
-                    copySelectedRowsAs(rm.pane, 'csv');
-                  }}
-                >
-                  <span>📊</span> {t('sqlEditor.ctxCopyRowsCsv')}
-                </button>
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const rm = resultMenu;
-                    setResultMenu(null);
-                    copySelectedRowsAs(rm.pane, 'json');
-                  }}
-                >
-                  <span>📦</span> {t('sqlEditor.ctxCopyRowsJson')}
-                </button>
-                {resultMenu.target && (
-                  <>
-                    <button
-                      className="context-menu-item"
-                      onClick={() => {
-                        const rm = resultMenu;
-                        setResultMenu(null);
-                        if (rm.target) copySelectedRowsAsSql(rm.pane, rm.target, 'insert');
-                      }}
-                    >
-                      <span>🗄</span> SQL INSERT
-                    </button>
-                    <button
-                      className="context-menu-item"
-                      onClick={() => {
-                        const rm = resultMenu;
-                        setResultMenu(null);
-                        if (rm.target) copySelectedRowsAsSql(rm.pane, rm.target, 'update');
-                      }}
-                    >
-                      <span>✏️</span> {t('sqlEditor.ctxCopyRowsUpdate')}
-                    </button>
-                  </>
-                )}
+                <MenuHeading>{t('sqlEditor.ctxResultCell', { col: rm.col })}</MenuHeading>
+                <MenuItem
+                  icon="📝"
+                  label={t('gridTools.openValueEditor')}
+                  onSelect={() => setResultValueEditor({ pane, col: rm.col, value: rm.value, cell: rm.cell })}
+                />
+                <MenuItem icon="📄" label={t('sqlEditor.ctxCopyCellValue')} onSelect={() => copyResultCell(pane, rm.value)} />
               </>
             )}
-            <div className="context-menu-heading">
-              {t('sqlEditor.ctxResultAll')}
-            </div>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                handleCopyAs('table', rm.pane);
+
+            <MenuHeading>{t('sqlEditor.ctxResultColumn', { col: rm.col })}</MenuHeading>
+            <MenuItem
+              icon="↑"
+              label={t('dataGrid.ctxAsc')}
+              onSelect={() => { (pane === 1 ? setSortCol1 : setSortCol2)(rm.col); (pane === 1 ? setSortDir1 : setSortDir2)('asc'); }}
+            />
+            <MenuItem
+              icon="↓"
+              label={t('dataGrid.ctxDesc')}
+              onSelect={() => { (pane === 1 ? setSortCol1 : setSortCol2)(rm.col); (pane === 1 ? setSortDir1 : setSortDir2)('desc'); }}
+            />
+            <MenuItem
+              icon="Σ"
+              label={t('gridTools.columnStats')}
+              onSelect={() => {
+                // The WHOLE result, not the page on screen: this grid holds every row in memory.
+                const source = onSelection ? selectedResultRows(pane) : (pane === 1 ? visibleResults1 : visibleResults2);
+                setResultStats({
+                  column: rm.col,
+                  values: source.map((r) => r[rm.col]),
+                  scope: onSelection
+                    ? t('gridTools.scopeSelected', { n: source.length })
+                    : t('gridTools.scopeResult', { n: source.length }),
+                });
               }}
-            >
-              <span>📋</span> {t('sqlEditor.copyAsTable')}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                handleCopyAs('object', rm.pane);
-              }}
-            >
-              <span>📦</span> {t('sqlEditor.copyAsJsonObject')}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                handleCopyAs('array', rm.pane);
-              }}
-            >
-              <span>📦</span> {t('sqlEditor.copyAsJsonArray')}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                copyResultAsMarkdown(rm.pane);
-              }}
-            >
-              <span>📝</span> {t('sqlEditor.ctxCopyMarkdown')}
-            </button>
-          </div>,
-          document.body,
-        )}
+            />
+            <MenuSub icon="📋" label={t('gridTools.copyColumn')}>
+              <MenuItem icon="📋" label={t('gridTools.columnValues')} onSelect={() => copyResultColumnAs(pane, rm.col, 'values')} />
+              <MenuItem icon="🔢" label={t('dataGrid.ctxCopyInListColumn')} onSelect={() => copyResultColumnAs(pane, rm.col, 'in')} />
+              <MenuItem icon="📦" label={t('dataGrid.ctxJsonValues')} onSelect={() => copyResultColumnAs(pane, rm.col, 'json')} />
+              {menuSelectedRows > 0 && (
+                <MenuItem
+                  icon="🔢"
+                  label={t('sqlEditor.ctxCopyRowsIn', { col: rm.col })}
+                  onSelect={() => copyResultColumnAs(pane, rm.col, 'in', selectedResultRows(pane))}
+                />
+              )}
+            </MenuSub>
+
+            {menuSelectedRows > 0 && (
+              <>
+                <MenuHeading>{t('sqlEditor.ctxResultRows', { n: menuSelectedRows })}</MenuHeading>
+                <MenuItem
+                  icon="⇄"
+                  label={menuSelectedRows > 1 ? t('gridTools.transposeN', { n: menuSelectedRows }) : t('gridTools.transpose')}
+                  onSelect={() => setResultTranspose({ columns: cols, rows: selectedResultRows(pane) })}
+                />
+                <MenuSub icon="📋" label={t('gridTools.copyAs')}>
+                  <MenuItem icon="📋" label={t('dataGrid.ctxCopyTsv')} hint="Ctrl+C" onSelect={() => copySelectedRowsAs(pane, 'tsv')} />
+                  <MenuItem icon="📊" label={t('dataGrid.ctxCsvHeader')} onSelect={() => copySelectedRowsAs(pane, 'csv')} />
+                  <MenuItem icon="📝" label={t('sqlEditor.ctxCopyMarkdown')} onSelect={() => copyResultAsMarkdown(pane, selectedResultRows(pane))} />
+                  <MenuItem icon="📦" label={t('dataGrid.ctxJsonObjects')} onSelect={() => copySelectedRowsAs(pane, 'json')} />
+                  {rm.target && (
+                    <>
+                      <MenuItem icon="🗄" label="SQL INSERT" onSelect={() => { if (rm.target) copySelectedRowsAsSql(pane, rm.target, 'insert'); }} />
+                      <MenuItem icon="✏️" label={t('sqlEditor.ctxCopyRowsUpdate')} onSelect={() => { if (rm.target) copySelectedRowsAsSql(pane, rm.target, 'update'); }} />
+                    </>
+                  )}
+                </MenuSub>
+              </>
+            )}
+
+            <MenuSeparator />
+            <MenuSub icon="📋" label={t('gridTools.copyResultAs')}>
+              <MenuItem icon="📋" label={t('sqlEditor.copyAsTable')} onSelect={() => handleCopyAs('table', pane)} />
+              <MenuItem icon="📦" label={t('sqlEditor.copyAsJsonObject')} onSelect={() => handleCopyAs('object', pane)} />
+              <MenuItem icon="📦" label={t('sqlEditor.copyAsJsonArray')} onSelect={() => handleCopyAs('array', pane)} />
+              <MenuItem icon="📝" label={t('sqlEditor.ctxCopyMarkdown')} onSelect={() => copyResultAsMarkdown(pane)} />
+            </MenuSub>
+          </GridContextMenu>
+        );
+      })()}
+
+      {resultValueEditor && (
+        <ValueEditorDialog
+          column={resultValueEditor.col}
+          value={resultValueEditor.value}
+          onApply={
+            resultValueEditor.cell?.canEdit
+              ? (text) => {
+                  const ve = resultValueEditor;
+                  if (ve.cell) applyResultCellValue(ve.pane, ve.cell.rowKey, ve.col, ve.cell.original, text);
+                }
+              : undefined
+          }
+          readOnlyReason={resultValueEditor.cell?.readOnlyReason}
+          onClose={() => setResultValueEditor(null)}
+        />
+      )}
+      {resultStats && (
+        <ColumnStatsDialog
+          column={resultStats.column}
+          values={resultStats.values}
+          scope={resultStats.scope}
+          onClose={() => setResultStats(null)}
+        />
+      )}
+      {resultTranspose && (
+        <TransposeDialog
+          columns={resultTranspose.columns}
+          rows={resultTranspose.rows}
+          onClose={() => setResultTranspose(null)}
+        />
+      )}
     </div>
   );
 };
