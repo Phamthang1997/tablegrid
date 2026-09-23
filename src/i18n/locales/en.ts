@@ -1332,6 +1332,7 @@ const en = {
     cmplKeyword: 'Keyword',
     cmplSqlFunction: 'SQL function ({{engine}})',
     cmplSnippet: 'Snippet',
+    cmplLiveTemplate: '**Live template** — Tab expands it, Tab again moves to the next field.',
     cmplJoinCondition: 'JOIN condition (FK)',
     cmplJoinsOn: 'joins on {{cond}}',
     cmplAllColumns: 'All columns',
@@ -3263,6 +3264,16 @@ const en = {
     editorReadOnly: 'The grid is read-only.',
     apply: 'Apply',
     applyHint: 'Ctrl+Enter',
+  },
+
+  liveTemplates: {
+    category: 'Live templates',
+    abbrLabel: 'Abbreviation (live template)',
+    abbrPlaceholder: 'e.g. selact',
+    abbrHelp: 'Optional. Type it in the editor and press Tab to expand. ${1:label} marks a field Tab moves through; $1 and $$ stay as written.',
+    abbrInvalid: 'Letters, digits and _ only, starting with a letter (max 24).',
+    abbrTaken: '"{{abbr}}" is already used by another of your snippets.',
+    abbrBadgeTitle: 'Type "{{abbr}}" in the editor and press Tab',
   },
 
   tableProperties: {

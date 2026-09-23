@@ -1313,6 +1313,7 @@ const ja: typeof en = {
     cmplKeyword: 'キーワード',
     cmplSqlFunction: 'SQL 関数 ({{engine}})',
     cmplSnippet: 'スニペット',
+    cmplLiveTemplate: '**ライブテンプレート** — Tab で展開し、もう一度 Tab で次の入力欄へ移動します。',
     cmplJoinCondition: 'JOIN 条件 (FK)',
     cmplJoinsOn: '結合可: {{cond}}',
     cmplAllColumns: 'すべての列',
@@ -3227,6 +3228,16 @@ const ja: typeof en = {
     editorReadOnly: 'グリッドは読み取り専用です。',
     apply: '適用',
     applyHint: 'Ctrl+Enter',
+  },
+
+  liveTemplates: {
+    category: 'ライブテンプレート',
+    abbrLabel: '省略形（ライブテンプレート）',
+    abbrPlaceholder: '例: selact',
+    abbrHelp: '任意。エディターで入力して Tab を押すと展開されます。${1:ラベル} は Tab で移動する入力欄になり、$1 や $$ はそのまま残ります。',
+    abbrInvalid: '英字・数字・_ のみ、英字で始まる 24 文字以内。',
+    abbrTaken: '「{{abbr}}」は別のスニペットで使われています。',
+    abbrBadgeTitle: 'エディターで「{{abbr}}」と入力して Tab',
   },
 
   tableProperties: {

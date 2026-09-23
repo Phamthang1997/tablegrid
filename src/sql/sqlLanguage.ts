@@ -13,6 +13,7 @@ import { editorConnId } from './editorScope';
 import { buildJoinConditions } from './joinConditions';
 import { collectTableRefs, statementAt, valuePosition } from './statements';
 import { bumpUsage, rankSort } from './usageStats';
+import { atStatementStart, readCustomSnippets, snippetPreview, templatesFor } from './liveTemplates';
 import { getDoc, formatDocMarkdown } from '../utils/docsService';
 import { enumValues, typeFamily } from '../utils/columnType';
 import i18n from '../i18n';
@@ -108,6 +109,31 @@ const completionService: CompletionService = async (model, position, _ctx, sugge
       filterText: `${sn.prefix} ${sn.label}`,
       sortText: 'z_' + sn.prefix,
     });
+  }
+
+  // 2a) Live templates (liveTemplates.ts): an abbreviation + Tab expands into a statement with tab
+  // stops. Tier '3t' sits above the keywords, so `sel` offers the template before SELECT, and
+  // below columns/tables so a template never outranks a name from the catalog. Skipped after
+  // `alias.`, where only a column can follow.
+  const lineBefore = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
+  if (!/[\w$"`\]]\.\w*$/.test(lineBefore)) {
+    const beforeCaret = model.getValueInRange({
+      startLineNumber: 1, startColumn: 1, endLineNumber: position.lineNumber, endColumn: position.column,
+    });
+    for (const tpl of templatesFor(langId, readCustomSnippets(), atStatementStart(beforeCaret))) {
+      const preview = snippetPreview(tpl.body);
+      items.push({
+        label: tpl.abbr,
+        kind: monaco.languages.CompletionItemKind.Snippet,
+        // The user's name for their own template; for a built-in, its first line says it best.
+        detail: tpl.name || preview.split('\n')[0],
+        documentation: { value: [i18n.t('sqlEditor.cmplLiveTemplate'), '', '```sql', preview, '```'].join('\n') },
+        insertText: tpl.body,
+        insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+        filterText: tpl.abbr,
+        sortText: '3t_' + tpl.abbr.toLowerCase(),
+      });
+    }
   }
 
   // 2) Table aliases and scoped tables.

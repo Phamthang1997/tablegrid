@@ -1316,6 +1316,7 @@ const vi: typeof en = {
     cmplKeyword: 'Từ khoá',
     cmplSqlFunction: 'Hàm SQL ({{engine}})',
     cmplSnippet: 'Mẫu câu',
+    cmplLiveTemplate: '**Mẫu viết tắt** — Tab để mở rộng, Tab tiếp để sang ô kế tiếp.',
     cmplJoinCondition: 'Điều kiện JOIN (FK)',
     cmplJoinsOn: 'nối được: {{cond}}',
     cmplAllColumns: 'Tất cả các cột',
@@ -3233,6 +3234,16 @@ const vi: typeof en = {
     editorReadOnly: 'Lưới đang ở chế độ chỉ đọc.',
     apply: 'Áp dụng',
     applyHint: 'Ctrl+Enter',
+  },
+
+  liveTemplates: {
+    category: 'Mẫu viết tắt',
+    abbrLabel: 'Viết tắt (live template)',
+    abbrPlaceholder: 'vd: selact',
+    abbrHelp: 'Không bắt buộc. Gõ nó trong editor rồi nhấn Tab để mở rộng. ${1:nhãn} đánh dấu ô mà Tab sẽ đi qua; $1 và $$ giữ nguyên như đã viết.',
+    abbrInvalid: 'Chỉ chữ, số và _, bắt đầu bằng chữ (tối đa 24 ký tự).',
+    abbrTaken: '"{{abbr}}" đã được một snippet khác của bạn dùng.',
+    abbrBadgeTitle: 'Gõ "{{abbr}}" trong editor rồi nhấn Tab',
   },
 
   tableProperties: {

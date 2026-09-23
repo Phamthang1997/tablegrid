@@ -310,10 +310,20 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const [showSnippetPanel, setShowSnippetPanel] = useState<boolean>(false);
   const editorRef2 = useRef<any>(null);
 
-  const insertSnippetAtCursor = (template: string, targetPaneId?: 1 | 2) => {
+  const insertSnippetAtCursor = (template: string, asSnippet = false, targetPaneId?: 1 | 2) => {
     const activePane = targetPaneId || focusedEditor || 1;
     const ed = activePane === 1 ? editorRef.current : editorRef2.current;
     if (!ed) return;
+
+    // Snippet syntax goes through Monaco's snippet controller, which turns `${1:table}` into a tab
+    // stop — the same expansion a live template gets from completion. Plain SQL keeps the plain
+    // edit, so a `$1` in a docs example is inserted as written.
+    const snippets = asSnippet ? ed.getContribution('snippetController2') : null;
+    if (snippets && typeof snippets.insert === 'function') {
+      ed.focus();
+      snippets.insert(template);
+      return;
+    }
 
     const selection = ed.getSelection();
     if (selection) {
@@ -3734,7 +3744,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       {showSnippetPanel && (
         <SqlSnippetPanel
           dbType={dbType}
-          onInsertSnippet={(template) => insertSnippetAtCursor(template)}
+          onInsertSnippet={(template, asSnippet) => insertSnippetAtCursor(template, asSnippet)}
           onClose={() => setShowSnippetPanel(false)}
         />
       )}
