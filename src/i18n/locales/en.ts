@@ -1132,6 +1132,7 @@ const en = {
     actionBeautify: 'Beautify SQL',
     actionMinify: 'Minify SQL to one line',
     actionSplitVertical: 'Split vertically (left / right)',
+    actionSplitHorizontal: 'Split horizontally (top / bottom)',
     actionSinglePane: 'Single pane',
     actionExplain: 'EXPLAIN plan',
     actionOpenTable: 'Open the table under the cursor (F12 / Ctrl+B)',
@@ -1204,8 +1205,10 @@ const en = {
     paramOptions: 'Parameter options...',
     paramsOn: 'Query parameters: on',
     paramsConfigure: 'Configure query parameters',
+    splitPanesHeading: 'Split panes',
     singlePane: 'Single pane',
     splitVertical: 'Split vertically (left / right)',
+    splitHorizontal: 'Split horizontally (top / bottom)',
     historyTitle: 'History & saved statements',
     history: 'History',
 

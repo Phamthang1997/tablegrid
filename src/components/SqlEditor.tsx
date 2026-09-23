@@ -1036,7 +1036,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
 
     editor.addAction({
       id: 'split-pane-horizontal',
-      label: 'Chia khung ngang (Top / Bottom)',
+      label: tRef.current('sqlEditor.actionSplitHorizontal'),
       contextMenuGroupId: '1_modification',
       contextMenuOrder: 1.6,
       run: () => {
@@ -1991,7 +1991,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                   }}>
                     {/* The Split pane entry */}
                     <div style={{ padding: '4px 12px 2px 12px', fontSize: '10px', fontWeight: 700, color: 'var(--win-text-disabled)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Chia khung (Split Panes)
+                      {t('sqlEditor.splitPanesHeading')}
                     </div>
                     <button
                       className={`context-menu-item ${splitMode === 'none' ? 'active' : ''}`}
@@ -2015,7 +2015,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                       style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}
                     >
                       <Rows size={13} style={{ flexShrink: 0 }} />
-                      <span>Chia ngang (Top / Bottom)</span>
+                      <span>{t('sqlEditor.splitHorizontal')}</span>
                     </button>
 
                     <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />

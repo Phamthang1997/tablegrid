@@ -1121,6 +1121,7 @@ const vi: typeof en = {
     actionBeautify: 'Làm đẹp SQL (Beautify)',
     actionMinify: 'Nén SQL 1 dòng (Minify / Uglify)',
     actionSplitVertical: 'Chia khung dọc (Left / Right)',
+    actionSplitHorizontal: 'Chia khung ngang (Top / Bottom)',
     actionSinglePane: 'Tắt chia khung (Single Pane)',
     actionExplain: 'Phân tích kế hoạch (EXPLAIN Plan)',
     actionOpenTable: 'Mở bảng dưới con trỏ (F12 / Ctrl+B)',
@@ -1193,8 +1194,10 @@ const vi: typeof en = {
     paramOptions: 'Tùy chọn Param...',
     paramsOn: 'Tham số truy vấn: Đang Bật',
     paramsConfigure: 'Cấu hình Tham số Truy vấn (Query Params Options)',
+    splitPanesHeading: 'Chia khung (Split Panes)',
     singlePane: 'Không chia (Đơn)',
     splitVertical: 'Chia dọc (Left / Right)',
+    splitHorizontal: 'Chia ngang (Top / Bottom)',
     historyTitle: 'Lịch sử & câu lệnh đã lưu',
     history: 'Lịch sử',
 

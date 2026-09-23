@@ -1118,6 +1118,7 @@ const ja: typeof en = {
     actionBeautify: 'SQL を整形 (Beautify)',
     actionMinify: 'SQL を 1 行に圧縮 (Minify)',
     actionSplitVertical: '左右に分割',
+    actionSplitHorizontal: '上下に分割',
     actionSinglePane: '分割を解除 (単一ペイン)',
     actionExplain: '実行計画 (EXPLAIN Plan)',
     actionOpenTable: 'カーソル位置のテーブルを開く (F12 / Ctrl+B)',
@@ -1190,8 +1191,10 @@ const ja: typeof en = {
     paramOptions: 'パラメータ設定...',
     paramsOn: 'クエリパラメータ: 有効',
     paramsConfigure: 'クエリパラメータの設定',
+    splitPanesHeading: 'ペイン分割',
     singlePane: '分割なし (単一)',
     splitVertical: '左右に分割',
+    splitHorizontal: '上下に分割',
     historyTitle: '履歴と保存済みの SQL',
     history: '履歴',
 
