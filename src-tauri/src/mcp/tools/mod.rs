@@ -304,12 +304,14 @@ impl TableGridMcp {
     async fn tablegrid_mutate(
         &self,
         Parameters(a): Parameters<MutateArgs>,
+        // Cancelled by rmcp when the client abandons the call; the approval wait watches it.
+        ct: tokio_util::sync::CancellationToken,
     ) -> Result<CallToolResult, McpError> {
         audited(
             "tablegrid_mutate",
             a.connection_id.as_deref(),
             Some(&a.sql),
-            write::mutate(a.connection_id.as_deref(), &a.sql),
+            write::mutate(a.connection_id.as_deref(), &a.sql, ct),
         )
         .await
     }

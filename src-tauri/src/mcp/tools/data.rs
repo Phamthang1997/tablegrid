@@ -1,7 +1,8 @@
 //! The two tools that return rows: a table preview, and a read query.
 //!
-//! Both run through `execute_raw_sql_pooled`, never the routed funnel - see `policy` for why a third
-//! party's read must not be able to open the user's transaction.
+//! Both run through `exec::run_read`, never the routed funnel - see `policy` for why a third party's
+//! read must not be able to open the user's transaction, and `exec` for why the database itself has to
+//! be the one refusing writes.
 
 use std::time::Instant;
 
@@ -10,7 +11,8 @@ use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
 use super::{app_state, json_result, passthrough};
-use crate::database::{execute_raw_sql_pooled, qualified, with_timeout};
+use crate::database::qualified;
+use crate::mcp::exec::run_read;
 use crate::mcp::policy;
 
 /// First N rows of a table.
@@ -32,12 +34,9 @@ pub async fn preview_table(
     let sql = format!("SELECT * FROM {table} LIMIT {limit}");
 
     let started = Instant::now();
-    let results = with_timeout(
-        Some(target.timeout),
-        execute_raw_sql_pooled(&target.conn, sql),
-    )
-    .await
-    .map_err(passthrough)?;
+    let results = run_read(&target.conn, sql, target.timeout)
+        .await
+        .map_err(passthrough)?;
     // The database already applied the limit, so nothing here was cut off after the fact.
     json_result(&shape(results, limit, started, false))
 }
@@ -54,12 +53,9 @@ pub async fn query(
     let limit = policy::row_limit(limit);
 
     let started = Instant::now();
-    let results = with_timeout(
-        Some(target.timeout),
-        execute_raw_sql_pooled(&target.conn, sql.to_string()),
-    )
-    .await
-    .map_err(passthrough)?;
+    let results = run_read(&target.conn, sql.to_string(), target.timeout)
+        .await
+        .map_err(passthrough)?;
     json_result(&shape(results, limit, started, true))
 }
 
