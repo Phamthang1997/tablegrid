@@ -1,6 +1,8 @@
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ExplainNode } from '../utils/explainHelper';
+import { toTsv } from '../utils/explainAdvisor';
+import { ExplainCopyButton, ExplainToolbar } from './ExplainCopyButton';
 
 interface ExplainStatsViewProps {
   rootNode: ExplainNode;
@@ -74,8 +76,15 @@ export const ExplainStatsView: React.FC<ExplainStatsViewProps> = ({ rootNode }) 
     top: 0,
   };
 
+  const asTsv = () => toTsv(
+    [t('explain.colNodeType'), t('explain.colCount'), t('explain.colCost'), t('explain.colCostPct')],
+    stats.map(s => [s.nodeType, s.count, s.cost.toFixed(2), `${s.costPct.toFixed(2)}%`]),
+  );
+
   return (
-    <div style={{ width: '100%', height: '100%', overflow: 'auto', background: 'var(--win-bg-window)', padding: '16px' }}>
+    <div className="explain-view">
+      <ExplainToolbar copy={<ExplainCopyButton getText={asTsv} label={t('explain.copyTable')} />} />
+      <div className="explain-view-body explain-selectable">
       <div style={{ border: '1px solid var(--win-border)', borderRadius: '6px', overflow: 'hidden', background: 'var(--win-bg-card)' }}>
         <table style={{ borderCollapse: 'collapse', width: '100%' }}>
           <thead>
@@ -104,7 +113,7 @@ export const ExplainStatsView: React.FC<ExplainStatsViewProps> = ({ rootNode }) 
                       <div style={{
                         width: `${costPct.toFixed(1)}%`,
                         height: '100%',
-                        background: costPct > 50 ? '#ef4444' : costPct > 20 ? '#f59e0b' : 'var(--win-accent)',
+                        background: costPct > 50 ? 'var(--st-danger, #ef4444)' : costPct > 20 ? 'var(--st-warn, #f59e0b)' : 'var(--win-accent)',
                         borderRadius: '4px',
                         transition: 'width 0.3s ease'
                       }} />
@@ -118,6 +127,7 @@ export const ExplainStatsView: React.FC<ExplainStatsViewProps> = ({ rootNode }) 
             ))}
           </tbody>
         </table>
+      </div>
       </div>
     </div>
   );

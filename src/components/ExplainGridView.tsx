@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import type { ExplainNode } from '../utils/explainHelper';
 import { planFieldText } from '../utils/explainHelper';
 import { Table as TableIcon } from 'lucide-react';
+import { toTsv } from '../utils/explainAdvisor';
+import { ExplainCopyButton, ExplainToolbar } from './ExplainCopyButton';
 
 interface ExplainGridViewProps {
   rootNode: ExplainNode;
@@ -58,8 +60,16 @@ export const ExplainGridView: React.FC<ExplainGridViewProps> = ({ rootNode }) =>
     top: 0,
   };
 
+  // The same cells as the table, one row per operator — pastes into a spreadsheet as-is.
+  const asTsv = () => toTsv(
+    [t('explain.colOperation'), t('explain.colTable'), ...columns],
+    nodes.map(node => [node.type, node.table, ...columns.map(key => planFieldText(node.details?.[key]) ?? '')]),
+  );
+
   return (
-    <div style={{ width: '100%', height: '100%', overflow: 'auto', background: 'var(--win-bg-window)', padding: '16px' }}>
+    <div className="explain-view">
+      <ExplainToolbar copy={<ExplainCopyButton getText={asTsv} label={t('explain.copyTable')} />} />
+      <div className="explain-view-body explain-selectable">
       <div style={{ border: '1px solid var(--win-border)', borderRadius: '6px', overflow: 'hidden', background: 'var(--win-bg-card)' }}>
         <table style={{ borderCollapse: 'collapse', width: '100%' }}>
           <thead>
@@ -98,6 +108,7 @@ export const ExplainGridView: React.FC<ExplainGridViewProps> = ({ rootNode }) =>
             ))}
           </tbody>
         </table>
+      </div>
       </div>
     </div>
   );
