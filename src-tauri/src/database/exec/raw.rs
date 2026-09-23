@@ -83,6 +83,14 @@ pub(crate) fn sqlite_raw(
     sql: &str,
 ) -> Result<Vec<Value>, String> {
     let conn = conn_arc.lock().map_err(|e| e.to_string())?;
+    sqlite_raw_on(&conn, sql)
+}
+
+/// The body of `sqlite_raw`, on a connection the caller has ALREADY locked.
+///
+/// Split out for `mcp/exec.rs`, which has to set a pragma, run the statement and restore the pragma
+/// inside one hold of the lock - taking it a second time here would open the window it closes.
+pub(crate) fn sqlite_raw_on(conn: &SqliteConnection, sql: &str) -> Result<Vec<Value>, String> {
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let col_count = stmt.column_count();
     let mut columns = Vec::new();

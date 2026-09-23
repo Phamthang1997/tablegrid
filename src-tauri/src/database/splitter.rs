@@ -56,6 +56,71 @@ fn matches_delimiter(chars: &[char], i: usize, delim: &[char]) -> bool {
 //   - MySQL's DELIMITER command — it changes the statement terminator so trigger/procedure bodies can be written
 // Without the last two, a file containing a function/trigger would be cut in the middle of the body and could
 // run a statement that sits inside it by mistake.
+/// Where a statement's first keyword really is, for deciding whether it WRITES.
+///
+/// `strip_leading_comments` skips MySQL's executable comments (`/*! … */`, MariaDB's `/*M! … */`)
+/// like any other comment, which is right for sorting dump lines and wrong for a security decision:
+/// MySQL RUNS the text inside them. `/*!DELETE FROM t WHERE 1 IN */ (SELECT 1)` classified as a
+/// SELECT and got past both the connection's read-only lock and the MCP read gate, while the server
+/// executed a DELETE. Here an executable comment is opened instead of skipped - the marker and its
+/// optional version number go, and the classification continues on the code inside it - so that
+/// statement reads as `DELETE`, and mysqldump's `/*!40101 SET NAMES utf8 */` still reads as `SET`.
+///
+/// Dialect-agnostic on purpose: on Postgres/SQLite `/*!` is an ordinary comment, so this can only
+/// ever make a statement look MORE like a write there, never less.
+pub(crate) fn classification_head(stmt: &str) -> &str {
+    let mut rest = strip_leading_comments_until_exec(stmt);
+    loop {
+        let marker = if rest.starts_with("/*!") {
+            3
+        } else if rest.starts_with("/*M!") {
+            4
+        } else {
+            return rest;
+        };
+        let body = rest[marker..].trim_start_matches(|c: char| c.is_ascii_digit());
+        // An empty one (`/*!*/`, `/*!50001 */`) closes straight away and hides nothing.
+        let body = body.trim_start();
+        let body = body.strip_prefix("*/").unwrap_or(body);
+        // Whatever follows may itself start with comments or another executable comment.
+        rest = strip_leading_comments_until_exec(body);
+    }
+}
+
+/// `strip_leading_comments`, but stopping in front of an executable comment instead of skipping it.
+fn strip_leading_comments_until_exec(stmt: &str) -> &str {
+    let mut s = stmt;
+    loop {
+        let t = s.trim_start();
+        if t.starts_with("/*!") || t.starts_with("/*M!") {
+            return t;
+        }
+        let next = strip_one_leading_comment(t);
+        if next.len() == t.len() {
+            return t;
+        }
+        s = next;
+    }
+}
+
+/// Removes exactly one leading `--`/`#` line comment or `/* */` block, or returns the input.
+fn strip_one_leading_comment(t: &str) -> &str {
+    let b = t.as_bytes();
+    if (b.len() >= 2 && b[0] == b'-' && b[1] == b'-') || b.first() == Some(&b'#') {
+        return match t.find('\n') {
+            Some(i) => &t[i + 1..],
+            None => "",
+        };
+    }
+    if let Some(inner) = t.strip_prefix("/*") {
+        return match inner.find("*/") {
+            Some(i) => &inner[i + 2..],
+            None => "",
+        };
+    }
+    t
+}
+
 /// Strip the whitespace and comments at the START of a statement, returning the part that begins with a real SQL keyword.
 ///
 /// The splitter keeps comments inside the statement text, so in a mysqldump dump
@@ -544,5 +609,33 @@ mod tests {
         );
         assert_eq!(strip_leading_comments("SELECT 1"), "SELECT 1");
         assert_eq!(strip_leading_comments("  /* only */  ").trim(), "");
+    }
+
+    /// MySQL runs what is inside `/*! … */`, so a write hidden there must classify as the write.
+    #[test]
+    fn classification_head_opens_executable_comments_instead_of_skipping_them() {
+        let head = |s: &str| {
+            classification_head(s)
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        };
+        assert_eq!(
+            head("/*!DELETE FROM orders WHERE 1 IN */ (SELECT 1)"),
+            "DELETE"
+        );
+        assert_eq!(head("/*!50001 DROP TABLE t */"), "DROP");
+        assert_eq!(head("/*M!100100 UPDATE t SET a = 1 */"), "UPDATE");
+        assert_eq!(head("-- note\n/* plain */ /*!DELETE FROM t */"), "DELETE");
+        // mysqldump's own header still reads as the session statement it is.
+        assert_eq!(head("/*!40101 SET NAMES utf8 */"), "SET");
+        // An empty executable comment hides nothing: what follows it is the statement.
+        assert_eq!(head("/*!*/ DELETE FROM t"), "DELETE");
+        assert_eq!(head("/*!50001 */ UPDATE t SET a = 1"), "UPDATE");
+        // Ordinary comments are still skipped, and an unterminated one leaves nothing to classify.
+        assert_eq!(head("/* SELECT */ DELETE FROM t"), "DELETE");
+        assert_eq!(head("/* daily report */ SELECT 1"), "SELECT");
+        assert_eq!(head("/* never closed SELECT 1"), "");
     }
 }

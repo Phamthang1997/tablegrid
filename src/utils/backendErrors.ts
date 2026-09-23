@@ -32,6 +32,9 @@ export const EXACT: Record<string, string> = {
   'Yêu cầu này không còn chờ trả lời (đã hết hạn hoặc đã được trả lời).': 'backend.mcpApprovalGone',
   // state/registry.rs — the write tick refuses on a connection that is not shared.
   'Kết nối này chưa được chia sẻ với MCP nên không thể bật quyền ghi': 'backend.mcpWriteNeedsShare',
+  // mcp/server.rs — mcp_start / mcp_regenerate_token, shown by the MCP settings screen.
+  'MCP Server đang chạy rồi': 'backend.mcpAlreadyRunning',
+  'Cổng MCP phải nằm trong khoảng 1–65535': 'backend.mcpBadPort',
   // tx_session.rs — transaction manual
   'Không có transaction nào đang mở': 'backend.txNotOpen',
   'Transaction đã bị huỷ do lỗi trước đó, chỉ có thể rollback': 'backend.txAborted',
@@ -166,6 +169,9 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   { re: /^Khoá mã hoá nhật ký MCP không hợp lệ: ([\s\S]*)$/, key: 'backend.mcpAuditKeyInvalid' },
   { re: /^Không ghi được nhật ký MCP: ([\s\S]*)$/, key: 'backend.mcpAuditWriteFailed' },
   { re: /^Không sinh được khoá mã hoá: ([\s\S]*)$/, key: 'backend.mcpAuditKeyGenFailed' },
+  // mcp/server.rs — binding the listener.
+  { re: /^Cổng (\d+) đang bị tiến trình khác dùng — đổi cổng trong Cài đặt$/, key: 'backend.mcpPortInUse' },
+  { re: /^Không mở được MCP Server: ([\s\S]*)$/, key: 'backend.mcpStartFailed' },
   { re: /^PING lỗi: ([\s\S]*)$/, key: 'backend.pingFailed' },
   { re: /^Không thể kết nối Redis: ([\s\S]*)$/, key: 'backend.redisConnectFailed' },
   // redis_db.rs — refused commands and pagination

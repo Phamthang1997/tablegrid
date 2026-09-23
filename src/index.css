@@ -1088,8 +1088,8 @@ select.form-input {
   letter-spacing: 0.05em;
 }
 
-.context-menu-heading + .context-menu-heading,
-.context-menu-item + .context-menu-heading {
+.context-menu-heading+.context-menu-heading,
+.context-menu-item+.context-menu-heading {
   margin-top: 4px;
   padding-top: 6px;
   border-top: 1px solid var(--win-border);
@@ -1989,7 +1989,7 @@ select.form-input {
    (`applyRowClasses` in Sidebar.tsx), and an inline style would win over every one of them.
    The numbers are the inline style's, not `.sidebar-item`'s defaults, which they used to
    override — `contain-intrinsic-size` above is measured from THESE. */
-.sidebar-row > .sidebar-item {
+.sidebar-row>.sidebar-item {
   padding: 4px 8px;
   gap: 6px;
 }
@@ -11538,6 +11538,7 @@ input.rename-input {
     transform: translateX(100%);
     opacity: 0;
   }
+
   to {
     transform: translateX(0);
     opacity: 1;
@@ -17003,7 +17004,7 @@ input.rename-input {
   transition: background 0.1s ease;
 }
 
-.doc-tree-node:last-child > .doc-tree-row {
+.doc-tree-node:last-child>.doc-tree-row {
   border-bottom: none;
 }
 
@@ -17128,6 +17129,7 @@ input.rename-input {
 :root:not([data-theme='light']) .doc-type-string {
   color: #34d399;
 }
+
 [data-theme='dark'] .doc-tree-val.is-string,
 :root:not([data-theme='light']) .doc-tree-val.is-string {
   color: #34d399;
@@ -17137,6 +17139,7 @@ input.rename-input {
 :root:not([data-theme='light']) .doc-type-number {
   color: #60a5fa;
 }
+
 [data-theme='dark'] .doc-tree-val.is-number,
 :root:not([data-theme='light']) .doc-tree-val.is-number {
   color: #60a5fa;
@@ -17146,6 +17149,7 @@ input.rename-input {
 :root:not([data-theme='light']) .doc-type-boolean {
   color: #fbbf24;
 }
+
 [data-theme='dark'] .doc-tree-val.is-boolean,
 :root:not([data-theme='light']) .doc-tree-val.is-boolean {
   color: #fbbf24;
@@ -17209,80 +17213,210 @@ input.rename-input {
 }
 
 /* ===== MCP Server settings (McpServerSettingsModal.tsx) ===================================== */
-/* Modern Tabbed & Card-based Design (Zero inline CSS, fully theme-aware) */
+/* `.mcp-conn-db` and `.mcp-dialect-badge` are also used by McpApprovalGate.tsx. The switches and
+   segmented controls reuse `.cm-switch` / `.cm-seg` from the connection form rather than copying them. */
+
+/* Page frame when opened as a workspace tab */
+.mcp-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--win-bg-window);
+}
+
+.mcp-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--win-border);
+  background: var(--win-bg-card);
+  flex-shrink: 0;
+}
+
+.mcp-page-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--win-accent);
+}
+
+.mcp-page-title h2 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+
+.mcp-page-title p {
+  margin: 1px 0 0;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-page-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px 24px;
+}
+
+.mcp-page-body>.mcp-container {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.mcp-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Start and Stop swap in place: a fixed minimum width keeps the refresh button beside it from jumping. */
+.mcp-head-actions .mcp-power {
+  min-width: 76px;
+}
+
+/* 28px and the 8px radius of `.btn`, so the pill and the two buttons after it read as one row. */
+.mcp-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-window);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+.mcp-status-pill.on {
+  border-color: var(--win-status-added-border, #10b981);
+  background: var(--win-status-added, rgba(16, 185, 129, 0.1));
+  color: var(--win-status-added-border, #10b981);
+}
+
+.mcp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--win-text-disabled);
+  flex-shrink: 0;
+}
+
+.mcp-status-pill.on .mcp-dot {
+  background: var(--win-status-added-border, #10b981);
+  box-shadow: 0 0 6px var(--win-status-added-border, #10b981);
+}
+
 .mcp-container {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
 }
 
-/* Top Tab Navigation */
+/* Tabs: an underline strip, so they read as navigation rather than as three more buttons */
 .mcp-tabs-header {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-end;
+  gap: 2px;
   border-bottom: 1px solid var(--win-border);
-  padding-bottom: 6px;
-  margin-bottom: 2px;
 }
 
 .mcp-tab-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 12px;
+  height: 32px;
+  padding: 0 12px;
+  margin-bottom: -1px;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-family: var(--win-font-sans);
   font-size: 12px;
   font-weight: 500;
   color: var(--win-text-secondary);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition: color 0.12s ease, border-color 0.12s ease;
 }
 
 .mcp-tab-btn:hover:not(.active) {
-  background: var(--win-bg-hover);
   color: var(--win-text-primary);
 }
 
 .mcp-tab-btn.active {
-  background: var(--win-accent-glow, rgba(37, 99, 235, 0.12));
-  border-color: rgba(96, 165, 250, 0.25);
-  color: var(--win-accent);
+  border-bottom-color: var(--win-accent);
+  color: var(--win-text-primary);
   font-weight: 600;
 }
 
+.mcp-tab-btn.active svg {
+  color: var(--win-accent);
+}
+
 .mcp-tab-badge {
+  min-width: 16px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--win-bg-hover);
+  color: var(--win-text-secondary);
   font-size: 10px;
   font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 10px;
-  background: var(--win-bg-hover);
-  color: var(--win-text-disabled);
+  text-align: center;
 }
 
 .mcp-tab-btn.active .mcp-tab-badge {
   background: var(--win-accent);
-  color: #ffffff;
+  color: #fff;
 }
 
-/* Tab Panels & Cards */
-.mcp-tab-content {
+.mcp-tab-badge.warn,
+.mcp-tab-btn.active .mcp-tab-badge.warn {
+  background: var(--win-danger, #ef4444);
+  color: #fff;
+}
+
+/* Layout */
+.mcp-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .mcp-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.mcp-col {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  min-width: 0;
 }
 
 .mcp-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
   background: var(--win-bg-card);
   border: 1px solid var(--win-border);
   border-radius: 8px;
-  padding: 8px 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .mcp-card-header {
@@ -17290,13 +17424,13 @@ input.rename-input {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .mcp-card-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -17304,92 +17438,133 @@ input.rename-input {
   color: var(--win-text-secondary);
 }
 
-.mcp-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mcp-spacer {
-  flex: 1;
-}
-
-.mcp-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--win-text-secondary);
-  flex-shrink: 0;
-}
-
-.mcp-dot.on {
-  background: #10b981;
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
-}
-
-.mcp-status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--win-text-primary);
-}
-
-.mcp-status-badge code {
-  font-family: var(--win-font-mono);
-  font-size: 10.5px;
-  background: var(--win-bg-hover);
-  padding: 1px 5px;
-  border-radius: 4px;
+.mcp-card-title svg {
   color: var(--win-accent);
 }
 
-.mcp-port-box {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.mcp-count {
   font-size: 11px;
   color: var(--win-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fields */
+.mcp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mcp-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+.mcp-field-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .mcp-port {
-  width: 64px;
-  height: 26px;
-  font-size: 11px;
+  width: 72px;
+  height: 28px;
+  flex-shrink: 0;
   font-family: var(--win-font-mono);
+  font-size: 11.5px;
   text-align: center;
 }
 
-.mcp-check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--win-text-secondary);
-  cursor: pointer;
-  user-select: none;
+.mcp-port.invalid {
+  border-color: var(--win-danger, #ef4444);
 }
 
-.mcp-token-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.mcp-endpoint {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  line-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  background: var(--win-bg-window);
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-endpoint.off {
+  color: var(--win-text-disabled);
 }
 
 .mcp-token-input {
   flex: 1;
+  min-width: 0;
   height: 28px;
+  padding: 0 8px;
   font-family: var(--win-font-mono);
   font-size: 11px;
-  padding: 0 8px;
+}
+
+.btn.mcp-icon-btn {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* A toggle button's ON state. `.btn-secondary` has `border: none`, so a border-color alone changed
+   nothing - the state has to live in the fill and an inset ring. */
+.btn.btn-secondary.mcp-btn-on {
+  background: var(--win-accent-glow, rgba(37, 99, 235, 0.12));
+  color: var(--win-accent);
+  box-shadow: inset 0 0 0 1px var(--win-accent);
+}
+
+.btn.btn-secondary.mcp-btn-on:hover:not(:disabled) {
+  background: var(--win-accent-glow, rgba(37, 99, 235, 0.18));
+  box-shadow: inset 0 0 0 1px var(--win-accent);
+}
+
+/* The compact tier, for buttons inside a card header or over a code block. */
+.btn.mcp-btn-sm {
+  height: 24px;
+  padding: 0 10px;
+  gap: 5px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+
+.mcp-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.mcp-switch-row .cm-switch {
+  margin-top: 0;
+}
+
+.mcp-switch-text {
+  font-size: 11.5px;
+  color: var(--win-text-primary);
 }
 
 .mcp-hint {
   margin: 0;
-  font-size: 10.5px;
+  font-size: 11px;
+  line-height: 1.45;
   color: var(--win-text-secondary);
-  line-height: 1.35;
+}
+
+.mcp-center {
+  text-align: center;
 }
 
 .mcp-error {
@@ -17398,215 +17573,271 @@ input.rename-input {
   color: var(--win-danger, #ef4444);
 }
 
+.mcp-error-box {
+  padding: 8px 10px;
+  border: 1px solid var(--win-status-deleted-border, #ef4444);
+  border-radius: 6px;
+  background: var(--win-status-deleted, rgba(239, 68, 68, 0.08));
+  white-space: pre-wrap;
+}
+
 .mcp-warn {
   margin: 0;
-  font-size: 10.5px;
+  font-size: 11px;
+  line-height: 1.45;
   color: var(--win-warning, #f59e0b);
-  line-height: 1.35;
 }
 
 .mcp-empty {
   margin: 0;
+  padding: 20px 0;
   font-size: 11.5px;
   font-style: italic;
-  color: var(--win-text-disabled);
-  padding: 16px 0;
   text-align: center;
+  color: var(--win-text-disabled);
 }
 
-/* Pickers */
-.mcp-pick-row {
-  display: flex;
+/* Client configuration: the label column sizes to its longest label, so a translated one never wraps. */
+.mcp-pick-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 8px 12px;
 }
 
-.mcp-pick-label {
-  width: 64px;
-  flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--win-text-secondary);
+.mcp-pick-grid .mcp-seg {
+  justify-self: start;
 }
 
-.mcp-client-tabs {
-  display: flex;
+/* Segmented picker. A borderless track with the chosen option lifted out of it: an extra border
+   around the track read as a pill inside a box. Track 28px = 2px padding + 24px option, the same
+   height as `.btn`, so a picker and a button sitting on one row line up. */
+.mcp-seg {
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  max-width: 100%;
 }
 
-.mcp-client-tab {
-  padding: 4px 10px;
-  border: 1px solid var(--win-border);
+.mcp-seg button {
+  height: 24px;
+  padding: 0 12px;
+  border: none;
   border-radius: 6px;
-  background: var(--win-bg-window);
+  background: transparent;
   color: var(--win-text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.12s ease;
+  font-family: var(--win-font-sans);
+  font-size: 11.5px;
+  font-weight: 500;
   white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
-.mcp-client-tab:hover {
-  background: var(--win-bg-hover);
+.mcp-seg button:hover:not(.on) {
   color: var(--win-text-primary);
 }
 
-.mcp-client-tab.active {
-  border-color: var(--win-accent);
-  background: var(--win-bg-hover);
-  color: var(--win-accent);
+.mcp-seg button:focus-visible {
+  outline: 2px solid var(--win-accent);
+  outline-offset: -2px;
+}
+
+.mcp-seg button.on {
+  background: var(--win-bg-card);
+  color: var(--win-text-primary);
   font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme='dark'] .mcp-seg button.on {
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
 .mcp-config-box {
   position: relative;
-  display: flex;
-  flex-direction: column;
 }
 
 .mcp-config {
   margin: 0;
-  padding: 8px 12px;
+  padding: 10px 12px;
+  padding-right: 120px;
+  min-height: 64px;
   border: 1px solid var(--win-border);
   border-radius: 6px;
   background: var(--win-bg-window);
   font-family: var(--win-font-mono);
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--win-text-primary);
+  white-space: pre;
   overflow-x: auto;
-  overflow-y: hidden;
 }
 
-/* Shared Connections Card */
+.btn.mcp-config-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+/* Shared connections */
 .mcp-conn-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-height: 200px;
-  overflow-y: auto;
+  gap: 6px;
 }
 
 .mcp-conn-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 6px 8px;
+  gap: 6px;
+  padding: 8px 10px;
   border: 1px solid var(--win-border);
   border-radius: 6px;
   background: var(--win-bg-window);
-  transition: background 0.15s ease;
-}
-
-.mcp-conn-item:hover {
-  background: var(--win-bg-hover);
+  transition: border-color 0.15s ease;
 }
 
 .mcp-conn-item.selected {
   border-color: var(--win-accent);
 }
 
-.mcp-conn-label {
+.mcp-conn-main {
   display: flex;
   align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  user-select: none;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mcp-conn-main .cm-switch {
+  margin-top: 0;
+}
+
+.mcp-conn-main .cm-switch:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .mcp-conn-db {
+  min-width: 0;
   font-size: 12px;
   font-weight: 600;
   color: var(--win-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-conn-schema {
+  font-family: var(--win-font-mono);
+  font-size: 10.5px;
+  color: var(--win-text-secondary);
 }
 
 .mcp-dialect-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-hover);
   font-size: 9.5px;
   font-weight: 700;
   text-transform: uppercase;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--win-bg-hover);
   color: var(--win-text-secondary);
-  border: 1px solid var(--win-border);
 }
 
-/* The write tick sits indented under its share tick, at the same 24px the reach line uses, so the
-   two secondary lines of one connection share an edge and read as belonging to it. */
+.mcp-dialect-badge.ro {
+  border-color: var(--win-warning, #f59e0b);
+  color: var(--win-warning, #f59e0b);
+  background: transparent;
+}
+
+/* Secondary lines of one connection share the 46px edge: switch width + gap. */
 .mcp-conn-write {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: 24px;
+  margin-left: 46px;
   font-size: 11.5px;
-  color: var(--win-text-secondary);
+  color: var(--win-text-primary);
   cursor: pointer;
   user-select: none;
 }
 
-.mcp-conn-write input:disabled + span {
+.mcp-conn-write.disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.mcp-conn-write-hint {
-  margin: 0 0 0 24px;
+.mcp-conn-write-hint,
+.mcp-reach {
+  margin: 0 0 0 46px;
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.45;
+}
+
+.mcp-conn-write-hint {
   color: var(--win-text-secondary);
 }
 
 .mcp-reach {
-  margin: 0 0 0 24px;
-  font-size: 11px;
   color: var(--win-warning, #f59e0b);
 }
 
 .mcp-reach.ok {
-  color: #10b981;
+  color: var(--win-status-added-border, #10b981);
 }
 
-/* Policy Grid */
+/* Policy grid */
 .mcp-policy-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 8px;
 }
 
 .mcp-policy-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
+  gap: 4px;
+  padding: 10px 12px;
   background: var(--win-bg-window);
   border: 1px solid var(--win-border);
   border-radius: 6px;
 }
 
 .mcp-policy-item-title {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: var(--win-text-disabled);
-  letter-spacing: 0.5px;
-}
-
-.mcp-policy-item-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11.5px;
   font-weight: 600;
   color: var(--win-text-primary);
 }
 
-/* Log View */
-.mcp-log-container {
+.mcp-policy-item-title svg {
+  color: var(--win-accent);
+}
+
+.mcp-policy-item-value {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--win-text-secondary);
+}
+
+/* Log */
+.mcp-toolbar {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 6px;
 }
 
@@ -17616,71 +17847,146 @@ input.rename-input {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  max-height: 320px;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  background: var(--win-bg-window);
+  max-height: 60vh;
   overflow-y: auto;
 }
 
-.mcp-log-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--win-bg-window);
-  border: 1px solid var(--win-border);
-  border-radius: 6px;
-  font-size: 11px;
+.mcp-log-item+.mcp-log-item {
+  border-top: 1px solid var(--win-border);
 }
 
 .mcp-log-item.denied {
-  border-color: rgba(239, 68, 68, 0.4);
-  background: rgba(239, 68, 68, 0.04);
+  box-shadow: inset 3px 0 0 var(--win-danger, #ef4444);
+}
+
+.mcp-log-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  font-family: var(--win-font-sans);
+  font-size: 11px;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.mcp-log-row:hover:not(:disabled) {
+  background: var(--win-bg-hover);
+}
+
+.mcp-log-row:disabled {
+  cursor: default;
+}
+
+.mcp-log-chevron {
+  flex-shrink: 0;
+  color: var(--win-text-disabled);
+  transition: transform 0.12s ease;
+}
+
+.mcp-log-row:disabled .mcp-log-chevron {
+  visibility: hidden;
+}
+
+.mcp-log-item.open .mcp-log-chevron {
+  transform: rotate(90deg);
 }
 
 .mcp-log-time {
-  color: var(--win-text-secondary);
-  font-variant-numeric: tabular-nums;
-  font-size: 10.5px;
   flex-shrink: 0;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--win-text-secondary);
 }
 
 .mcp-log-tool {
-  font-weight: 600;
-  font-size: 11px;
-  color: var(--win-accent);
-  background: var(--win-bg-hover);
+  flex-shrink: 0;
   padding: 1px 6px;
   border-radius: 4px;
-  flex-shrink: 0;
+  background: var(--win-bg-hover);
+  font-family: var(--win-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--win-accent);
 }
 
 .mcp-log-sql {
-  font-family: var(--win-font-mono);
-  color: var(--win-text-primary);
   flex: 1;
   min-width: 0;
+  font-family: var(--win-font-mono);
+  color: var(--win-text-primary);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .mcp-log-outcome {
+  flex-shrink: 0;
   margin-left: auto;
-  font-size: 10.5px;
-  font-weight: 600;
   padding: 2px 6px;
   border-radius: 4px;
-  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
 }
 
 .mcp-log-outcome.ok {
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.1);
+  color: var(--win-status-added-border, #10b981);
+  background: var(--win-status-added, rgba(16, 185, 129, 0.1));
 }
 
 .mcp-log-outcome.denied {
   color: var(--win-danger, #ef4444);
-  background: rgba(239, 68, 68, 0.1);
+  background: var(--win-status-deleted, rgba(239, 68, 68, 0.1));
+}
+
+.mcp-log-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 10px 10px 30px;
+}
+
+.mcp-log-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+
+.mcp-log-meta code {
+  font-family: var(--win-font-mono);
+  color: var(--win-text-primary);
+}
+
+.mcp-log-message {
+  margin: 0;
+  font-size: 11px;
+  color: var(--win-danger, #ef4444);
+  white-space: pre-wrap;
+}
+
+.mcp-log-full-sql {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  background: var(--win-bg-card);
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--win-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ==========================================================================
@@ -19037,13 +19343,14 @@ input.rename-input {
    costs no accessible name), then the two purely informational count pills go. The search box is
    shrinkable instead of stepped, since it degrades continuously. */
 @container er-canvas (max-width: 1080px) {
+
   /* Only the icon+label buttons: Full / Keys only / Compact render bare text, not a <span>, so
      they keep their labels — they have no icon, and hiding the text would leave empty boxes.
 
      The picker trigger is exempt until step 2, where the relations pill goes: the two are both
      counts sitting next to each other, and stripping one's word a whole step before the other
      read as `23   22 relations`, which looks like a mistake rather than a narrow window. */
-  .er-toolbar-btn:not(.er-picker-trigger) > span {
+  .er-toolbar-btn:not(.er-picker-trigger)>span {
     display: none;
   }
 
@@ -19056,8 +19363,9 @@ input.rename-input {
    trigger drops to its icon and number. The tables count itself is never lost — that is what let
    the old `23 tables` pill be REPLACED by this button instead of kept beside it. */
 @container er-canvas (max-width: 920px) {
+
   .er-stat-pill,
-  .er-picker-trigger > span {
+  .er-picker-trigger>span {
     display: none;
   }
 }
@@ -19067,6 +19375,7 @@ input.rename-input {
    — Shift+1 fits the view and Shift+2 the selection. Leaves ~545px of row, i.e. a canvas of about
    570px: a window of ~870px with the sidebar open, narrower than this app is usable at. */
 @container er-canvas (max-width: 660px) {
+
   .er-toolbar-divider,
   .er-btn-optional {
     display: none;
@@ -20185,9 +20494,20 @@ input.rename-input {
 }
 
 @keyframes pm-pulse {
-  0% { transform: scale(0.95); opacity: 0.8; }
-  50% { transform: scale(1.2); opacity: 1; }
-  100% { transform: scale(0.95); opacity: 0.8; }
+  0% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
 }
 
 .pm-controls-right {
@@ -20606,7 +20926,9 @@ input.rename-input {
 }
 
 @keyframes pm-spin {
-  100% { transform: rotate(360deg); }
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 .pm-detail-drawer {
@@ -21012,7 +21334,7 @@ input.rename-input {
   font-size: 11.5px;
 }
 
-.tp-row + .tp-row {
+.tp-row+.tp-row {
   border-top: 1px solid var(--win-border-subtle, var(--win-border-light));
 }
 
@@ -21140,6 +21462,7 @@ input.rename-input {
   color: var(--win-text-disabled);
   font-style: italic;
 }
+
 /* ---------------------------------------------------------------------------
    Master Password: the lock overlay and the settings dialog.
 
