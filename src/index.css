@@ -6666,8 +6666,11 @@ select.form-input {
 }
 
 /* The "Run" menu in SqlEditor: the span is a text label, not a 16px icon, so the width:16px
-   constraint is dropped or the label overflows onto the shortcut. */
-.sql-run-menu .context-menu-item span {
+   constraint is dropped or the label overflows onto the shortcut. The More and Format menus are
+   the same shape (a lucide icon, then a text span): squeezed to 16px, the label spilled out of its
+   box, so the menu's max-content width left no room for it and the text ran into the right edge. */
+.sql-run-menu .context-menu-item span,
+.sql-toolbar-menu .context-menu-item span {
   width: auto;
   text-align: left;
   font-size: inherit;

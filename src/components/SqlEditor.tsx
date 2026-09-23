@@ -1978,7 +1978,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
               {moreMenuPane === paneId && (
                 <>
                   <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setMoreMenuPane(null)} />
-                  <div style={{
+                  <div className="sql-toolbar-menu" style={{
                     position: 'absolute',
                     top: dropdownPlacement[`more_${paneId}`] === 'up' ? undefined : 'calc(100% + 4px)',
                     bottom: dropdownPlacement[`more_${paneId}`] === 'up' ? 'calc(100% + 4px)' : undefined,
@@ -2066,7 +2066,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
               {formatMenuPane === paneId && (
                 <>
                   <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setFormatMenuPane(null)} />
-                  <div style={{
+                  <div className="sql-toolbar-menu" style={{
                     position: 'absolute',
                     top: dropdownPlacement[`format_${paneId}`] === 'up' ? undefined : 'calc(100% + 4px)',
                     bottom: dropdownPlacement[`format_${paneId}`] === 'up' ? 'calc(100% + 4px)' : undefined,
