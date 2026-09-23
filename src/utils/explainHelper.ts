@@ -14,7 +14,8 @@ export type ExplainFlag =
   | 'filesort'
   | 'neverExecuted'
   | 'rowsMisestimated'
-  | 'subqueriesHidden';
+  | 'subqueriesHidden'
+  | 'cartesianJoin';
 
 export interface ExplainNode {
   id: string;
@@ -68,6 +69,10 @@ export interface ExplainResult {
   totalSelfCost?: number;
   /** Non-default planner settings, from Postgres `EXPLAIN (SETTINGS)`. */
   settings?: Record<string, string>;
+  /** The EXPLAIN statement that produced this plan. Set by the caller, not the parser: it is what
+   *  resolves the plan's aliases to real tables for index suggestions, and what the comparison
+   *  view shows as "what was compared". */
+  sourceSql?: string;
 }
 
 /** A row estimate this far from the measured value is worth flagging. */
@@ -226,6 +231,7 @@ function buildNestedLoopChain(items: any[]): ExplainNode {
     }
 
     const prefixCost = num(rightTable?.cost_info?.prefix_cost);
+    const joinFilter = mysqlJoinCondition(rightTable);
     // Collected before `acc` is replaced: everything already joined is this step's left input.
     const leftTables = collectTables(acc);
 
@@ -235,15 +241,51 @@ function buildNestedLoopChain(items: any[]): ExplainNode {
       cost: prefixCost !== undefined ? { start: 0, total: prefixCost } : undefined,
       rowsOut: num(rightTable?.rows_produced_per_join),
       joinTables: { left: leftTables, right: rightTable?.table_name },
-      joinFilter: mysqlJoinCondition(rightTable),
+      joinFilter,
       // children[0] is the join accumulated so far: the diagram draws it straight along the top
       // row and hangs the newly joined table underneath.
       children: [acc, right],
       details: { join_step: i, joined_table: rightTable?.table_name },
     };
+    if (rightTable && isMysqlCrossJoinStep(rightTable, joinFilter)) addFlag(acc, 'cartesianJoin');
   }
 
   return acc;
+}
+
+/**
+ * A join step whose newly joined table is read with nothing tying it to the tables before it:
+ * no `ref` (no index lookup keyed on them) and no `attached_condition` (MySQL attaches a join
+ * predicate to the table where all of its columns first become available — this one). Every row
+ * of the prefix then pairs with every row read here.
+ *
+ * Deliberately narrow, since a false alarm here is the loudest one in the diagram: a const /
+ * eq_ref / ref read is keyed on something, `range checked for each record` re-plans per outer
+ * row, and a one-row table multiplies nothing. An attached condition that only mentions this
+ * table also silences it — a missed warning, never a wrong one.
+ */
+function isMysqlCrossJoinStep(t: any, joinFilter: string | undefined): boolean {
+  if (joinFilter || t.attached_condition || t.range_checked_for_each_record) return false;
+  const access = String(t.access_type || '').toLowerCase();
+  if (access !== 'all' && access !== 'index' && access !== 'range') return false;
+  const perScan = num(t.rows_examined_per_scan);
+  return perScan !== undefined && perScan > 1;
+}
+
+/**
+ * Postgres' shape of the same mistake: a Nested Loop with no Join Filter whose inner side cannot
+ * be parameterised by the outer row. A Materialize is rescanned as-is on every loop, and a Seq
+ * Scan with no Filter reads the whole table every loop — so neither can be what joins the two
+ * sides. An inner Index Scan (whose Index Cond may name the outer row) is left alone.
+ */
+function isPgCrossJoin(plan: any): boolean {
+  if (!/^Nested Loop/i.test(String(plan['Node Type'] || ''))) return false;
+  if (plan['Join Filter']) return false;
+  const inner = Array.isArray(plan.Plans) ? plan.Plans[1] : undefined;
+  if (!inner) return false;
+  const innerType = String(inner['Node Type'] || '');
+  if (innerType === 'Materialize') return true;
+  return innerType === 'Seq Scan' && !inner['Filter'];
 }
 
 function accessSeverity(accessType?: string): 'low' | 'medium' | 'high' {
@@ -559,6 +601,11 @@ function parseAnalyzeTextPlan(rawText: string): ExplainNode | null {
       details: detailsObj
     };
     if (neverExecuted) addFlag(node, 'neverExecuted');
+    // The same signal the JSON and tabular branches raise for access_type ALL. Without it a tree
+    // plan never showed the loudest warning there is.
+    if (accessType === 'ALL') addFlag(node, 'fullTableScan');
+    // MySQL's own words for a join step with nothing to join on (`Inner hash join (no condition)`).
+    if (/\(no condition\)/i.test(opTitle)) addFlag(node, 'cartesianJoin');
 
     while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
       stack.pop();
@@ -610,6 +657,7 @@ function parsePgNode(plan: any): ExplainNode {
   // stay visible in the Plan grid.
   if (/Seq Scan/i.test(nodeType)) addFlag(node, 'fullTableScan');
   if (/^Index Only Scan/i.test(nodeType)) addFlag(node, 'coveringIndex');
+  if (isPgCrossJoin(plan)) addFlag(node, 'cartesianJoin');
 
   if (plan.Plans && Array.isArray(plan.Plans)) {
     node.children = plan.Plans.map((child: any) => parsePgNode(child));
@@ -857,4 +905,72 @@ function parseSqlitePlan(rows: any[]): ExplainNode {
   });
 
   return root;
+}
+
+/** Flags that mean "look here", in the order the summary lists them — worst first. */
+export const WARN_FLAGS: readonly ExplainFlag[] = [
+  'cartesianJoin', 'fullTableScan', 'noIndexUsed', 'filesort', 'temporaryTable', 'joinBuffer',
+  'rowsMisestimated',
+];
+/** Flags that mean "this is fine". Everything else is neither. */
+export const GOOD_FLAGS: readonly ExplainFlag[] = ['coveringIndex', 'indexCondition'];
+
+/**
+ * `danger` is reserved for a cross join: every other warning is a slower way to get the right
+ * answer, while this one usually means the query returns rows it was never meant to.
+ */
+export function flagSeverity(flags: readonly ExplainFlag[]): 'danger' | 'warn' | 'good' | 'muted' {
+  if (flags.includes('cartesianJoin')) return 'danger';
+  if (flags.some(f => WARN_FLAGS.includes(f))) return 'warn';
+  if (flags.some(f => GOOD_FLAGS.includes(f))) return 'good';
+  return 'muted';
+}
+
+/** The rows an operator hands upward: measured when there is a measurement, else the estimate. */
+export function edgeRows(node: ExplainNode): number | undefined {
+  return node.actualRows ?? node.rowsOut ?? node.rows;
+}
+
+export interface PlanSummary {
+  /** The operator with the largest own cost, when the plan reports cost at all. */
+  hottest?: { id: string; type: string; pct: number };
+  /** One entry per warning kind present, worst first; `firstId` is where a click should land. */
+  issues: { flag: ExplainFlag; count: number; firstId: string }[];
+  /** Largest row count on any edge — what the connector widths are scaled against. */
+  maxRows: number;
+}
+
+/**
+ * What the diagram's summary strip says, read off the finished tree. Pure, so "which node is the
+ * hot one" and "which warnings are there" have one place to be tested.
+ */
+export function summarizePlan(root: ExplainNode | null, totalSelfCost: number): PlanSummary {
+  const summary: PlanSummary = { issues: [], maxRows: 0 };
+  if (!root) return summary;
+
+  let hot: ExplainNode | undefined;
+  const seen = new Map<ExplainFlag, { count: number; firstId: string }>();
+  // Pre-order, so `firstId` is the first occurrence in reading order.
+  const walk = (node: ExplainNode) => {
+    if ((node.selfCost ?? 0) > (hot?.selfCost ?? 0)) hot = node;
+    const rows = edgeRows(node);
+    if (rows !== undefined && rows > summary.maxRows) summary.maxRows = rows;
+    for (const flag of node.flags || []) {
+      if (!WARN_FLAGS.includes(flag)) continue;
+      const entry = seen.get(flag);
+      if (entry) entry.count++;
+      else seen.set(flag, { count: 1, firstId: node.id });
+    }
+    node.children?.forEach(walk);
+  };
+  walk(root);
+
+  const hotNode = hot as ExplainNode | undefined;
+  if (hotNode?.selfCost && totalSelfCost > 0) {
+    summary.hottest = { id: hotNode.id, type: hotNode.type, pct: (hotNode.selfCost / totalSelfCost) * 100 };
+  }
+  summary.issues = WARN_FLAGS
+    .filter(flag => seen.has(flag))
+    .map(flag => ({ flag, ...seen.get(flag)! }));
+  return summary;
 }

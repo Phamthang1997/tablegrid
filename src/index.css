@@ -13697,6 +13697,595 @@ input.rename-input {
 .explain-flow-line-base {
   stroke: var(--win-border-strong, var(--win-border));
   stroke-width: 1.5px;
+  stroke-linecap: round;
+  transition: stroke 0.15s ease;
+}
+/* The edge carrying (close to) the plan's largest row flow: where the data balloons. */
+.explain-flow-line-base.is-heavy {
+  stroke: color-mix(in srgb, var(--st-warn, #f59e0b) 70%, var(--win-border-strong, #999));
+}
+.explain-flow-arrow {
+  fill: var(--win-border-strong, var(--win-border));
+  stroke: var(--win-border-strong, var(--win-border));
+  stroke-width: 1px;
+  stroke-linejoin: round;
+}
+.explain-flow-arrow.is-heavy {
+  fill: color-mix(in srgb, var(--st-warn, #f59e0b) 70%, var(--win-border-strong, #999));
+  stroke: color-mix(in srgb, var(--st-warn, #f59e0b) 70%, var(--win-border-strong, #999));
+}
+.explain-edge-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--win-text-secondary);
+  user-select: none;
+}
+.explain-edge-label.is-heavy {
+  color: var(--st-warn, #f59e0b);
+  font-weight: 700;
+}
+
+/* Canvas: scrolls, and drags to pan. */
+.explain-canvas {
+  flex: 1;
+  overflow: auto;
+  padding: 24px 24px 56px 24px;
+  cursor: grab;
+  outline: none;
+}
+.explain-canvas.is-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+.explain-canvas.is-panning .explain-node {
+  cursor: grabbing;
+}
+
+/* Summary strip: "look here first", one chip per finding. */
+.explain-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--win-border);
+  flex-shrink: 0;
+}
+.explain-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 420px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+.explain-chip:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+.explain-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.explain-chip-count {
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+.explain-chip-hot {
+  color: var(--win-text-primary);
+  background: color-mix(in srgb, var(--st-danger, #ef4444) 10%, transparent);
+  border-color: color-mix(in srgb, var(--st-danger, #ef4444) 25%, transparent);
+}
+.explain-chip-hot > svg,
+.explain-chip-hot > strong {
+  color: var(--st-danger, #ef4444);
+}
+.explain-chip-danger {
+  color: var(--st-danger, #ef4444);
+  background: color-mix(in srgb, var(--st-danger, #ef4444) 14%, transparent);
+  border-color: color-mix(in srgb, var(--st-danger, #ef4444) 40%, transparent);
+}
+.explain-chip-warn {
+  color: var(--st-warn, #f59e0b);
+  background: color-mix(in srgb, var(--st-warn, #f59e0b) 12%, transparent);
+  border-color: color-mix(in srgb, var(--st-warn, #f59e0b) 30%, transparent);
+}
+
+/* Operator node. `--op-color` is set per node from its type. */
+.explain-node {
+  --op-color: var(--win-accent);
+  flex-shrink: 0;
+  cursor: pointer;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 3px;
+  /* The bottom padding is the gap between stacked branches: rows are only as tall as their cells. */
+  padding: 4px 4px 18px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+.explain-node:hover {
+  background: color-mix(in srgb, var(--op-color) 6%, transparent);
+}
+.explain-node.is-selected {
+  background: color-mix(in srgb, var(--win-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--win-accent) 55%, transparent);
+}
+.explain-node-badges {
+  height: 16px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.explain-pct {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  color: var(--win-text-secondary);
+  background: color-mix(in srgb, var(--win-text-secondary) 14%, transparent);
+}
+.explain-pct.is-high {
+  color: var(--st-danger, #ef4444);
+  background: color-mix(in srgb, var(--st-danger, #ef4444) 16%, transparent);
+}
+.explain-pct.is-mid {
+  color: var(--st-warn, #f59e0b);
+  background: color-mix(in srgb, var(--st-warn, #f59e0b) 16%, transparent);
+}
+.explain-pct.is-low {
+  color: var(--st-ok, #16a34a);
+  background: color-mix(in srgb, var(--st-ok, #16a34a) 16%, transparent);
+}
+/* The icon tile: a soft gradient of the operator colour with a hairline ring and a faint glow,
+   instead of a flat tinted square. */
+.explain-node-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  margin: 2px 0 3px;
+  border-radius: 13px;
+  color: var(--op-color);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--op-color) 22%, transparent),
+    color-mix(in srgb, var(--op-color) 8%, transparent)
+  );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--op-color) 26%, transparent),
+    0 2px 6px -2px color-mix(in srgb, var(--op-color) 35%, transparent);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+.explain-node-icon.is-small {
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  border-radius: 9px;
+}
+.explain-node:hover .explain-node-icon {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--op-color) 40%, transparent),
+    0 5px 12px -4px color-mix(in srgb, var(--op-color) 50%, transparent);
+}
+.explain-node.is-selected .explain-node-icon {
+  color: #ffffff;
+  background: linear-gradient(145deg, var(--win-accent), var(--win-accent-secondary, var(--win-accent)));
+  box-shadow: 0 6px 14px -4px var(--win-accent-glow, transparent);
+}
+/* A cross join: the node's colour is already swapped to the danger red (NodeCell sets
+   `--op-color`), so the tile is red through and through. Only its ring is drawn a little
+   stronger — one ring, never a red one around a blue one. */
+.explain-node.is-danger .explain-node-icon {
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in srgb, var(--op-color) 55%, transparent),
+    0 4px 12px -3px color-mix(in srgb, var(--op-color) 50%, transparent);
+}
+/* Up to three lines, broken where the lines come out even ("Inner hash join / (no condition)"
+   rather than "Inner hash join (no / condition)"). The full text is in the tooltip and the
+   detail panel. */
+.explain-node-title {
+  max-width: 100%;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+  text-align: center;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.explain-node-sub {
+  font-size: 10.5px;
+  color: var(--win-text-secondary);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.explain-node-cost {
+  font-size: 10px;
+  color: var(--win-text-disabled);
+  white-space: nowrap;
+}
+
+/* ---- EXPLAIN views other than the diagram ---------------------------------------------------- */
+
+/* `body` turns selection off for the desktop feel; a plan's text is data (conditions, index
+   names, numbers) and people copy pieces of it, so these views turn it back on. */
+.explain-selectable,
+.explain-selectable * {
+  user-select: text;
+}
+.explain-selectable button,
+.explain-selectable button * {
+  user-select: none;
+}
+
+.explain-view {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--win-bg-window);
+}
+.explain-view-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+.explain-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--win-bg-card);
+  border-bottom: 1px solid var(--win-border);
+  flex-shrink: 0;
+}
+.explain-toolbar-left {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.explain-toolbar-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+.explain-copy-btn {
+  height: 24px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.explain-copy-btn.is-on {
+  color: var(--win-accent);
+  border-color: color-mix(in srgb, var(--win-accent) 45%, transparent);
+}
+.explain-copy-ok {
+  color: var(--st-ok, #22c55e);
+}
+.explain-raw {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  font-family: var(--win-font-mono);
+  font-size: 12px;
+  color: var(--win-text-primary);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.explain-tab-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  color: #ffffff;
+  background: var(--st-warn, #f59e0b);
+}
+.explain-tab-count.is-active {
+  color: var(--win-accent);
+  background: #ffffff;
+}
+.explain-chip-tip {
+  color: var(--win-accent);
+  background: color-mix(in srgb, var(--win-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--win-accent) 30%, transparent);
+}
+
+.explain-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 520px;
+  margin: 40px auto;
+  text-align: center;
+  color: var(--win-text-disabled);
+}
+.explain-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+.explain-empty-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--win-text-secondary);
+}
+
+/* Index suggestions */
+.explain-index-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 900px;
+}
+.explain-index-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+  background: var(--win-bg-card);
+}
+.explain-index-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--win-text-primary);
+}
+.explain-index-alias {
+  color: var(--win-text-secondary);
+}
+.explain-index-rows {
+  font-size: 11px;
+  color: var(--st-warn, #f59e0b);
+  font-weight: 600;
+}
+.explain-index-copy {
+  margin-left: auto;
+}
+.explain-index-cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.explain-index-col {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+  color: var(--win-text-primary);
+  background: color-mix(in srgb, var(--win-accent) 12%, transparent);
+}
+.explain-index-col.is-range {
+  background: color-mix(in srgb, var(--st-warn, #f59e0b) 14%, transparent);
+}
+.explain-index-col em {
+  font-family: var(--win-font-sans);
+  font-style: normal;
+  font-size: 10px;
+  color: var(--win-text-secondary);
+}
+.explain-index-sql {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-window);
+  font-family: var(--win-font-mono);
+  font-size: 12px;
+  color: var(--win-text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.explain-index-why {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+.explain-index-why code {
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-text-primary);
+  word-break: break-all;
+}
+
+/* Plan comparison */
+.explain-cmp-sql {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 11px;
+}
+.explain-cmp-sql > div {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.explain-cmp-sql span {
+  width: 56px;
+  flex-shrink: 0;
+  color: var(--win-text-disabled);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.explain-cmp-sql code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--win-font-mono);
+  color: var(--win-text-primary);
+}
+.explain-cmp-identical {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+  background: color-mix(in srgb, var(--win-text-secondary) 10%, transparent);
+}
+.explain-cmp-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.explain-cmp-card {
+  --cmp-color: var(--win-text-secondary);
+  min-width: 200px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--win-border);
+  border-left: 3px solid var(--cmp-color);
+  background: var(--win-bg-card);
+}
+.explain-cmp-card.is-better { --cmp-color: var(--st-ok, #22c55e); }
+.explain-cmp-card.is-worse { --cmp-color: var(--st-danger, #ef4444); }
+.explain-cmp-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--win-text-disabled);
+  margin-bottom: 4px;
+}
+.explain-cmp-values {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--win-text-secondary);
+}
+.explain-cmp-values strong {
+  color: var(--win-text-primary);
+}
+.explain-cmp-delta {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--cmp-color);
+}
+.explain-cmp-delta.is-muted {
+  font-weight: 400;
+  color: var(--win-text-disabled);
+}
+.explain-cmp-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.explain-cmp-flag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+}
+.explain-cmp-flag.is-better { color: var(--st-ok, #22c55e); }
+.explain-cmp-flag.is-worse { color: var(--st-danger, #ef4444); }
+.explain-cmp-flag em {
+  font-style: normal;
+  color: var(--win-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.explain-cmp-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  background: var(--win-bg-card);
+  font-size: 11.5px;
+}
+.explain-cmp-table th {
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--win-text-disabled);
+  border-bottom: 1px solid var(--win-border);
+  user-select: none;
+}
+.explain-cmp-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--win-border);
+  color: var(--win-text-primary);
+  vertical-align: top;
+}
+.explain-cmp-table-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.explain-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--win-text-secondary);
+  background: color-mix(in srgb, var(--win-text-secondary) 12%, transparent);
+}
+.explain-verdict.is-better {
+  color: var(--st-ok, #22c55e);
+  background: color-mix(in srgb, var(--st-ok, #22c55e) 14%, transparent);
+}
+.explain-verdict.is-worse {
+  color: var(--st-danger, #ef4444);
+  background: color-mix(in srgb, var(--st-danger, #ef4444) 14%, transparent);
+}
+.explain-verdict.is-added {
+  color: var(--win-accent);
+  background: color-mix(in srgb, var(--win-accent) 12%, transparent);
 }
 
 /* ==========================================================================

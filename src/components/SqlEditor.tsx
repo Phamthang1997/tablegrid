@@ -646,6 +646,12 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   // EXPLAIN State
   const [explainResult1, setExplainResult1] = useState<ExplainResult | null>(null);
   const [explainResult2, setExplainResult2] = useState<ExplainResult | null>(null);
+  // What each pane's plan is compared against. Unpinned, it is simply the previous EXPLAIN and
+  // slides along with every run; pinned, it stays put, so "before" survives several attempts at
+  // an "after" (add an index, re-run, drop it, try another).
+  type ExplainBase = { result: ExplainResult; pinned: boolean } | null;
+  const [explainBase1, setExplainBase1] = useState<ExplainBase>(null);
+  const [explainBase2, setExplainBase2] = useState<ExplainBase>(null);
   const [activeTabType1, setActiveTabType1] = useState<'data' | 'explain'>('data');
   const [activeTabType2, setActiveTabType2] = useState<'data' | 'explain'>('data');
 
@@ -1559,7 +1565,11 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       const res = await dbHelper.executeQuery(connId, explainQuery, params);
       const rows = res.data || (res as any).rows || [];
       if (res.success && rows.length > 0) {
-        const parsed = parseExplainOutput(rows, dbType);
+        const parsed: ExplainResult = { ...parseExplainOutput(rows, dbType), sourceSql: explainQuery };
+        // The plan being replaced becomes the baseline, unless the user pinned one.
+        const previous = isPane1 ? explainResult1 : explainResult2;
+        const setBase = isPane1 ? setExplainBase1 : setExplainBase2;
+        setBase(base => (base?.pinned ? base : previous ? { result: previous, pinned: false } : base));
         if (isPane1) {
           setExplainResult1(parsed);
           setActiveTabType1('explain');
@@ -2978,6 +2988,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     const pViewMode = viewModeOf(paneId, pActiveTabIndex);
 
     const pExplainResult = paneId === 1 ? explainResult1 : explainResult2;
+    const pExplainBase = paneId === 1 ? explainBase1 : explainBase2;
+    const pSetExplainBase = paneId === 1 ? setExplainBase1 : setExplainBase2;
     const pActiveTabType = paneId === 1 ? activeTabType1 : activeTabType2;
     const pSetActiveTabType = paneId === 1 ? setActiveTabType1 : setActiveTabType2;
 
@@ -3161,6 +3173,13 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
           {pActiveTabType === 'explain' && pExplainResult ? (
             <ExplainViewer
               explainResult={pExplainResult}
+              dbType={dbType}
+              baseline={pExplainBase?.result ?? null}
+              baselinePinned={pExplainBase?.pinned ?? false}
+              onPinCurrent={() => pSetExplainBase({ result: pExplainResult, pinned: true })}
+              // Unpinning falls back to "no baseline" rather than guessing which run was previous;
+              // the next EXPLAIN makes this plan the baseline again.
+              onUnpin={() => pSetExplainBase(null)}
               // Only MySQL has a cost-less EXPLAIN variant worth re-running as JSON; Postgres
               // already returns JSON for every variant and SQLite never reports cost.
               onRequestJsonPlan={
@@ -3678,7 +3697,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     results, columns, allResults, activeTabIndex, loading, hasRun, errorMsg, statusMsg,
-    page, pageSize, showCopyDropdown, explainResult1, activeTabType1,
+    page, pageSize, showCopyDropdown, explainResult1, explainBase1, activeTabType1,
     sortCol1, sortDir1, sortedResults1, visibleResults1, quickSearch1, showQuickSearch1, frozenCols1,
     rowSel1, cellEdits, editingCell, editValue, editMsg,
     pane1ViewModes, showRowNumbers, autoFitColsPane1, userEditorHeight, dbType, locale, t
@@ -3689,7 +3708,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     results2, columns2, allResults2, activeTabIndex2, loading2, hasRun2, errorMsg2, statusMsg2,
-    page2, pageSize2, showCopyDropdown2, explainResult2, activeTabType2,
+    page2, pageSize2, showCopyDropdown2, explainResult2, explainBase2, activeTabType2,
     sortCol2, sortDir2, sortedResults2, visibleResults2, quickSearch2, showQuickSearch2, frozenCols2,
     rowSel2, cellEdits, editingCell, editValue, editMsg,
     pane2ViewModes, showRowNumbers, autoFitColsPane2, userEditorHeight2, dbType, locale, t

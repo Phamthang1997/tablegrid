@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  buildExplainQuery, explainJsonLabel, parseExplainOutput, supportsJsonExplain,
+  buildExplainQuery, explainJsonLabel, flagSeverity, parseExplainOutput, summarizePlan, supportsJsonExplain,
   type ExplainNode,
 } from '../explainHelper';
 
@@ -419,5 +419,100 @@ describe('parseExplainOutput — PostgreSQL FORMAT JSON', () => {
     expect(root.selfCost).toBeCloseTo(100 - 85, 6);
     expect(flatten(root).find(n => n.table === 'orders')!.selfCost).toBe(60);
     expect(res.totalSelfCost).toBeCloseTo(100, 6);
+  });
+});
+
+describe('cartesianJoin — a join step with nothing to join on', () => {
+  it('reads MySQL\'s own "(no condition)" out of a tree/ANALYZE plan', () => {
+    const res = parseExplainOutput([{ EXPLAIN: [
+      '-> Inner hash join (no condition)  (cost=20084 rows=99000)',
+      '    -> Filter: (f.film_id < 100)  (cost=10.2 rows=99)',
+      '        -> Index range scan on F using PRIMARY over (film_id < 100)  (cost=10.2 rows=99)',
+      '    -> Hash',
+      '        -> Inner hash join (fc.category_id = category.category_id)  (cost=350 rows=1000)',
+    ].join('\n') }], 'mysql');
+    const joins = flatten(res.rootNode!).filter(n => /hash join/i.test(n.type));
+    expect(joins[0].flags).toContain('cartesianJoin');
+    // A hash join that names its condition is an ordinary join.
+    expect(joins[1].flags ?? []).not.toContain('cartesianJoin');
+  });
+
+  const twoTables = (right: Record<string, unknown>) => parseExplainOutput(rowsFor({
+    query_block: {
+      nested_loop: [
+        { table: { table_name: 'a', access_type: 'ALL', rows_examined_per_scan: 100 } },
+        { table: { table_name: 'b', rows_examined_per_scan: 50, ...right } },
+      ],
+    },
+  }), 'mysql').rootNode!;
+
+  it('flags a MySQL JSON step whose right table is read with no ref and no attached condition', () => {
+    const join = twoTables({ access_type: 'ALL', using_join_buffer: 'hash join' });
+    expect(join.type).toBe('Nested Loop Join');
+    expect(join.flags).toContain('cartesianJoin');
+  });
+
+  it('stays silent whenever something could be joining the two sides', () => {
+    expect(twoTables({ access_type: 'ALL', attached_condition: '(b.a_id = a.id)' }).flags ?? []).not.toContain('cartesianJoin');
+    expect(twoTables({ access_type: 'ref', ref: ['db.a.id'], used_key_parts: ['a_id'] }).flags ?? []).not.toContain('cartesianJoin');
+    expect(twoTables({ access_type: 'eq_ref', key: 'PRIMARY' }).flags ?? []).not.toContain('cartesianJoin');
+    expect(twoTables({ access_type: 'ALL', range_checked_for_each_record: 'index map: 0x1' }).flags ?? []).not.toContain('cartesianJoin');
+    // One row multiplies nothing.
+    expect(twoTables({ access_type: 'ALL', rows_examined_per_scan: 1 }).flags ?? []).not.toContain('cartesianJoin');
+  });
+
+  const pgLoop = (inner: Record<string, unknown>, joinFilter?: string) => parseExplainOutput([{
+    'QUERY PLAN': JSON.stringify([{ Plan: {
+      'Node Type': 'Nested Loop', 'Total Cost': 10, ...(joinFilter ? { 'Join Filter': joinFilter } : {}),
+      Plans: [{ 'Node Type': 'Seq Scan', 'Relation Name': 'a', 'Total Cost': 1 }, inner],
+    } }]),
+  }], 'postgres').rootNode!;
+
+  it('flags a Postgres Nested Loop that rescans an unparameterised inner side', () => {
+    expect(pgLoop({ 'Node Type': 'Materialize', 'Total Cost': 2 }).flags).toContain('cartesianJoin');
+    expect(pgLoop({ 'Node Type': 'Seq Scan', 'Relation Name': 'b', 'Total Cost': 2 }).flags).toContain('cartesianJoin');
+  });
+
+  it('leaves a Postgres Nested Loop alone when a condition or an index can join it', () => {
+    expect(pgLoop({ 'Node Type': 'Materialize' }, '(a.id = b.a_id)').flags ?? []).not.toContain('cartesianJoin');
+    expect(pgLoop({ 'Node Type': 'Index Scan', 'Index Cond': '(b.a_id = a.id)' }).flags ?? []).not.toContain('cartesianJoin');
+    // A Filter on the inner scan may reference the outer row, so it is not provably a cross join.
+    expect(pgLoop({ 'Node Type': 'Seq Scan', Filter: '(b.a_id = a.id)' }).flags ?? []).not.toContain('cartesianJoin');
+  });
+
+  it('outranks every other warning', () => {
+    expect(flagSeverity(['fullTableScan', 'cartesianJoin'])).toBe('danger');
+    expect(flagSeverity(['fullTableScan'])).toBe('warn');
+    expect(flagSeverity(['coveringIndex'])).toBe('good');
+    expect(flagSeverity(['subqueriesHidden'])).toBe('muted');
+  });
+});
+
+describe('summarizePlan', () => {
+  const node = (id: string, extra: Partial<ExplainNode>, children: ExplainNode[] = []): ExplainNode =>
+    ({ id, type: id, children, ...extra });
+
+  it('names the costliest operator and lists warning kinds worst first, with where they start', () => {
+    const root = node('root', { selfCost: 5, rowsOut: 10 }, [
+      node('scan1', { selfCost: 20, rowsOut: 900, flags: ['fullTableScan'] }),
+      node('join', { selfCost: 70, rowsOut: 99000, flags: ['cartesianJoin', 'joinBuffer'] }, [
+        node('scan2', { selfCost: 5, flags: ['fullTableScan', 'coveringIndex'] }),
+      ]),
+    ]);
+    const s = summarizePlan(root, 100);
+    expect(s.hottest).toEqual({ id: 'join', type: 'join', pct: 70 });
+    expect(s.issues).toEqual([
+      { flag: 'cartesianJoin', count: 1, firstId: 'join' },
+      { flag: 'fullTableScan', count: 2, firstId: 'scan1' },
+      { flag: 'joinBuffer', count: 1, firstId: 'join' },
+    ]);
+    expect(s.maxRows).toBe(99000);
+  });
+
+  it('claims no hot spot for a plan without cost', () => {
+    const s = summarizePlan(node('root', {}, [node('a', { rows: 3 })]), 0);
+    expect(s.hottest).toBeUndefined();
+    expect(s.issues).toEqual([]);
+    expect(s.maxRows).toBe(3);
   });
 });
