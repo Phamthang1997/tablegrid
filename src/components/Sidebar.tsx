@@ -184,6 +184,73 @@ const SEG_TABS = [
 /** The tab ids above, derived so the two can never drift apart. */
 type SidebarTab = (typeof SEG_TABS)[number][0];
 
+type CollapsedSections = { tables: boolean; views: boolean; temporary: boolean; functions: boolean; procedures: boolean };
+
+/**
+ * The sidebar's own UI state - everything the user *chose*, as opposed to what the backend answered.
+ *
+ * There is one `Sidebar` for every open connection (`App` renders it once, unkeyed), so all of this
+ * used to be shared: picking Tools on one connection left the rail's other connections showing Tools,
+ * and an expanded table carried its row open into a connection where that name means another table.
+ * It is now saved per `conn_id` and swapped back in when the user returns (`uiByConnRef` below).
+ *
+ * `tableSchemaMap`/`loadingColumns` belong here rather than beside the fetched lists because they are
+ * the CONTENT of the expanded rows: restoring `expandedTables` without them would redraw a row using
+ * whichever connection last expanded a table of that name - the stale-columns bug this same change
+ * fixes, since nothing ever cleared that map on a connection switch.
+ */
+type SidebarUiState = {
+  /**
+   * The `(connection, database, schema)` the three table-bound fields below were built for.
+   *
+   * `conn_id` alone is not enough: `open_database` mints a new one per database, but the Postgres
+   * schema picker changes the whole set of tables UNDER one id, so a table of the same name in the
+   * new schema would redraw with the old schema's columns. The other fields are the user's own
+   * choices and survive a schema switch - only the object state is scoped this tightly.
+   */
+  objScope: string;
+  activeTab: SidebarTab;
+  searchTerms: Record<SidebarTab, string>;
+  historyScope: 'database' | 'connection' | 'all';
+  historySubTab: 'history' | 'saved';
+  collapsed: CollapsedSections;
+  expandedTables: Record<string, boolean>;
+  tableSchemaMap: Record<string, SchemaInfo>;
+  loadingColumns: Record<string, boolean>;
+};
+
+/**
+ * What a connection's sidebar looks like before the user touches it.
+ *
+ * Shared by reference across connections on purpose: every setter here spreads into a new object
+ * (`setCollapsed(c => ({ ...c }))` and friends), so nothing ever writes into these - and a per-reset
+ * clone would only hide a future in-place mutation instead of failing on it.
+ *
+ * Views, functions and procedures are COLLAPSED by default: most of the time the user is working with
+ * the table list, and these three groups only open when needed (they still open on their own while a
+ * search is being typed - see isOpen()).
+ */
+const DEFAULT_SIDEBAR_UI: SidebarUiState = {
+  // Never equal to a real scope, so a restore from the defaults always counts as a fresh object list.
+  objScope: '',
+  activeTab: 'items',
+  searchTerms: { items: '', queries: '', history: '', tools: '' },
+  historyScope: 'database',
+  historySubTab: 'history',
+  collapsed: { tables: false, views: true, temporary: false, functions: true, procedures: true },
+  expandedTables: {},
+  tableSchemaMap: {},
+  loadingColumns: {},
+};
+
+/**
+ * How many connections keep their sidebar state, least-recently-left evicted first.
+ *
+ * A cap rather than a cleanup on disconnect: there is no 'connection closed' event to listen for, and
+ * the only cost of forgetting an entry is that the connection comes back with its defaults.
+ */
+const SIDEBAR_UI_MEMORY = 12;
+
 type DetailGroup = 'fields' | 'indexes' | 'fks' | 'checks' | 'triggers';
 
 interface GroupNodeProps {
@@ -633,24 +700,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [refreshing, setRefreshing] = useState(false);
 
   // Top 4-tab segmented control (Items | Queries | History | Tools)
-  const [activeTab, setActiveTab] = useState<SidebarTab>('items');
+  const [activeTab, setActiveTab] = useState<SidebarTab>(DEFAULT_SIDEBAR_UI.activeTab);
 
   // One search box on screen, but one term PER tab: the four tabs filter unrelated lists (objects,
   // saved queries, history, tools), so a term typed while looking for a table used to narrow the
   // history list too. Keyed by tab, so switching back also restores what was typed there.
-  const [searchTerms, setSearchTerms] = useState<Record<SidebarTab, string>>({
-    items: '',
-    queries: '',
-    history: '',
-    tools: '',
-  });
+  const [searchTerms, setSearchTerms] = useState<Record<SidebarTab, string>>(DEFAULT_SIDEBAR_UI.searchTerms);
   const searchTerm = searchTerms[activeTab];
   const setSearchTerm = (value: string) =>
     setSearchTerms((prev) => ({ ...prev, [activeTab]: value }));
   const [savedQueriesList, setSavedQueriesList] = useState<SavedQueryEntry[]>([]);
   const [historyList, setHistoryList] = useState<HistoryEntry[]>([]);
-  const [historyScope, setHistoryScope] = useState<'database' | 'connection' | 'all'>('database');
-  const [historySubTab, setHistorySubTab] = useState<'history' | 'saved'>('history');
+  const [historyScope, setHistoryScope] = useState<SidebarUiState['historyScope']>(DEFAULT_SIDEBAR_UI.historyScope);
+  const [historySubTab, setHistorySubTab] = useState<SidebarUiState['historySubTab']>(DEFAULT_SIDEBAR_UI.historySubTab);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const handleCopySql = (e: React.MouseEvent, id: string, sql: string) => {
@@ -687,16 +749,74 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
     return groups;
   };
-  // Views, functions and procedures are COLLAPSED by default: most of the time the user is working
-  // with the table list, and these three groups only open when needed (they still open on their own
-  // while a search is being typed — see isOpen()).
-  const [collapsed, setCollapsed] = useState<{ tables: boolean; views: boolean; temporary: boolean; functions: boolean; procedures: boolean }>({ tables: false, views: true, temporary: false, functions: true, procedures: true });
+  const [collapsed, setCollapsed] = useState<CollapsedSections>(DEFAULT_SIDEBAR_UI.collapsed);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Table detail tree state (expand/collapse table to see fields/indexes/FKs/checks/triggers)
-  const [expandedTables, setExpandedTables] = useState<Record<string, boolean>>({});
-  const [tableSchemaMap, setTableSchemaMap] = useState<Record<string, SchemaInfo>>({});
-  const [loadingColumns, setLoadingColumns] = useState<Record<string, boolean>>({});
+  const [expandedTables, setExpandedTables] = useState<Record<string, boolean>>(DEFAULT_SIDEBAR_UI.expandedTables);
+  const [tableSchemaMap, setTableSchemaMap] = useState<Record<string, SchemaInfo>>(DEFAULT_SIDEBAR_UI.tableSchemaMap);
+  const [loadingColumns, setLoadingColumns] = useState<Record<string, boolean>>(DEFAULT_SIDEBAR_UI.loadingColumns);
+
+  /**
+   * Per-connection sidebar state: the outgoing connection's is saved and the incoming one's restored,
+   * in the RENDER pass rather than in an effect.
+   *
+   * An effect would paint one frame of the previous connection's sidebar - its tab, its search text,
+   * its expanded rows - before swapping, which is the same reason the ER diagram reconciles its layout
+   * during render (`reconcileLayout`). Setting state during a component's own render is what React
+   * supports for exactly this: the render is discarded and re-run before anything is committed.
+   *
+   * Keyed by `conn_id` because that is what the rail switches between, and two connections can point
+   * at the same database name. The state is deliberately NOT persisted: a `conn_id` is minted fresh on
+   * every connect, so there would be nothing to read it back under.
+   */
+  const uiByConnRef = useRef(new Map<string, SidebarUiState>());
+  const uiConnRef = useRef<string | undefined>(connId);
+  // `dbName` as well as `schema`: a restore replaying `USE <db>` moves the database under a live id,
+  // which is the one other way the object list changes without a new `conn_id`.
+  const objScope = JSON.stringify([connId, dbName, schema ?? '']);
+  const objScopeRef = useRef(objScope);
+  if (uiConnRef.current !== connId) {
+    const leaving = uiConnRef.current;
+    if (leaving) {
+      // delete-then-set so the Map's insertion order is a least-recently-left order, which is what
+      // makes `keys().next()` below the right entry to drop. `objScopeRef` is still the LEAVING
+      // connection's here - it is only advanced at the end of this block.
+      uiByConnRef.current.delete(leaving);
+      uiByConnRef.current.set(leaving, {
+        objScope: objScopeRef.current,
+        activeTab, searchTerms, historyScope, historySubTab,
+        collapsed, expandedTables, tableSchemaMap, loadingColumns,
+      });
+      while (uiByConnRef.current.size > SIDEBAR_UI_MEMORY) {
+        const oldest = uiByConnRef.current.keys().next().value;
+        if (oldest === undefined) break;
+        uiByConnRef.current.delete(oldest);
+      }
+    }
+    uiConnRef.current = connId;
+    objScopeRef.current = objScope;
+    const saved = uiByConnRef.current.get(connId);
+    const next = saved ?? DEFAULT_SIDEBAR_UI;
+    // The schema can have been changed from elsewhere while this connection was off screen, so the
+    // restore has to re-check it rather than trust that nothing moved.
+    const staleObjects = next.objScope !== objScope;
+    setActiveTab(next.activeTab);
+    setSearchTerms(next.searchTerms);
+    setHistoryScope(next.historyScope);
+    setHistorySubTab(next.historySubTab);
+    setCollapsed(next.collapsed);
+    setExpandedTables(staleObjects ? DEFAULT_SIDEBAR_UI.expandedTables : next.expandedTables);
+    setTableSchemaMap(staleObjects ? DEFAULT_SIDEBAR_UI.tableSchemaMap : next.tableSchemaMap);
+    setLoadingColumns(staleObjects ? DEFAULT_SIDEBAR_UI.loadingColumns : next.loadingColumns);
+  } else if (objScopeRef.current !== objScope) {
+    // Same connection, different schema (or database): what the user CHOSE stays - the tab they are
+    // on, what they typed, which groups are open - and only the rows bound to the old object list go.
+    objScopeRef.current = objScope;
+    setExpandedTables(DEFAULT_SIDEBAR_UI.expandedTables);
+    setTableSchemaMap(DEFAULT_SIDEBAR_UI.tableSchemaMap);
+    setLoadingColumns(DEFAULT_SIDEBAR_UI.loadingColumns);
+  }
 
   // These two maps are only READ, to decide whether the backend needs calling. Read through a ref so
   // toggleTableExpanded keeps its identity; putting them in the deps would change the callback every
@@ -708,6 +828,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
     loadingColumnsRef.current = loadingColumns;
   }, [tableSchemaMap, loadingColumns]);
 
+  /**
+   * Lands an expanded row's columns on the scope that ASKED for them, which is not necessarily the
+   * one on screen: the user can switch connection - or, on Postgres, schema - while the request is in
+   * flight, and by then the state hooks belong to a different table list. Writing through them would
+   * show one scope's columns under another's table of the same name, and leave the asking one's row
+   * spinning for ever.
+   */
+  const applySchemaResult = useCallback((forConn: string, forScope: string, tableName: string, tableSchema?: SchemaInfo) => {
+    if (uiConnRef.current === forConn) {
+      // Right connection, but the schema picker may have moved under it - and that reset the two maps
+      // already, so there is no spinner left for this answer to clear.
+      if (objScopeRef.current !== forScope) return;
+      if (tableSchema) setTableSchemaMap(prev => ({ ...prev, [tableName]: tableSchema }));
+      setLoadingColumns(prev => ({ ...prev, [tableName]: false }));
+      return;
+    }
+    const saved = uiByConnRef.current.get(forConn);
+    // Gone means the connection was closed, or evicted by SIDEBAR_UI_MEMORY; a scope mismatch means
+    // its object list has since been replaced. Either way there is nothing for the answer to belong to.
+    if (!saved || saved.objScope !== forScope) return;
+    // `set` on a key the Map already holds keeps its position, so this cannot disturb the LRU order.
+    uiByConnRef.current.set(forConn, {
+      ...saved,
+      tableSchemaMap: tableSchema ? { ...saved.tableSchemaMap, [tableName]: tableSchema } : saved.tableSchemaMap,
+      loadingColumns: { ...saved.loadingColumns, [tableName]: false },
+    });
+  }, []);
+
   // isExpanded is passed in by the row itself, so expandedTables need not be read here.
   const toggleTableExpanded = useCallback(async (tableName: string, isExpanded: boolean, e: React.MouseEvent, schemaOverride?: string) => {
     e.stopPropagation();
@@ -715,17 +863,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setExpandedTables(prev => ({ ...prev, [tableName]: willExpand }));
 
     if (willExpand && !columnsMapRef.current[tableName] && !loadingColumnsRef.current[tableName]) {
+      const forConn = connId;
+      const forScope = objScopeRef.current;
       setLoadingColumns(prev => ({ ...prev, [tableName]: true }));
       try {
-        const tableSchema = await dbHelper.getTableSchema(connId, tableName, schemaOverride);
-        setTableSchemaMap(prev => ({ ...prev, [tableName]: tableSchema }));
+        const tableSchema = await dbHelper.getTableSchema(forConn, tableName, schemaOverride);
+        applySchemaResult(forConn, forScope, tableName, tableSchema);
       } catch (err) {
         console.error(`Failed to fetch schema for ${tableName}:`, err);
-      } finally {
-        setLoadingColumns(prev => ({ ...prev, [tableName]: false }));
+        applySchemaResult(forConn, forScope, tableName);
       }
     }
-  }, [connId]);
+  }, [connId, applySchemaResult]);
 
   // Drag the right edge to change the sidebar's width.
   const rootRef = useRef<HTMLDivElement>(null);
