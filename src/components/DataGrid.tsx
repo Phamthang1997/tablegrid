@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { clampMenu, type MenuRect } from '../utils/menuPosition';
+import { GridContextMenu, MenuHeading, MenuItem, MenuSeparator, MenuSub } from './GridContextMenu';
+import { ColumnStatsDialog, TransposeDialog, ValueEditorDialog } from './GridToolDialogs';
 import { resolveRowClick, resolveRowContextMenu } from '../utils/rowSelection';
 import { countKey, nextCountMode, seekColumn, seekViewKey } from '../utils/gridPaging';
 import { getCommitPreviewForKey, setCommitPreviewForKey } from '../utils/commitPreview';
@@ -383,23 +384,11 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     colName: string; cellValue: any;
   } | null>(null);
 
-  // The context menu's position after its real size has been measured (so it cannot overflow the window)
-  const cellMenuRef = useRef<HTMLDivElement>(null);
-  const [cellMenuPos, setCellMenuPos] = useState<MenuRect | null>(null);
-
-  useLayoutEffect(() => {
-    if (!contextMenu) {
-      setCellMenuPos(null);
-      return;
-    }
-    const el = cellMenuRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setCellMenuPos(clampMenu(contextMenu.x, contextMenu.y, r.width, r.height, window.innerWidth, window.innerHeight));
-  }, [contextMenu]);
-
-  // Quick Look Modal State
-  const [quickLookCell, setQuickLookCell] = useState<{ colName: string; value: any } | null>(null);
+  // The tools the context menu opens (GridToolDialogs.tsx). The value editor replaced Quick Look:
+  // same entry point, but it formats JSON and can write the value back into the edit buffer.
+  const [valueEditor, setValueEditor] = useState<{ rowId: any; colName: string; value: any; editable: boolean; reason?: string } | null>(null);
+  const [statsTarget, setStatsTarget] = useState<{ column: string; values: unknown[]; scope: string; note?: string } | null>(null);
+  const [transposeTarget, setTransposeTarget] = useState<any[] | null>(null);
   const [mediaViewerTarget, setMediaViewerTarget] = useState<{ media: MediaInfo; colName: string; tableName: string } | null>(null);
 
   // Schema View Toggle
@@ -946,7 +935,15 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     }
     if (!editingCell) return;
     const { rowId, colName } = editingCell;
+    applyCellValue(rowId, colName, editValue);
+    setEditingCell(null);
+  };
 
+  /**
+   * Puts one cell's new value into the edit buffer. Shared by the inline editor and the value
+   * editor, so a value applied from either one is dirty-tracked, undone and saved the same way.
+   */
+  const applyCellValue = (rowId: any, colName: string, nextValue: any) => {
     // Check if cell changed from original
     const isTemp = String(rowId).startsWith('temp_');
 
@@ -955,7 +952,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
       setInserts(prev =>
         prev.map(row => {
           if (row.__tempId === rowId) {
-            return { ...row, [colName]: editValue };
+            return { ...row, [colName]: nextValue };
           }
           return row;
         })
@@ -965,14 +962,14 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
       const originalRow = rows.find(r => r[primaryKey] === rowId);
       const originalVal = originalRow ? originalRow[colName] : undefined;
 
-      if (String(originalVal) !== String(editValue)) {
+      if (String(originalVal) !== String(nextValue)) {
         setUpdates(prev => {
           const rowUpdates = prev[rowId] || {};
           return {
             ...prev,
             [rowId]: {
               ...rowUpdates,
-              [colName]: editValue
+              [colName]: nextValue
             }
           };
         });
@@ -991,8 +988,6 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         });
       }
     }
-
-    setEditingCell(null);
   };
 
   // Add Empty Row
@@ -2897,185 +2892,155 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         </Modal>
       )}
 
-      {/* ─── Right-Click Context Menu ─── */}
-      {contextMenu && (
-        <div
-          ref={cellMenuRef}
-          onClick={e => e.stopPropagation()}
-          style={{
-            position: 'fixed',
-            // The position is adjusted to the menu's real size (it used to assume a fixed 320/230, so
-            // a long menu was still clipped at the bottom of the window).
-            top: cellMenuPos ? cellMenuPos.top : contextMenu.y,
-            left: cellMenuPos ? cellMenuPos.left : contextMenu.x,
-            visibility: cellMenuPos ? 'visible' : 'hidden',
-            zIndex: 99999,
-            background: 'var(--win-bg-popover, #ffffff)',
-            border: '1px solid var(--win-border-strong)',
-            borderRadius: '8px',
-            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.25), 0 2px 8px rgba(0, 0, 0, 0.15)',
-            padding: '4px 0',
-            minWidth: '220px',
-            fontSize: '12px',
-          }}
-        >
-          {/* Row actions */}
-          <div style={{ padding: '2px 8px 4px', color: 'var(--win-text-disabled)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('dataGrid.ctxRow')}</div>
-          <button className="context-menu-item" onClick={() => {
-            const cm = contextMenu;
-            setContextMenu(null);
-            const rowIdx = rows.findIndex((r, idx) => (r[primaryKey] !== undefined && r[primaryKey] !== null ? r[primaryKey] : `__idx_${idx}`) === cm.rowId);
-            if (rowIdx >= 0) {
-              setDocumentViewerIndex(rowIdx);
-            }
-          }}>
-            <span>📑</span> {t('dataGrid.ctxViewDocument', 'Xem chi tiết dòng (Document Viewer)')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); handleDuplicateRow(contextMenu.row); }}>
-            <span>📋</span> {t('dataGrid.ctxDuplicate')}
-          </button>
-          <button className="context-menu-item" style={{ color: 'var(--st-danger)' }} onClick={() => { setContextMenu(null); handleDeleteRow(contextMenu.rowId); }}>
-            <span>🗑</span> {t('dataGrid.ctxDeleteRow')}
-          </button>
+      {/* ─── Right-Click Context Menu ───
+          Cell → column → row, most-used first. The ten copy formats sit behind "Copy as ▸": as a
+          flat list they were half the menu and pushed Edit / Delete out of reach. */}
+      {contextMenu && (() => {
+        const cm = contextMenu;
+        const nSel = selectedRowIds.size;
+        const media = detectMedia(cm.cellValue, cm.colName);
+        const fk = getFkInfo(cm.colName);
+        const hasFkValue = !!fk && cm.cellValue !== null && cm.cellValue !== undefined && cm.cellValue !== '';
+        // A row without a primary key is keyed by its position (`__idx_<n>`), and an UPDATE for it
+        // would have nothing to put in its WHERE — so the value editor opens read-only there.
+        const hasKey = String(cm.rowId).startsWith('temp_') || !String(cm.rowId).startsWith('__idx_');
+        const statsOnSelection = nSel > 1;
+        return (
+          <GridContextMenu x={cm.x} y={cm.y} onClose={() => setContextMenu(null)}>
+            <MenuHeading>{t('dataGrid.ctxCell', { col: cm.colName })}</MenuHeading>
+            {!readOnly && (
+              <MenuItem icon="✏️" label={t('dataGrid.ctxEditCell')} onSelect={() => startEdit(cm.rowId, cm.colName, cm.cellValue)} />
+            )}
+            <MenuItem
+              icon="📝"
+              label={t('gridTools.openValueEditor')}
+              onSelect={() => setValueEditor({
+                rowId: cm.rowId,
+                colName: cm.colName,
+                value: cm.cellValue,
+                editable: !readOnly && hasKey,
+                reason: readOnly ? t('gridTools.editorReadOnly') : !hasKey ? t('gridTools.editorNoKey') : undefined,
+              })}
+            />
+            <MenuItem
+              icon="📄"
+              label={t('dataGrid.ctxCopyCell')}
+              onSelect={() => {
+                copyToClipboard(cm.cellValue === null ? '' : String(cm.cellValue));
+                setSuccessMsg(t('dataGrid.copiedCell')); setTimeout(() => setSuccessMsg(null), 2000);
+              }}
+            />
+            {hasFkValue && fk && (
+              <MenuItem
+                icon="🔗"
+                label={t('dataGrid.ctxGoToFk', { table: fk.refTable, defaultValue: `Mở bảng ${fk.refTable} (${fk.refColumn} = ${cm.cellValue})` })}
+                onSelect={() => handleFkClick(cm.colName, cm.cellValue)}
+              />
+            )}
+            {media && (
+              <MenuItem
+                icon="🖼️"
+                label={t('dataGrid.ctxViewImage', 'Xem ảnh (Media Viewer)')}
+                onSelect={() => setMediaViewerTarget({ media, colName: cm.colName, tableName })}
+              />
+            )}
 
-          <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
+            <MenuHeading>{t('gridTools.columnHeading', { col: cm.colName })}</MenuHeading>
+            <MenuItem icon="↑" label={t('dataGrid.ctxAsc')} onSelect={() => { setSortBy(cm.colName); setSortDir('asc'); setPage(1); }} />
+            <MenuItem icon="↓" label={t('dataGrid.ctxDesc')} onSelect={() => { setSortBy(cm.colName); setSortDir('desc'); setPage(1); }} />
+            <MenuItem
+              icon="Σ"
+              label={t('gridTools.columnStats')}
+              onSelect={() => {
+                const source = statsOnSelection ? selectedRows() : displayedRows;
+                setStatsTarget({
+                  column: cm.colName,
+                  values: source.map(r => r[cm.colName]),
+                  scope: statsOnSelection
+                    ? t('gridTools.scopeSelected', { n: source.length })
+                    : t('gridTools.scopePage', { n: source.length }),
+                  note: statsOnSelection ? undefined : t('gridTools.statsPageNote'),
+                });
+              }}
+            />
+            <MenuSub icon="📋" label={t('gridTools.copyColumn')}>
+              <MenuItem
+                icon="📋"
+                label={t('gridTools.columnValuesPage')}
+                onSelect={() => {
+                  const allVals = displayedRows.map(r => r[cm.colName]).filter(v => v !== null && v !== undefined).join('\n');
+                  copyToClipboard(allVals);
+                  setSuccessMsg(t('dataGrid.copiedColumn')); setTimeout(() => setSuccessMsg(null), 2000);
+                }}
+              />
+              <MenuItem icon="🔢" label={t('dataGrid.ctxCopyInListColumn')} onSelect={() => copyAsInList(cm.colName, cm.row, 'column')} />
+              <MenuItem icon="🔢" label={t('dataGrid.ctxCopyInListRows', { col: cm.colName })} onSelect={() => copyAsInList(cm.colName, cm.row, 'rows')} />
+            </MenuSub>
 
-          {/* Sort actions */}
-          <div style={{ padding: '2px 8px 4px', color: 'var(--win-text-disabled)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('dataGrid.ctxSortBy', { col: contextMenu.colName })}</div>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); setSortBy(contextMenu.colName); setSortDir('asc'); setPage(1); }}>
-            <span>↑</span> {t('dataGrid.ctxAsc')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); setSortBy(contextMenu.colName); setSortDir('desc'); setPage(1); }}>
-            <span>↓</span> {t('dataGrid.ctxDesc')}
-          </button>
+            <MenuHeading>{nSel > 1 ? t('gridTools.rowsHeading', { n: nSel }) : t('gridTools.rowHeading')}</MenuHeading>
+            {nSel <= 1 && (
+              <MenuItem
+                icon="📑"
+                label={t('dataGrid.ctxViewDocument', 'Xem chi tiết dòng (Document Viewer)')}
+                hint="Space"
+                onSelect={() => {
+                  const rowIdx = rows.findIndex((r, idx) => (r[primaryKey] !== undefined && r[primaryKey] !== null ? r[primaryKey] : `__idx_${idx}`) === cm.rowId);
+                  if (rowIdx >= 0) setDocumentViewerIndex(rowIdx);
+                }}
+              />
+            )}
+            <MenuItem
+              icon="⇄"
+              label={nSel > 1 ? t('gridTools.transposeN', { n: nSel }) : t('gridTools.transpose')}
+              onSelect={() => setTransposeTarget(rowsToCopy(cm.row))}
+            />
+            <MenuSub icon="📋" label={t('gridTools.copyAs')}>
+              <MenuItem icon="📋" label={t('dataGrid.ctxCopyTsv')} onSelect={() => copyRowAsTsv(cm.row)} />
+              <MenuItem icon="📊" label="CSV" onSelect={() => copyRowAsCSV(cm.row, false)} />
+              <MenuItem icon="📊" label={t('dataGrid.ctxCsvHeader')} onSelect={() => copyRowAsCSV(cm.row, true)} />
+              <MenuItem icon="🗄" label="SQL INSERT" onSelect={() => copyRowAsSQL(cm.row)} />
+              <MenuItem icon="✏️" label={t('dataGrid.ctxCopySqlUpdate')} onSelect={() => copyRowAsUpdate(cm.row)} />
+              <MenuItem icon="📝" label="Markdown Table" onSelect={() => copyRowAsMarkdown(cm.row)} />
+              <MenuItem icon="📦" label={t('dataGrid.ctxJsonObjects')} onSelect={() => copyRowAsJson(cm.row)} />
+              <MenuItem icon="📦" label={t('dataGrid.ctxJsonValues')} onSelect={() => copyRowAsJsonValues(cm.row)} />
+            </MenuSub>
+            {!readOnly && (
+              <>
+                <MenuItem icon="⧉" label={t('dataGrid.ctxDuplicate')} onSelect={() => handleDuplicateRow(cm.row)} />
+                <MenuSeparator />
+                {/* Names the clicked row, as it always has — the Delete KEY acts on the whole
+                    selection, so its hint is only shown when the two agree. */}
+                <MenuItem icon="🗑" danger label={t('dataGrid.ctxDeleteRow')} hint={nSel <= 1 ? 'Del' : undefined} onSelect={() => handleDeleteRow(cm.rowId)} />
+              </>
+            )}
+          </GridContextMenu>
+        );
+      })()}
 
-          <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
-
-          {/* Copy cell */}
-          <div style={{ padding: '2px 8px 4px', color: 'var(--win-text-disabled)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('dataGrid.ctxCell', { col: contextMenu.colName })}</div>
-          <button className="context-menu-item" onClick={() => {
-            const cm = contextMenu;
-            setContextMenu(null);
-            startEdit(cm.rowId, cm.colName, cm.cellValue);
-          }}>
-            <span>✏️</span> {t('dataGrid.ctxEditCell')}
-          </button>
-          <button className="context-menu-item" onClick={() => {
-            setContextMenu(null);
-            copyToClipboard(contextMenu.cellValue === null ? '' : String(contextMenu.cellValue));
-            setSuccessMsg(t('dataGrid.copiedCell')); setTimeout(() => setSuccessMsg(null), 2000);
-          }}>
-            <span>📄</span> {t('dataGrid.ctxCopyCell')}
-          </button>
-          <button className="context-menu-item" onClick={() => {
-            setContextMenu(null);
-            const allVals = displayedRows.map(r => r[contextMenu.colName]).filter(v => v !== null && v !== undefined).join('\n');
-            copyToClipboard(allVals);
-            setSuccessMsg(t('dataGrid.copiedColumn')); setTimeout(() => setSuccessMsg(null), 2000);
-          }}>
-            <span>📋</span> {t('dataGrid.ctxCopyColumn')}
-          </button>
-          <button className="context-menu-item" onClick={() => { const cm = contextMenu; setContextMenu(null); copyAsInList(cm.colName, cm.row, 'column'); }}>
-            <span>🔢</span> {t('dataGrid.ctxCopyInListColumn')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); setQuickLookCell({ colName: contextMenu.colName, value: contextMenu.cellValue }); }}>
-            <span>🔍</span> {t('dataGrid.ctxQuickLook')}
-          </button>
-          {(() => {
-            const media = detectMedia(contextMenu.cellValue, contextMenu.colName);
-            if (media) {
-              return (
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const cm = contextMenu;
-                    setContextMenu(null);
-                    setMediaViewerTarget({
-                      media,
-                      colName: cm.colName,
-                      tableName,
-                    });
-                  }}
-                >
-                  <span>🖼️</span> {t('dataGrid.ctxViewImage', 'Xem ảnh (Media Viewer)')}
-                </button>
-              );
-            }
-            return null;
-          })()}
-          {(() => {
-            const fk = getFkInfo(contextMenu.colName);
-            if (fk && contextMenu.cellValue !== null && contextMenu.cellValue !== undefined && contextMenu.cellValue !== '') {
-              return (
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const cm = contextMenu;
-                    setContextMenu(null);
-                    handleFkClick(cm.colName, cm.cellValue);
-                  }}
-                >
-                  <span>🔗</span> {t('dataGrid.ctxGoToFk', { table: fk.refTable, defaultValue: `Mở bảng ${fk.refTable} (${fk.refColumn} = ${contextMenu.cellValue})` })}
-                </button>
-              );
-            }
-            return null;
-          })()}
-
-          <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
-
-          {/* Copy row */}
-          <div style={{ padding: '2px 8px 4px', color: 'var(--win-text-disabled)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{selectedRowIds.size > 1 ? t('dataGrid.ctxCopyRowsAs', { n: selectedRowIds.size }) : t('dataGrid.ctxCopyRowAs')}</div>
-          <button className="context-menu-item" onClick={() => { const cm = contextMenu; setContextMenu(null); copyAsInList(cm.colName, cm.row, 'rows'); }}>
-            <span>🔢</span> {t('dataGrid.ctxCopyInListRows', { col: contextMenu.colName })}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsTsv(contextMenu.row); }}>
-            <span>📋</span> {t('dataGrid.ctxCopyTsv')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsCSV(contextMenu.row, false); }}>
-            <span>📊</span> CSV
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsCSV(contextMenu.row, true); }}>
-            <span>📊</span> {t('dataGrid.ctxCsvHeader')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsSQL(contextMenu.row); }}>
-            <span>🗄</span> SQL INSERT
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsUpdate(contextMenu.row); }}>
-            <span>✏️</span> {t('dataGrid.ctxCopySqlUpdate')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsMarkdown(contextMenu.row); }}>
-            <span>📝</span> Markdown Table
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsJson(contextMenu.row); }}>
-            <span>📦</span> {t('dataGrid.ctxJsonObjects')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsJsonValues(contextMenu.row); }}>
-            <span>📦</span> {t('dataGrid.ctxJsonValues')}
-          </button>
-        </div>
+      {valueEditor && (
+        <ValueEditorDialog
+          column={valueEditor.colName}
+          value={valueEditor.value}
+          onApply={valueEditor.editable ? (text) => applyCellValue(valueEditor.rowId, valueEditor.colName, text) : undefined}
+          readOnlyReason={valueEditor.reason}
+          onClose={() => setValueEditor(null)}
+        />
       )}
-
-      {/* ─── Quick Look Modal ─── */}
-      {quickLookCell && (
-        <Modal
-          title={<>{t('dataGrid.quickLook')} — <span style={{ color: 'var(--win-accent)', fontFamily: 'var(--win-font-mono)' }}>{quickLookCell.colName}</span></>}
-          onClose={() => setQuickLookCell(null)}
-          width="700px"
-          maxHeight="70vh"
-          zIndex={99998}
-        >
-          <ModalBody style={{ gap: 0, flex: 1, background: 'var(--win-bg-window)', fontFamily: 'var(--win-font-mono)', fontSize: '13px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-            {quickLookCell.value === null
-              ? <span style={{ color: 'var(--win-text-disabled)', fontStyle: 'italic' }}>NULL</span>
-              : String(quickLookCell.value)
-            }
-          </ModalBody>
-          <ModalFooter>
-            <button className="btn btn-secondary" onClick={() => { copyToClipboard(quickLookCell.value === null ? '' : String(quickLookCell.value)); }}>{t('common.copy')}</button>
-            <button className="btn btn-primary" style={{ background: 'var(--st-ok)', borderColor: 'var(--st-ok)' }} onClick={() => setQuickLookCell(null)}>{t('common.close')}</button>
-          </ModalFooter>
-        </Modal>
+      {statsTarget && (
+        <ColumnStatsDialog
+          column={statsTarget.column}
+          values={statsTarget.values}
+          scope={statsTarget.scope}
+          note={statsTarget.note}
+          onClose={() => setStatsTarget(null)}
+        />
+      )}
+      {transposeTarget && (
+        <TransposeDialog
+          columns={activeColumns.map(c => c.name)}
+          rows={transposeTarget}
+          onClose={() => setTransposeTarget(null)}
+        />
       )}
 
       {/* ─── Media / Image Viewer Modal (from Context Menu or Click) ─── */}
