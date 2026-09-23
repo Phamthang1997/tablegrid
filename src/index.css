@@ -21933,3 +21933,153 @@ input[type="text"].snippet-abbr-input {
 .snippet-field-help.is-error {
   color: var(--st-danger, #ef4444);
 }
+
+/* ─── Local history dialog (LocalHistoryDialog.tsx) ─── */
+.sql-toolbar-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+.lh-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.lh-seg {
+  display: inline-flex;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.lh-seg button {
+  padding: 4px 12px;
+  font-size: 11.5px;
+  border: none;
+  background: transparent;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+}
+
+.lh-seg button + button {
+  border-left: 1px solid var(--win-border);
+}
+
+.lh-seg button.is-on {
+  background: var(--win-accent);
+  color: #ffffff;
+}
+
+.lh-body {
+  display: flex;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.lh-list {
+  width: 300px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+}
+
+.lh-item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid var(--win-border);
+  background: transparent;
+  color: var(--win-text-primary);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.lh-item:hover {
+  background: var(--win-bg-hover);
+}
+
+.lh-item.is-on {
+  background: color-mix(in srgb, var(--win-accent) 14%, transparent);
+  box-shadow: inset 3px 0 0 var(--win-accent);
+}
+
+.lh-item-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--win-text-secondary);
+}
+
+.lh-reason {
+  font-size: 10.5px;
+  color: var(--win-accent);
+}
+
+.lh-item-title {
+  margin-top: 3px;
+  font-family: var(--win-font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lh-item-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--win-text-disabled);
+}
+
+.lh-tag {
+  padding: 0 5px;
+  border: 1px solid var(--win-border);
+  border-radius: 4px;
+}
+
+.lh-diff {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.lh-diff-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 10px;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+  background: var(--win-bg-tab-bar);
+  border-bottom: 1px solid var(--win-border);
+}
+
+.lh-diff > section,
+.lh-diff > div:last-child {
+  flex: 1;
+  min-height: 0;
+}
+
+.lh-empty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--win-text-disabled);
+}
+
+.lh-spacer {
+  flex: 1;
+}
