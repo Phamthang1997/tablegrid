@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import { AlertTriangle } from 'lucide-react';
@@ -17,6 +17,13 @@ interface ApprovalRequest {
 }
 
 /**
+ * A request plus the moment it stops being answerable, stamped on ARRIVAL. Stamping when it reaches
+ * the front of the queue would restart the clock for every parked request, so the second one would
+ * show 60s while Rust refuses it after far less.
+ */
+type Parked = ApprovalRequest & { deadlineAt: number };
+
+/**
  * The dialog defence layer 5 asks through — the MCP twin of `SafeModeGate`.
  *
  * **Same mechanism, different policy** (`docs/mcp-server-plan.md` §3.5). Safe Mode registers a
@@ -30,10 +37,8 @@ interface ApprovalRequest {
  */
 export const McpApprovalGate: React.FC = () => {
   const { t } = useTranslation();
-  const [queue, setQueue] = useState<ApprovalRequest[]>([]);
+  const [queue, setQueue] = useState<Parked[]>([]);
   const [remaining, setRemaining] = useState(0);
-  /** When the request on screen stops being answerable, in epoch ms. */
-  const deadline = useRef(0);
 
   useEffect(() => {
     const subs = [
@@ -41,7 +46,11 @@ export const McpApprovalGate: React.FC = () => {
         // Appended, not replaced: two clients can be parked at once and answering one must not
         // silently discard the other. Rust holds each in its own channel, so the order here is
         // presentation only.
-        setQueue((q) => (q.some((r) => r.id === e.payload.id) ? q : [...q, e.payload]));
+        setQueue((q) =>
+          q.some((r) => r.id === e.payload.id)
+            ? q
+            : [...q, { ...e.payload, deadlineAt: Date.now() + e.payload.timeoutMs }],
+        );
       }),
       // The request stopped being answerable without the user (today: it timed out). Dropping it is
       // the whole point — leaving buttons on screen for a refused request means an Approve that
@@ -62,8 +71,7 @@ export const McpApprovalGate: React.FC = () => {
   // timer racing it would be two sources of truth for one decision.
   useEffect(() => {
     if (!current) return;
-    deadline.current = Date.now() + current.timeoutMs;
-    const tick = () => setRemaining(Math.max(0, Math.ceil((deadline.current - Date.now()) / 1000)));
+    const tick = () => setRemaining(Math.max(0, Math.ceil((current.deadlineAt - Date.now()) / 1000)));
     tick();
     const timer = setInterval(tick, 500);
     return () => clearInterval(timer);
