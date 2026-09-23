@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { activeConnId, dbHelper, setActiveConnId } from '../utils/dbHelper';
 import type { DbConnectionConfig } from '../utils/dbHelper';
-import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, Check, Cloud, DatabaseBackup, LogIn, KeyRound } from 'lucide-react';
+import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, ArrowRight, Check, Cloud, DatabaseBackup, LogIn, KeyRound } from 'lucide-react';
 import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './DbIcons';
 import { encryptConnectionExport, decryptConnectionExport, CONNECTION_FILE_EXT, CONNECTION_FILE_ACCEPT } from '../utils/cryptoHelper';
 import { CONN_ENVS, envLabelKey, legacyEnvOfColor, normalizeEnv, type ConnEnv } from '../utils/connEnv';
@@ -149,6 +149,13 @@ interface ConnectionManagerProps {
    * user to back up a database other than the one they are looking at.
    */
   embedded?: boolean;
+  /**
+   * `'new'` turns the screen into a "create one connection" dialog: no saved-profile list (the quick
+   * switcher already lists those), no profile auto-selected on mount, a type picker first, and
+   * nothing written to the profile list until the connection succeeds — closing the dialog halfway
+   * leaves no half-filled profile behind.
+   */
+  variant?: 'manage' | 'new';
   // `profile` is the profile chosen for the connection, when there is one. App keeps the id and name
   // so the connection popover can edit name and colour and write them straight back into
   // tf_connection_profiles.
@@ -184,8 +191,11 @@ const TYPE_META: Record<string, { label: string; color: string; Icon: React.FC<{
   redis: { label: 'Redis', color: '#DC382D', Icon: RedisIcon },
 };
 
-export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, embedded = false, onConnect }) => {
+export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, embedded = false, variant = 'manage', onConnect }) => {
   const { t } = useTranslation();
+  const isNew = variant === 'new';
+  // New-connection dialog only: whether a successful Connect also adds the profile to the list.
+  const [saveToList, setSaveToList] = useState(true);
 
   // A switch rather than t(`...${mode}`): a key built at runtime is not checked
   // against the key tree declared in i18next.d.ts.
@@ -873,12 +883,18 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       config: res.config
     };
 
+    setShowImportUrlModal(false);
+    setImportUrlInput('');
+    // New-connection dialog: only a draft — it is saved when Connect succeeds, like one typed by hand.
+    // The password stays inline in the draft's config; persistProfiles strips it out on that save.
+    if (isNew) {
+      selectProfile(newProfile);
+      return;
+    }
+
     // A connection URL usually carries the password -> split it into the OS store as it is saved.
     await persistProfiles([...profiles, newProfile]);
     selectProfile(newProfile);
-
-    setShowImportUrlModal(false);
-    setImportUrlInput('');
     setSuccessMsg(t('connection.importUrlSuccess'));
   };
 
@@ -901,7 +917,9 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
         } else {
           setProfiles(parsed);
         }
-        if (parsed.length > 0) {
+        // The new-connection dialog starts empty: pre-filling it with the default profile is what
+        // made "New connection…" open onto the connection that was already open.
+        if (parsed.length > 0 && !isNew) {
           const defaultProf = parsed.find(p => p.id === savedDefaultId) || parsed[0];
           selectProfile(defaultProf);
         }
@@ -1041,8 +1059,10 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     sshPassphrase,
   });
 
-  const handleSaveProfile = async () => {
-    if (!activeProfileId) return;
+  // Upsert: the new-connection dialog's draft is not in `profiles` yet, and its first save appends it.
+  // `silent` skips the "saved" banner, for the save that rides along with a successful Connect.
+  const handleSaveProfile = async (silent = false): Promise<SavedProfile | null> => {
+    if (!activeProfileId) return null;
     const targetName = profileNameInput.trim() || t('connection.defaultProfileName');
 
     let config: any = {};
@@ -1112,23 +1132,25 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       };
     }
 
-    const updatedProfiles = profiles.map(p => {
-      if (p.id === activeProfileId) {
-        return { ...p, name: targetName, type: activeType as any, config, color: profileColor, env: profileEnv, group: profileGroup };
-      }
-      return p;
-    });
+    const fields = { name: targetName, type: activeType as any, config, color: profileColor, env: profileEnv, group: profileGroup };
+    const existing = profiles.find(p => p.id === activeProfileId);
+    const saved: SavedProfile = { ...(existing || {}), id: activeProfileId, ...fields };
+    const updatedProfiles = existing
+      ? profiles.map(p => (p.id === activeProfileId ? saved : p))
+      : [...profiles, saved];
 
     // The config comes from the form and so holds the password; persistProfiles splits it into the OS store before writing.
-    await persistProfiles(updatedProfiles);
-    setSuccessMsg(t('connection.saveSuccess'));
+    const stripped = await persistProfiles(updatedProfiles);
+    if (!silent) setSuccessMsg(t('connection.saveSuccess'));
+    return stripped.find(p => p.id === activeProfileId) || null;
   };
 
-  const handleCreateNewProfile = async (type: 'sqlite' | 'postgres' | 'mysql' | 'redis') => {
+  // A fresh profile for `type` with that engine's usual defaults. Not saved by itself.
+  const blankProfile = (type: 'sqlite' | 'postgres' | 'mysql' | 'redis'): SavedProfile => {
     // sslMode has to be in the config itself, not only in the state's initial value: selectProfile
-    // just below reads it back from the config, and without the field it falls back to DISABLED and
+    // reads it back from the config, and without the field it falls back to DISABLED and
     // overwrites whatever the form is showing.
-    const newProfile: SavedProfile = {
+    return {
       id: newProfileId(),
       name: t('connection.newProfileName', { type: type.toUpperCase() }),
       type,
@@ -1140,9 +1162,20 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
             ? { type, host: '127.0.0.1', port: 6379, user: '', password: '', dbIndex: 0 }
             : { type, host: 'localhost', port: 3306, user: 'root', database: '', sslMode: 'PREFERRED' }
     };
+  };
 
-    await persistProfiles([...profiles, newProfile]);
+  const handleCreateNewProfile = async (type: 'sqlite' | 'postgres' | 'mysql' | 'redis') => {
+    const newProfile = blankProfile(type);
+    // The new-connection dialog keeps it as a draft until Connect succeeds.
+    if (!isNew) await persistProfiles([...profiles, newProfile]);
     selectProfile(newProfile);
+  };
+
+  // New-connection dialog: back from the form to the type picker.
+  const handleBackToTypes = () => {
+    setActiveProfileId(null);
+    setErrorMsg(null);
+    setSuccessMsg(null);
   };
 
   const handleDeleteProfile = (id: string, e: React.MouseEvent) => {
@@ -1273,7 +1306,9 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       setSuccessMsg(res.message);
       setIsSuccessConnecting(true);
       setConnectingDbName(res.database || (config.type === 'sqlite' ? config.sqlitePath : config.database) || 'Database');
-      const activeProfile = profiles.find(p => p.id === activeProfileId);
+      let activeProfile = profiles.find(p => p.id === activeProfileId);
+      // New-connection dialog: the draft is saved only now that it is known to work.
+      if (!activeProfile && isNew && saveToList) activeProfile = (await handleSaveProfile(true)) || undefined;
       // The environment comes from the FORM'S STATE, not from the saved profile.
       //
       // `config` just above is built from the form as well: host, port, user, SSL and the rest all go
@@ -2745,8 +2780,9 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       )}
 
       <div className="connection-card">
-        <div className="cm-shell">
+        <div className={`cm-shell ${isNew ? 'cm-newconn' : ''}`}>
           {/* ————— Sidebar: the list of saved connections ————— */}
+          {!isNew && (
           <aside className="cm-side">
             <div className="cm-side-head">
               <span className="cm-side-title">{t('connection.sideTitle', { n: profiles.length })}</span>
@@ -2920,10 +2956,45 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
               </div>
             )}
           </aside>
+          )}
 
           {/* ————— The main pane ————— */}
           <main className="cm-main">
-            {isBrMode ? (
+            {isNew ? (
+              hasProfile && (
+                <>
+                  {/* One compact row instead of the avatar header: the dialog's own title already
+                      says what this is, so the row only has to say which engine and offer a way back. */}
+                  <header className="cm-newconn-head">
+                    <button className="cm-icon-btn" title={t('connection.backToTypes')} onClick={handleBackToTypes}>
+                      <ArrowLeft size={15} />
+                    </button>
+                    <span className={`cm-badge sm ${activeType}`}><activeMeta.Icon size={13} /></span>
+                    <span className="cm-newconn-type">{activeMeta.label}</span>
+                    <button className="cm-uri" onClick={handleCopyUri} title={t('connection.copyUri')}>
+                      <span>{connectionUri}</span>
+                      {uriCopied ? <Check size={12} style={{ flexShrink: 0, color: 'var(--st-ok)' }} /> : <Copy size={12} style={{ flexShrink: 0, opacity: 0.7 }} />}
+                    </button>
+                  </header>
+                  {hasNetTabs && (
+                    <nav className="cm-tabs">
+                      <button className={`cm-tab ${formTab === 'general' ? 'active' : ''}`} onClick={() => setFormTab('general')}>
+                        <Server size={13} /> {t('connection.tabGeneral')}
+                        {authMethod === 'aws_iam' && isServerDb && <span className="cm-tab-dot" title={t('connection.tabDotAws')} />}
+                      </button>
+                      <button className={`cm-tab ${formTab === 'ssl' ? 'active' : ''}`} onClick={() => setFormTab('ssl')}>
+                        <ShieldCheck size={13} /> SSL
+                        {tlsOn && <span className="cm-tab-dot" title={t('connection.tabDotSsl', { mode: sslMode })} />}
+                      </button>
+                      <button className={`cm-tab ${formTab === 'ssh' ? 'active' : ''}`} onClick={() => setFormTab('ssh')}>
+                        <Network size={13} /> SSH Tunnel
+                        {sshEnabled && <span className="cm-tab-dot" title={t('connection.tabDotSsh')} />}
+                      </button>
+                    </nav>
+                  )}
+                </>
+              )
+            ) : isBrMode ? (
               <header className="cm-main-head">
                 <button className="cm-icon-btn lg" title={t('connection.backToList')} onClick={() => setActiveType(((profiles.find(p => p.id === activeProfileId)?.type) || 'sqlite') as any)}>
                   <ArrowLeft size={16} />
@@ -3018,7 +3089,46 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                   </div>
                 )}
 
-                {isBrMode
+                {isNew && !hasProfile
+                  ? (
+                    <div className="cm-type-pick">
+                      <div className="cm-blank-title">{t('connection.pickTypeTitle')}</div>
+                      <div className="cm-type-grid">
+                        {NEW_TYPES.map(nt => {
+                          const m = TYPE_META[nt.val];
+                          return (
+                            <button key={nt.val} className="cm-type-tile" onClick={() => handleCreateNewProfile(nt.val)}>
+                              <span className={`cm-badge ${nt.val}`}><m.Icon size={20} /></span>
+                              <span>{nt.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {/* Pasted in place rather than behind a second modal: here the URL is just another
+                          way to fill the form, so it goes straight to it. */}
+                      <div className="cm-type-or"><span>{t('connection.orPasteUrl')}</span></div>
+                      <div className="cm-type-url">
+                        <Link size={14} className="cm-type-url-icon" />
+                        <input
+                          type="text"
+                          value={importUrlInput}
+                          onChange={(e) => setImportUrlInput(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' && importUrlInput.trim()) handleImportUrlSubmit(); }}
+                          placeholder={t('connection.urlPlaceholder')}
+                          spellCheck={false}
+                        />
+                        <button
+                          className="cm-btn primary"
+                          onClick={handleImportUrlSubmit}
+                          disabled={!importUrlInput.trim()}
+                          title={t('connection.urlContinue')}
+                        >
+                          <ArrowRight size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                  : isBrMode
                   ? renderBackupRestore()
                   : !hasProfile
                     ? (
@@ -3037,7 +3147,25 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
             </div>
 
             <footer className="cm-foot">
-              {isBrMode ? (
+              {isNew ? (
+                hasProfile && (
+                  <>
+                    <label className="cm-check">
+                      <input type="checkbox" checked={saveToList} onChange={(e) => setSaveToList(e.target.checked)} />
+                      <span>{t('connection.saveToList')}</span>
+                    </label>
+                    <span className="cm-foot-msg" />
+                    <button className="cm-btn" onClick={handleTestConnection} disabled={isBusy}>
+                      {isTesting ? <LoadingSpinner size={13} /> : <CheckCircle2 size={13} />} {t('connection.test')}
+                    </button>
+                    <button className="cm-btn primary" onClick={() => handleConnect(false)} disabled={isBusy}>
+                      {isConnecting
+                        ? <><LoadingSpinner size={13} /> {t('connection.connecting')}</>
+                        : <><LogIn size={14} /> {t('connection.connect')}</>}
+                    </button>
+                  </>
+                )
+              ) : isBrMode ? (
                 <>
                   {/* No progress bar here any more: backup and restore run in the background and
                       their progress lives in the JobsTray on the title bar. See
@@ -3059,7 +3187,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                 </>
               ) : hasProfile ? (
                 <>
-                  <button className="cm-btn" onClick={handleSaveProfile}>
+                  <button className="cm-btn" onClick={() => handleSaveProfile()}>
                     <Save size={13} /> {t('connection.saveChanges')}
                   </button>
                   <span className="cm-foot-msg" />

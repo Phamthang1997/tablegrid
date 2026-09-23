@@ -8634,6 +8634,137 @@ input.rename-input {
   padding-right: max(24px, calc((100% - 860px) / 2));
 }
 
+/* ————— The "New connection" dialog (ConnectionManager variant="new") ————— */
+/* One compact row in place of .cm-main-head, whose avatar is pulled up by -24px into the title-bar
+   strip the full screen reserves — inside a Modal there is no such strip and the avatar got cut off. */
+.cm-newconn-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px 0;
+  flex-shrink: 0;
+}
+
+.cm-newconn-type {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--win-text-primary);
+}
+
+.cm-type-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 48px 0 24px;
+}
+
+.cm-type-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 120px));
+  gap: 12px;
+}
+
+.cm-type-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-window);
+  color: var(--win-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+
+.cm-type-tile:hover {
+  border-color: var(--win-accent);
+  transform: translateY(-1px);
+}
+
+.cm-type-tile .cm-badge {
+  width: 40px;
+  height: 40px;
+}
+
+/* "— or paste a connection URL —": two hairlines around the label, as wide as the tile grid. */
+.cm-type-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 516px;
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--win-text-secondary);
+}
+
+.cm-type-or::before,
+.cm-type-or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--win-border);
+}
+
+.cm-type-url {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 516px;
+}
+
+.cm-type-url input[type='text'] {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px 0 34px;
+  border-radius: 9px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-window);
+  color: var(--win-text-primary);
+  font-family: var(--win-font-mono);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.cm-type-url input[type='text']:focus {
+  border-color: var(--win-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--win-accent) 18%, transparent);
+}
+
+.cm-type-url-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--win-text-secondary);
+  pointer-events: none;
+}
+
+.cm-type-url .cm-btn {
+  height: 36px;
+  width: 40px;
+  padding: 0;
+  justify-content: center;
+}
+
+@media (max-width: 560px) {
+  .cm-type-grid {
+    grid-template-columns: repeat(2, minmax(0, 120px));
+  }
+}
+
 
 /* =====================================================================
    The connection screen's background — ONE colour

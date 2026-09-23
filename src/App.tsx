@@ -2296,13 +2296,15 @@ export const App: React.FC = () => {
 
       {/* Adding another connection while one is already open (the rail's `+` button). It reuses
           `ConnectionManager` whole rather than writing a second screen; `handleConnect` already does
-          the right thing (push into `openConns`, then move the workspace to the new connection). */}
+          the right thing (push into `openConns`, then move the workspace to the new connection).
+          `variant="new"` strips it down to "create one": no saved-profile list (the quick switcher
+          lists those), a type picker first, and the profile saved only once Connect succeeds. */}
       {addingConn && connection && (
         <Modal
           title={t('titlebar.newConnection')}
           onClose={() => setAddingConn(false)}
           zIndex={10000}
-          width="min(1100px, 94vw)"
+          width="min(760px, 94vw)"
         >
           {/* `ModalBody` defaults to padding 16 + gap 14 + its own scrolling: right for a form, wrong
               for a two-panel screen. With those defaults the container grows with its content, so the
@@ -2315,6 +2317,7 @@ export const App: React.FC = () => {
             <ConnectionManager
               connId={activeConnIdState}
               embedded
+              variant="new"
               onConnect={(...args) => {
                 setAddingConn(false);
                 handleConnect(...args);
