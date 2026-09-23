@@ -37,6 +37,8 @@ import * as catalog from '../sql/catalog';
 import { willPromptForSql } from '../utils/safeMode';
 import { resolveResultEditability, type ResultEditability, type NotEditableReason } from '../sql/editableResult';
 import { SqlSnippetPanel } from './SqlSnippetPanel';
+import { LocalHistoryDialog } from './LocalHistoryDialog';
+import { historyScope as localHistoryScope, recordEdit, recordSnapshot, type HistoryTarget } from '../utils/localHistory';
 import { MediaCellPreview } from './media';
 import { SearchHighlight } from './SearchHighlight';
 import { filterRowsByQuery } from '../utils/gridSearch';
@@ -107,7 +109,7 @@ function registerSqlFormatter(dbType: string) {
     monaco.languages.registerDocumentFormattingEditProvider(lang, formatProvider)
   );
 }
-import { Play, Clipboard, Trash2, CheckCircle2, AlertTriangle, ChevronLeft, ChevronRight, Copy, AlignLeft, History, X, Bookmark, ChevronDown, MoreHorizontal, SlidersHorizontal, Star, Columns, Rows, Settings, Network, Zap, FileText, Square, Calendar, BarChart2, Search } from 'lucide-react';
+import { Play, Clipboard, Trash2, CheckCircle2, AlertTriangle, ChevronLeft, ChevronRight, Copy, AlignLeft, History, X, Bookmark, ChevronDown, MoreHorizontal, SlidersHorizontal, Star, Columns, Rows, Settings, Network, Zap, FileText, Square, Calendar, BarChart2, Search, FileClock } from 'lucide-react';
 import { getQueryParamsConfig, saveQueryParamsConfig, extractQueryParams, buildParameterizedSql, type QueryParamsConfig } from '../utils/queryParamHelper';
 import { buildExplainQuery, explainJsonLabel, parseExplainOutput, supportsJsonExplain, type ExplainResult } from '../utils/explainHelper';
 import {
@@ -161,6 +163,11 @@ interface SqlEditorProps {
   onSql2Change?: (sql2: string) => void;
   onSplitModeChange?: (mode: 'none' | 'vertical' | 'horizontal') => void;
   onEditorHeightChange?: (height: number) => void;
+  /**
+   * The query tab's id. Keys this editor's local history (utils/localHistory.ts); without it the
+   * editor keeps no history, which is what a caller outside a query tab gets.
+   */
+  historyTabId?: string;
 }
 
 // The history drawer's scope filter. A module-level constant table, so it holds translation KEYS and
@@ -282,6 +289,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   onSql2Change,
   onSplitModeChange,
   onEditorHeightChange,
+  historyTabId,
 }) => {
   const { t, i18n } = useTranslation();
   // Dates and thousands separators follow the active UI language.
@@ -310,10 +318,20 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const [showSnippetPanel, setShowSnippetPanel] = useState<boolean>(false);
   const editorRef2 = useRef<any>(null);
 
-  const insertSnippetAtCursor = (template: string, targetPaneId?: 1 | 2) => {
+  const insertSnippetAtCursor = (template: string, asSnippet = false, targetPaneId?: 1 | 2) => {
     const activePane = targetPaneId || focusedEditor || 1;
     const ed = activePane === 1 ? editorRef.current : editorRef2.current;
     if (!ed) return;
+
+    // Snippet syntax goes through Monaco's snippet controller, which turns `${1:table}` into a tab
+    // stop — the same expansion a live template gets from completion. Plain SQL keeps the plain
+    // edit, so a `$1` in a docs example is inserted as written.
+    const snippets = asSnippet ? ed.getContribution('snippetController2') : null;
+    if (snippets && typeof snippets.insert === 'function') {
+      ed.focus();
+      snippets.insert(template);
+      return;
+    }
 
     const selection = ed.getSelection();
     if (selection) {
@@ -829,12 +847,32 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     { timer: null, value: null },
   ]);
 
+  // ─── Local history (utils/localHistory.ts) ───
+  // Snapshots ride on the same beat as the sync above rather than on keystrokes: a flush is
+  // already "the user paused", which is the moment worth keeping. `lastFlushed` is the text of the
+  // previous flush, so a large deletion can save what was there BEFORE it.
+  const historyTarget = (paneId: 1 | 2): HistoryTarget | null =>
+    historyTabId ? { scope: localHistoryScope(connKey, dbName), tabId: historyTabId, pane: paneId } : null;
+  const historyTargetRef = useRef(historyTarget);
+  historyTargetRef.current = historyTarget;
+  const lastFlushedRef = useRef<[string, string]>([initialSql, initialSql2]);
+  const latestTextRef = useRef<[string, string]>([initialSql, initialSql2]);
+  const [historyPane, setHistoryPane] = useState<1 | 2 | null>(null);
+
+  const snapshotPane = (paneId: 1 | 2, text: string, reason: 'run' | 'beforeReplace') => {
+    const target = historyTarget(paneId);
+    if (target) void recordSnapshot(target, text, reason);
+  };
+
   const flushSqlSync = (paneId: 1 | 2) => {
     const slot = sqlSyncRef.current[paneId - 1];
     if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
     if (slot.value === null) return;
     const val = slot.value;
     slot.value = null;
+    const target = historyTarget(paneId);
+    if (target) void recordEdit(target, lastFlushedRef.current[paneId - 1], val);
+    lastFlushedRef.current[paneId - 1] = val;
     if (paneId === 1) { setSql(val); onSqlChange?.(val); }
     else { setSql2(val); onSql2Change?.(val); }
   };
@@ -842,6 +880,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const queueSqlSync = (paneId: 1 | 2, val: string) => {
     const slot = sqlSyncRef.current[paneId - 1];
     slot.value = val;
+    latestTextRef.current[paneId - 1] = val;
     if (slot.timer) clearTimeout(slot.timer);
     slot.timer = setTimeout(() => flushSqlSync(paneId), SQL_SYNC_DELAY);
   };
@@ -854,6 +893,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   // Leaving the component: flush whatever is still pending, so nothing just typed is lost on close or tab switch
   useEffect(() => () => {
     [1, 2].forEach((p) => {
+      const target = historyTargetRef.current(p as 1 | 2);
+      if (target) void recordSnapshot(target, latestTextRef.current[p - 1], 'close');
       const slot = sqlSyncRef.current[p - 1];
       if (slot.timer) clearTimeout(slot.timer);
       if (slot.value === null) return;
@@ -940,6 +981,17 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       flushSqlSync(editorId);
     });
 
+    // Local history, also reachable from F1 and the context menu, not only from the toolbar icon.
+    if (historyTargetRef.current(editorId)) {
+      editor.addAction({
+        id: 'local-history',
+        label: tRef.current('localHistory.open'),
+        contextMenuGroupId: 'navigation',
+        contextMenuOrder: 1.2,
+        run: () => setHistoryPane(editorId),
+      });
+    }
+
     // Format / Beautify / Minify actions cho Monaco context menu
     editor.addAction({
       id: 'format-beautify-sql',
@@ -984,7 +1036,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
 
     editor.addAction({
       id: 'split-pane-horizontal',
-      label: 'Chia khung ngang (Top / Bottom)',
+      label: tRef.current('sqlEditor.actionSplitHorizontal'),
       contextMenuGroupId: '1_modification',
       contextMenuOrder: 1.6,
       run: () => {
@@ -1218,6 +1270,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     const pane = targetPane || focusedEditor;
     const textToRun = queryText || (pane === 2 ? sql2 : sql);
     if (!textToRun.trim()) return;
+    // The whole pane, not just the statement run: what matters later is the draft around it.
+    snapshotPane(pane, getPaneSql(pane), 'run');
 
     // Read-only mode: only reading statements are allowed (SELECT/SHOW/…)
     if ((readOnly || connReadOnly) && !isReadOnlySql(textToRun)) {
@@ -1689,7 +1743,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       const text = await navigator.clipboard.readText();
       const editor = getPaneEditor(paneId);
       if (editor) {
-        editor.setValue(text);
+        replacePaneText(editor, paneId, text, 'paste-sql');
         if (paneId === 1) {
           setSql(text);
           onSqlChange?.(text);
@@ -1706,10 +1760,30 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     }
   };
 
+  /**
+   * Replaces a pane's whole text as ONE undoable edit, after snapshotting what it replaces. The
+   * shared path of Paste, Clear and restoring from local history.
+   */
+  const replacePaneText = (editor: any, paneId: 1 | 2, text: string, source: string) => {
+    snapshotPane(paneId, editor.getValue(), 'beforeReplace');
+    editor.pushUndoStop();
+    editor.executeEdits(source, [{ range: editor.getModel().getFullModelRange(), text, forceMoveMarkers: true }]);
+    editor.pushUndoStop();
+  };
+
+  const restoreFromHistory = (paneId: 1 | 2, text: string) => {
+    const editor = getPaneEditor(paneId);
+    if (!editor) return;
+    replacePaneText(editor, paneId, text, 'local-history-restore');
+    if (paneId === 1) { setSql(text); onSqlChange?.(text); }
+    else { setSql2(text); onSql2Change?.(text); }
+    editor.focus();
+  };
+
   const handleClear = (paneId: 1 | 2 = focusedEditor) => {
     const editor = getPaneEditor(paneId);
     if (editor) {
-      editor.setValue('');
+      replacePaneText(editor, paneId, '', 'clear-sql');
       if (paneId === 1) {
         setSql('');
         onSqlChange?.('');
@@ -1750,6 +1824,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                     top: dropdownPlacement[`settings_${paneId}`] === 'up' ? undefined : 'calc(100% + 4px)',
                     bottom: dropdownPlacement[`settings_${paneId}`] === 'up' ? 'calc(100% + 4px)' : undefined,
                     left: 0,
+                    width: 'max-content',
                     minWidth: '230px',
                     display: 'flex',
                     flexDirection: 'column',
@@ -1856,6 +1931,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                     top: dropdownPlacement[`limit_${paneId}`] === 'up' ? undefined : 'calc(100% + 4px)',
                     bottom: dropdownPlacement[`limit_${paneId}`] === 'up' ? 'calc(100% + 4px)' : undefined,
                     left: 0,
+                    width: 'max-content',
                     minWidth: '130px',
                     background: 'var(--win-bg-popover, var(--win-bg-card))',
                     border: '1px solid var(--win-border-strong, var(--win-border))',
@@ -1902,11 +1978,12 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
               {moreMenuPane === paneId && (
                 <>
                   <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setMoreMenuPane(null)} />
-                  <div style={{
+                  <div className="sql-toolbar-menu" style={{
                     position: 'absolute',
                     top: dropdownPlacement[`more_${paneId}`] === 'up' ? undefined : 'calc(100% + 4px)',
                     bottom: dropdownPlacement[`more_${paneId}`] === 'up' ? 'calc(100% + 4px)' : undefined,
                     right: 0,
+                    width: 'max-content',
                     minWidth: '200px',
                     background: 'var(--win-bg-popover, var(--win-bg-card))',
                     border: '1px solid var(--win-border-strong, var(--win-border))',
@@ -1917,7 +1994,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                   }}>
                     {/* The Split pane entry */}
                     <div style={{ padding: '4px 12px 2px 12px', fontSize: '10px', fontWeight: 700, color: 'var(--win-text-disabled)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Chia khung (Split Panes)
+                      {t('sqlEditor.splitPanesHeading')}
                     </div>
                     <button
                       className={`context-menu-item ${splitMode === 'none' ? 'active' : ''}`}
@@ -1941,7 +2018,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                       style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}
                     >
                       <Rows size={13} style={{ flexShrink: 0 }} />
-                      <span>Chia ngang (Top / Bottom)</span>
+                      <span>{t('sqlEditor.splitHorizontal')}</span>
                     </button>
 
                     <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
@@ -1989,7 +2066,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
               {formatMenuPane === paneId && (
                 <>
                   <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setFormatMenuPane(null)} />
-                  <div style={{
+                  <div className="sql-toolbar-menu" style={{
                     position: 'absolute',
                     top: dropdownPlacement[`format_${paneId}`] === 'up' ? undefined : 'calc(100% + 4px)',
                     bottom: dropdownPlacement[`format_${paneId}`] === 'up' ? 'calc(100% + 4px)' : undefined,
@@ -2026,6 +2103,17 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                 </>
               )}
             </div>
+
+            {historyTabId && (
+              <button
+                className="btn btn-secondary sql-toolbar-icon-btn"
+                onClick={() => setHistoryPane(paneId)}
+                title={t('localHistory.open')}
+                aria-label={t('localHistory.open')}
+              >
+                <FileClock size={13} />
+              </button>
+            )}
 
             {/* The Snippets button (SQL templates) */}
             <button
@@ -3555,6 +3643,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                       borderRadius: '6px',
                       boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
                       zIndex: 9999,
+                      width: 'max-content',
                       minWidth: '170px',
                       display: 'flex',
                       flexDirection: 'column',
@@ -3731,10 +3820,21 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
         )}
       </div>
 
+      {historyPane && historyTarget(historyPane) && (
+        <LocalHistoryDialog
+          target={historyTarget(historyPane) as HistoryTarget}
+          getCurrentText={() => getPaneSql(historyPane)}
+          language={langId}
+          monacoTheme={sqlThemeName(theme)}
+          onRestore={(text) => restoreFromHistory(historyPane, text)}
+          onClose={() => setHistoryPane(null)}
+        />
+      )}
+
       {showSnippetPanel && (
         <SqlSnippetPanel
           dbType={dbType}
-          onInsertSnippet={(template) => insertSnippetAtCursor(template)}
+          onInsertSnippet={(template, asSnippet) => insertSnippetAtCursor(template, asSnippet)}
           onClose={() => setShowSnippetPanel(false)}
         />
       )}

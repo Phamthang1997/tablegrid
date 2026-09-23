@@ -158,6 +158,7 @@ const QueryTabPanel = React.memo(function QueryTabPanel(props: QueryTabPanelProp
           onSql2Change={(val) => onPatch(tab.id, { sql2: val } as any)}
           onSplitModeChange={(val) => onPatch(tab.id, { splitMode: val } as any)}
           onEditorHeightChange={(val) => onPatch(tab.id, { customEditorHeight: val } as any)}
+          historyTabId={tab.id}
         />
       </Suspense>
     </div>
