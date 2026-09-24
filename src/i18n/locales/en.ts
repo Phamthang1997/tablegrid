@@ -2823,6 +2823,9 @@ const en = {
     tookSeconds: '{{s}} s',
     tookMinutes: '{{m}} min {{s}} s',
     tookHours: '{{h}} h {{m}} min',
+    notifyToggle: 'Notify me when a job finishes while the app is in the background',
+    notifyFailed: 'Failed: {{message}}',
+    notifyHasWarning: 'Finished with warnings — see the jobs panel.',
   },
 
   quickSwitcher: {

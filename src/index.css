@@ -15284,6 +15284,19 @@ input.rename-input {
   color: var(--win-text-secondary);
 }
 
+/* The notification switch at the foot of the jobs popover, under a rule like the history heading. */
+.jobs-notify-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px 10px 2px;
+  border-top: 1px solid var(--win-border);
+  font-size: 11px;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+}
+
 /* "Nothing running" above the history, when this session has no job of its own. */
 .jobs-empty {
   padding: 8px 10px;

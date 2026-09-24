@@ -2794,6 +2794,9 @@ const vi: typeof en = {
     tookSeconds: '{{s}} giây',
     tookMinutes: '{{m}} phút {{s}} giây',
     tookHours: '{{h}} giờ {{m}} phút',
+    notifyToggle: 'Báo khi việc chạy nền xong lúc app không được mở ở phía trước',
+    notifyFailed: 'Lỗi: {{message}}',
+    notifyHasWarning: 'Xong nhưng có cảnh báo — xem bảng việc chạy nền.',
   },
 
   quickSwitcher: {

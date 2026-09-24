@@ -2789,6 +2789,9 @@ const ja: typeof en = {
     tookSeconds: '{{s}} 秒',
     tookMinutes: '{{m}} 分 {{s}} 秒',
     tookHours: '{{h}} 時間 {{m}} 分',
+    notifyToggle: 'アプリがバックグラウンドのとき、処理の完了を通知する',
+    notifyFailed: '失敗: {{message}}',
+    notifyHasWarning: '警告付きで完了しました — 処理パネルを確認してください。',
   },
 
   quickSwitcher: {

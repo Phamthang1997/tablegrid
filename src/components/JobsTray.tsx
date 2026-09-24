@@ -8,9 +8,19 @@ import {
   cancelJob,
   clearFinishedJobs,
   listJobs,
+  onJobSettled,
   subscribeJobs,
   type JobRecord,
 } from '../utils/jobs';
+import {
+  JOB_NOTIFY_CHANGED_EVENT,
+  appIsInBackground,
+  getJobNotifyEnabled,
+  jobNotification,
+  setJobNotifyEnabled,
+  shouldNotifyJob,
+  showNotification,
+} from '../utils/jobNotify';
 import {
   clearJobHistory,
   listJobHistory,
@@ -53,6 +63,29 @@ export const JobsTray: React.FC = () => {
   // what earlier sessions did, plus this session's rows the user cleared from the list.
   const shownIds = new Set(jobs.map((j) => j.id));
   const earlier = history.filter((h) => !shownIds.has(h.id));
+
+  // An OS notification when a job finishes while the user is in another window. Registered here
+  // because this component is mounted for the whole life of the app (it returns null while empty,
+  // after its hooks), and it is the one place with `t` to word the outcome. `t` goes through a ref
+  // so a language switch does not re-register.
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
+  const [notifyOn, setNotifyOn] = useState(getJobNotifyEnabled);
+  useEffect(() => {
+    const sync = () => setNotifyOn(getJobNotifyEnabled());
+    window.addEventListener(JOB_NOTIFY_CHANGED_EVENT, sync);
+    const off = onJobSettled((rec) => {
+      if (!shouldNotifyJob(rec, { enabled: getJobNotifyEnabled(), background: appIsInBackground() })) return;
+      const { title, body } = jobNotification(rec, tRef.current);
+      void showNotification(title, body);
+    });
+    return () => {
+      off();
+      window.removeEventListener(JOB_NOTIFY_CHANGED_EVENT, sync);
+    };
+  }, []);
 
   // Closing the app with a job running = a half-loaded restore that cannot be resumed. Ask first.
   // A blocker rather than a listener of its own — see `closeGuard.ts`.
@@ -151,6 +184,14 @@ export const JobsTray: React.FC = () => {
                   </>
                 )}
               </div>
+              <label className="jobs-notify-toggle">
+                <input
+                  type="checkbox"
+                  checked={notifyOn}
+                  onChange={(e) => setJobNotifyEnabled(e.target.checked)}
+                />
+                <span>{t('jobs.notifyToggle')}</span>
+              </label>
             </div>
           </>,
           document.body,

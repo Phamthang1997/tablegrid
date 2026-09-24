@@ -203,8 +203,31 @@ function settle(id: string, state: JobState, result: JobResult | null, error: st
   // there is nothing to remember about it — the history answers "what happened", not "what was asked".
   const settled = entries.get(id)?.rec;
   if (settled && settled.startedAt !== null) recordJobHistory(settled);
+  if (settled) {
+    for (const fn of settledListeners) {
+      try {
+        fn(settled);
+      } catch {
+        // A listener (the OS notification) failing must not stop the job from settling.
+      }
+    }
+  }
   trimFinished();
   flush();
+}
+
+const settledListeners = new Set<(rec: JobRecord) => void>();
+
+/**
+ * Called once for every job that settles — done, error or cancelled, including one cancelled while
+ * still queued (`startedAt` null). For side effects that are about the OUTCOME rather than the list,
+ * i.e. the OS notification; the tray reads the list through `subscribeJobs` instead.
+ */
+export function onJobSettled(fn: (rec: JobRecord) => void): () => void {
+  settledListeners.add(fn);
+  return () => {
+    settledListeners.delete(fn);
+  };
 }
 
 function pump(): void {
@@ -356,6 +379,7 @@ export function removeJob(id: string): void {
 export function resetJobs(): void {
   entries.clear();
   listeners.clear();
+  settledListeners.clear();
   if (notifyTimer) {
     clearTimeout(notifyTimer);
     notifyTimer = null;

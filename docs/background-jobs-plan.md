@@ -255,7 +255,14 @@ không đi qua funnel nữa.
 cắt ở 600 ký tự, hết quota thì giữ nửa mới nhất) cho mọi job ĐÃ CHẠY — job huỷ khi còn trong hàng đợi
 không được ghi. Tray có mục "Trước đó" và nút chuông vẫn hiện khi chỉ còn lịch sử, vì câu "backup tối
 qua xong chưa" được hỏi đúng lúc không có gì đang chạy. Chưa lọc theo scope — tiêu đề job đã mang tên
-database. Chưa làm: OS notification (cần thêm `tauri-plugin-notification`).
+database.
+
+**OS notification — ✅ ĐÃ CODE.** `tauri-plugin-notification` 2.4 (không phải 3.0-alpha, dành cho Tauri 3),
+chỉ cấp `allow-notify` + `allow-is-permission-granted`. `utils/jobNotify.ts`: một job **xong hoặc lỗi**
+khi cửa sổ KHÔNG được focus (`document.hidden || !document.hasFocus()`) thì bật thông báo; đang nhìn app
+thì không (tray đã đủ), huỷ thì không (người dùng tự bấm). Nghe qua `onJobSettled` của `jobs.ts`, đăng
+ký trong `JobsTray`; công tắc ở cuối popover (`tf_job_notify`, mặc định bật). Trên Windows ở chế độ dev,
+thông báo hiện dưới tên PowerShell/terminal — bản cài đặt mới mang tên app (AUMID do installer đăng ký).
 
 ## 6. Ước lượng & rủi ro
 
