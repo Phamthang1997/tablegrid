@@ -2052,10 +2052,12 @@ export const dbHelper = {
     pattern: string,
     cursor: number,
     count: number,
-    typeFilter?: string
+    typeFilter?: string,
+    /** Explicit for a background job, which may run after the ambient id moved on. */
+    connId?: string,
   ): Promise<{ success: boolean; cursor: number; keys: RedisKeyItem[]; error?: string }> {
     try {
-      const res: any = await invoke('redis_scan_keys', { pattern, cursor, count, typeFilter: typeFilter || null });
+      const res: any = await invoke('redis_scan_keys', withConnId({ pattern, cursor, count, typeFilter: typeFilter || null }, connId));
       return { success: !!res.success, cursor: res.cursor ?? 0, keys: res.keys || [] };
     } catch (err: any) {
       return { success: false, cursor: 0, keys: [], error: err.toString() };
@@ -2550,14 +2552,14 @@ export const dbHelper = {
   // already merged `currentConnId` in.
 
   /** DUMP + PTTL + TYPE for a batch of keys. `payload` is base64. */
-  async redisDumpKeys(keys: string[]): Promise<{
+  async redisDumpKeys(keys: string[], connId?: string): Promise<{
     success: boolean;
     entries: { key: string; type: string; ttlMs: number; payload: string }[];
     missing: string[];
     error?: string;
   }> {
     try {
-      const res: any = await invoke('redis_dump_keys', { keys });
+      const res: any = await invoke('redis_dump_keys', withConnId({ keys }, connId));
       return { success: !!res.success, entries: res.entries || [], missing: res.missing || [] };
     } catch (err: any) {
       return { success: false, entries: [], missing: [], error: err.toString() };
@@ -2572,6 +2574,7 @@ export const dbHelper = {
   async redisRestoreKeys(
     entries: { key: string; type: string; ttlMs: number; payload: string }[],
     replace: boolean,
+    connId?: string,
   ): Promise<{
     success: boolean;
     restored: number;
@@ -2580,7 +2583,7 @@ export const dbHelper = {
     error?: string;
   }> {
     try {
-      const res: any = await invoke('redis_restore_keys', { entries, replace });
+      const res: any = await invoke('redis_restore_keys', withConnId({ entries, replace }, connId));
       return {
         success: !!res.success,
         restored: res.restored ?? 0,

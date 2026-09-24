@@ -2702,8 +2702,6 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
           selectedRows: showExportDialog ? selectedRows() : undefined,
         }}
         onClose={() => setShowExportDialog(false)}
-        onSuccess={setSuccessMsg}
-        onError={setErrorMsg}
       />
 
       {/* File picker: states the allowed formats before opening the OS dialog */}

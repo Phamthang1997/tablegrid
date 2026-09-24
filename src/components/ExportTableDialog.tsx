@@ -3,9 +3,10 @@ import { Trans, useTranslation } from 'react-i18next';
 import { FolderOpen } from 'lucide-react';
 import { dbHelper } from '../utils/dbHelper';
 import { buildTableFile, buildPreview, type ExportFormat } from '../utils/exportHelper';
-import { getLastExportDir, openInFileManager, pickExportFolder, saveExportFile } from '../utils/fileSave';
-import { ProgressBar, type ProgressState } from './ProgressBar';
-import { ConfirmDialog } from './ConfirmDialog';
+import { getLastExportDir, pickExportFolder, saveExportFile } from '../utils/fileSave';
+import { startJob, type JobContext } from '../utils/jobs';
+import { withJobConnection } from '../utils/jobConnection';
+import { connKeyOfConn } from '../utils/safeMode';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 
 /** The grid's context — present only when opened from a table tab (the bar under DataGrid). */
@@ -41,8 +42,6 @@ interface ExportTableDialogProps {
   /** Left empty (opened from the Sidebar's context menu) -> the column list is read from the schema. */
   grid?: ExportGridContext;
   onClose: () => void;
-  onSuccess?: (msg: string) => void;
-  onError?: (msg: string) => void;
 }
 
 const FORMATS: ExportFormat[] = ['csv', 'json', 'sql', 'xlsx'];
@@ -72,8 +71,6 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
   dbType,
   grid,
   onClose,
-  onSuccess,
-  onError,
 }) => {
   const { t, i18n } = useTranslation();
   const fmtNum = (n: number) => n.toLocaleString(i18n.language);
@@ -91,10 +88,7 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
   const [fetchedTotal, setFetchedTotal] = useState(0);
   const [fetching, setFetching] = useState(false);
   const [dir, setDir] = useState(getLastExportDir());
-  const [progress, setProgress] = useState<ProgressState | null>(null);
-  const [done, setDone] = useState<
-    { message: string; path?: string; dir?: string; viaDownload: boolean } | null
-  >(null);
+
 
   // Each open is a new export pass.
   useEffect(() => {
@@ -142,7 +136,7 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
   }, [grid, schemaCols, visibleOnly]);
 
   // The preview step fetches only A FEW SAMPLE ROWS, for speed; the full data is loaded only when
-  // export is pressed (see fetchAllRows) — which is when the progress bar appears.
+  // export is pressed (see fetchAllRows), by the background job whose progress is in the tray.
   useEffect(() => {
     if (!open || step !== 'preview') return;
     // A selection needs no read, and must not do one: the picked rows are not page 1 of anything.
@@ -170,18 +164,22 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
     return () => { cancelled = true; };
   }, [connId, open, step, tableName, grid, applyView, pickedRows]);
 
-  /** Loads EVERY row page by page, reporting real progress from the rows fetched so far. */
-  const fetchAllRows = async (): Promise<any[]> => {
-    // Same as the preview: already in memory, so there is no page to wait for and no progress to
-    // report. `applyView` is irrelevant here — the selection is in screen order, which is the sorted
-    // and filtered order the user was looking at when they made it.
-    if (onlySelected && grid?.selectedRows?.length) return grid.selectedRows;
-    const useView = !!grid && applyView;
+  /**
+   * Loads EVERY row page by page on `readConnId`, reporting real progress from the rows fetched so
+   * far. Everything it reads from the dialog is passed in, because it runs inside a background job:
+   * by the time the job starts the dialog is gone, and its state with it.
+   */
+  const fetchAllRows = async (
+    readConnId: string,
+    opts: { useView: boolean; sortBy?: string; sortDir?: 'asc' | 'desc'; filter?: string; knownTotal: number },
+    ctx: JobContext,
+  ): Promise<any[]> => {
     const all: any[] = [];
-    let total = totalRows;
+    let total = opts.knownTotal;
     let page = 1;
     for (;;) {
-      setProgress({
+      ctx.throwIfCancelled();
+      ctx.report({
         label: t('exportDialog.loadingTable', { table: tableName }),
         current: all.length,
         total: total || undefined,
@@ -189,13 +187,13 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
           ? t('exportDialog.rowsOfTotal', { rows: fmtNum(all.length), total: fmtNum(total) })
           : t('exportDialog.rows', { rows: fmtNum(all.length) }),
       });
-      const data = await dbHelper.getTableData(connId, 
+      const data = await dbHelper.getTableData(readConnId,
         tableName,
         page,
         FETCH_PAGE_SIZE,
-        useView ? grid?.sortBy : undefined,
-        useView ? grid?.sortDir : undefined,
-        useView ? grid?.filter : undefined
+        opts.useView ? opts.sortBy : undefined,
+        opts.useView ? opts.sortDir : undefined,
+        opts.useView ? opts.filter : undefined
       );
       const batch = data.rows || [];
       all.push(...batch);
@@ -204,12 +202,6 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
       if (total && all.length >= total) break;
       page++;
     }
-    setProgress({
-      label: t('exportDialog.loadingTable', { table: tableName }),
-      current: all.length,
-      total: all.length,
-      detail: t('exportDialog.rows', { rows: fmtNum(all.length) }),
-    });
     return all;
   };
 
@@ -234,62 +226,58 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
     if (picked) setDir(picked);
   };
 
-  const download = async () => {
-    try {
-      // Only here is the full data loaded — until now the preview used a few sample rows.
-      const allRows = await fetchAllRows();
-      const cols = colNames.length ? colNames : (allRows[0] ? Object.keys(allRows[0]) : []);
-      setProgress({ label: t('exportDialog.building', { format: format.toUpperCase() }) });
-      const file = buildTableFile(tableName, cols, allRows, format, dbType, fileName);
-      setProgress({ label: t('exportDialog.writing') });
-      const res = await saveExportFile(dir || null, file.name, file.data, file.mime);
-      setProgress(null);
-      setDone({
-        message: t('exportDialog.exportedTable', { table: tableName, rows: allRows.length, format: format.toUpperCase() }),
-        path: res.path || file.name,
-        dir: res.dir,
-        viaDownload: res.savedTo === 'download',
-      });
-    } catch (err: any) {
-      setProgress(null);
-      onError?.(t('exportDialog.errExport', { message: err?.message || err }));
-    }
-  };
+  /**
+   * Queues the export as a **background job** and closes the dialog, like Export Database does.
+   * Progress, the result and "open folder" live in `JobsTray` — this used to hold the dialog open
+   * for the whole read, page by page, and closing it threw the export away.
+   *
+   * Every option is copied into locals first: the job may start from the queue after the dialog is
+   * gone, and nothing it reads may belong to a component that no longer exists.
+   */
+  const download = () => {
+    const opts = {
+      useView: !!grid && applyView,
+      sortBy: grid?.sortBy,
+      sortDir: grid?.sortDir,
+      filter: grid?.filter,
+      knownTotal: totalRows,
+    };
+    // A selection is already in memory — no page to read, so no connection is needed at all.
+    // `applyView` is irrelevant for it: the rows are in screen order, which is the sorted and
+    // filtered order the user was looking at when they made the selection.
+    const picked = onlySelected && grid?.selectedRows?.length ? [...grid.selectedRows] : null;
+    const cols = [...colNames];
+    const fmt = format;
+    const name = fileName;
+    const targetDir = dir || null;
 
-  const closeDone = (openFolder: boolean) => {
-    const dirToOpen = done?.dir;
-    const msg = done?.message;
-    setDone(null);
-    if (openFolder && dirToOpen) openInFileManager(dirToOpen);
-    if (msg) onSuccess?.(msg + (dirToOpen ? ` (${dirToOpen})` : ''));
+    startJob({
+      kind: 'export-table',
+      title: t('jobs.titleExportTable', { n: tableName }),
+      db: tableName,
+      conn: connKeyOfConn(connId),
+      lockKey: `${connId}|${tableName}`,
+      run: async (ctx) => {
+        // A connection of its own, like every job: a read through the user's id would go through
+        // their manual transaction and export rows they have not committed.
+        const allRows = picked
+          ?? await withJobConnection(connId, [], ({ connId: jobConnId }) => fetchAllRows(jobConnId, opts, ctx));
+        ctx.throwIfCancelled();
+        const header = cols.length ? cols : (allRows[0] ? Object.keys(allRows[0]) : []);
+        ctx.report({ label: t('exportDialog.building', { format: fmt.toUpperCase() }) });
+        const file = buildTableFile(tableName, header, allRows, fmt, dbType, name);
+        ctx.report({ label: t('exportDialog.writing') });
+        const res = await saveExportFile(targetDir, file.name, file.data, file.mime);
+        return {
+          message: t('exportDialog.exportedTable', { table: tableName, rows: allRows.length, format: fmt.toUpperCase() }),
+          path: res.path || file.name,
+          dir: res.dir,
+          viaDownload: res.savedTo === 'download',
+        };
+      },
+    });
     onClose();
   };
-
-  // Once exported, it offers to open the containing folder rather than closing at once.
-  if (done) {
-    return (
-      <ConfirmDialog
-        open
-        tone="success"
-        title={t('app.exportDoneTitle')}
-        message={
-          <>
-            {done.message}
-            {done.path && (
-              <div style={{ marginTop: '6px', fontFamily: 'monospace', wordBreak: 'break-all', color: 'var(--win-text-secondary)' }}>
-                {done.dir && done.viaDownload ? `${done.dir}` : done.path}
-              </div>
-            )}
-          </>
-        }
-        note={done.viaDownload ? t('app.exportDoneNoteWebView') : undefined}
-        confirmLabel={done.dir ? t('app.openFolder') : t('common.close')}
-        cancelLabel={t('common.close')}
-        onConfirm={() => closeDone(true)}
-        onCancel={() => closeDone(false)}
-      />
-    );
-  }
 
   return (
     <Modal
@@ -500,17 +488,13 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
             </ModalBody>
 
             <ModalFooter style={{ gap: '12px' }}>
-              {progress ? (
-                <ProgressBar progress={progress} />
-              ) : (
-                <button className="btn btn-secondary" onClick={() => setStep('options')} style={{ marginRight: 'auto' }}>
-                  {t('exportDialog.backToOptions')}
-                </button>
-              )}
+              <button className="btn btn-secondary" onClick={() => setStep('options')} style={{ marginRight: 'auto' }}>
+                {t('exportDialog.backToOptions')}
+              </button>
               <button
                 className="btn btn-secondary"
                 onClick={() => navigator.clipboard.writeText(preview)}
-                disabled={loading || !!progress || !preview || format === 'xlsx'}
+                disabled={loading || !preview || format === 'xlsx'}
                 title={format === 'xlsx' ? t('exportDialog.copyPreviewDisabled') : undefined}
                 style={{ flexShrink: 0 }}
               >
@@ -519,7 +503,7 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
               <button
                 className="btn btn-primary"
                 onClick={download}
-                disabled={loading || !!progress}
+                disabled={loading}
                 style={{ background: 'var(--win-accent)', color: '#fff', border: 'none', flexShrink: 0 }}
               >
                 {dir ? t('exportDialog.exportToFolder') : t('exportDialog.downloadFile')}

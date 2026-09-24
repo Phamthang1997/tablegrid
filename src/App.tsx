@@ -2810,8 +2810,6 @@ export const App: React.FC = () => {
           tableName={exportTableTarget}
           dbType={connection.dbType}
           onClose={() => setExportTableTarget(null)}
-          onSuccess={(msg) => alert(msg)}
-          onError={(msg) => alert(msg)}
         />
       )}
 
