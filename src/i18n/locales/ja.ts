@@ -2792,6 +2792,8 @@ const ja: typeof en = {
     notifyToggle: 'アプリがバックグラウンドのとき、処理の完了を通知する',
     notifyFailed: '失敗: {{message}}',
     notifyHasWarning: '警告付きで完了しました — 処理パネルを確認してください。',
+    notifyTest: 'テスト送信',
+    notifyTestBody: '通知は機能しています。アプリがバックグラウンドのときに処理が完了すると、このような通知が届きます。',
   },
 
   quickSwitcher: {

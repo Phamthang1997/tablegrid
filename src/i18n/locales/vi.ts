@@ -2797,6 +2797,8 @@ const vi: typeof en = {
     notifyToggle: 'Báo khi việc chạy nền xong lúc app không được mở ở phía trước',
     notifyFailed: 'Lỗi: {{message}}',
     notifyHasWarning: 'Xong nhưng có cảnh báo — xem bảng việc chạy nền.',
+    notifyTest: 'Gửi thử',
+    notifyTestBody: 'Thông báo hoạt động. Bạn sẽ nhận một thông báo như thế này khi việc chạy nền xong lúc app không ở phía trước.',
   },
 
   quickSwitcher: {

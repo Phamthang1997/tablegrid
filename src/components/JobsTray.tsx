@@ -73,6 +73,7 @@ export const JobsTray: React.FC = () => {
     tRef.current = t;
   }, [t]);
   const [notifyOn, setNotifyOn] = useState(getJobNotifyEnabled);
+  const [notifyTestError, setNotifyTestError] = useState<string | null>(null);
   useEffect(() => {
     const sync = () => setNotifyOn(getJobNotifyEnabled());
     window.addEventListener(JOB_NOTIFY_CHANGED_EVENT, sync);
@@ -184,14 +185,29 @@ export const JobsTray: React.FC = () => {
                   </>
                 )}
               </div>
-              <label className="jobs-notify-toggle">
-                <input
-                  type="checkbox"
-                  checked={notifyOn}
-                  onChange={(e) => setJobNotifyEnabled(e.target.checked)}
-                />
-                <span>{t('jobs.notifyToggle')}</span>
-              </label>
+              <div className="jobs-notify-toggle">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={notifyOn}
+                    onChange={(e) => setJobNotifyEnabled(e.target.checked)}
+                  />
+                  <span>{t('jobs.notifyToggle')}</span>
+                </label>
+                {/* Sends one now, whatever the focus: the only way to check the OS side without
+                    starting a job and switching away — and it says why when it fails. */}
+                <button
+                  type="button"
+                  className="jobs-pop-clear"
+                  onClick={async () => {
+                    const failed = await showNotification(t('jobs.panelTitle'), t('jobs.notifyTestBody'));
+                    setNotifyTestError(failed);
+                  }}
+                >
+                  {t('jobs.notifyTest')}
+                </button>
+              </div>
+              {notifyTestError && <div className="jobs-row-error jobs-notify-error">{notifyTestError}</div>}
             </div>
           </>,
           document.body,

@@ -7,8 +7,8 @@
 // on top would be noise.
 //
 // What to show is decided in pure functions (`shouldNotifyJob`, `jobNotification`), so the rules are
-// tested without a webview. The plugin is called directly (`plugin:notification|notify`), the same
-// way `fileSave.ts` calls the dialog/fs plugins — this project does not install the npm wrappers.
+// tested without a webview. The backend side is `notify_os` in `app/notify.rs`, called directly the
+// way `fileSave.ts` calls its commands.
 
 import { invoke } from '@tauri-apps/api/core';
 import type { TFunction } from 'i18next';
@@ -78,11 +78,19 @@ export function jobNotification(
   return { title: rec.title, body: clip(body) };
 }
 
-/** Shows it. Never throws: a notification the OS refuses must not turn a finished job into an error. */
-export async function showNotification(title: string, body: string): Promise<void> {
+/**
+ * Shows it, through `notify_os` (`app/notify.rs` — why not the notification plugin is explained
+ * there). Never throws: a notification the OS refuses must not turn a finished job into an error.
+ * Resolves to the reason when it failed, `null` when the OS accepted it, so the tray's "send a test"
+ * button can say what went wrong instead of silently showing nothing.
+ */
+export async function showNotification(title: string, body: string): Promise<string | null> {
   try {
-    await invoke('plugin:notification|notify', { options: { title, body } });
-  } catch {
-    /* notifications disabled at the OS level, or no backend (vite-only dev) */
+    await invoke('notify_os', { title, body });
+    return null;
+  } catch (err) {
+    const reason = String(err);
+    console.warn('[job-notify] notification failed:', reason);
+    return reason;
   }
 }

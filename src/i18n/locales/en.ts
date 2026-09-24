@@ -2826,6 +2826,8 @@ const en = {
     notifyToggle: 'Notify me when a job finishes while the app is in the background',
     notifyFailed: 'Failed: {{message}}',
     notifyHasWarning: 'Finished with warnings — see the jobs panel.',
+    notifyTest: 'Send a test',
+    notifyTestBody: 'Notifications work. You will get one like this when a job finishes while the app is in the background.',
   },
 
   quickSwitcher: {
