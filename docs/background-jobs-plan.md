@@ -1,6 +1,6 @@
 # Kế hoạch: chạy Export / Generate Data / Import-Restore / Backup ở chế độ nền (background jobs)
 
-> Trạng thái: **Phase 0, 1, 2 và 4 đã code** (xem §5). Phase 3 (sink ghi file) chưa.
+> Trạng thái: **Phase 0–4 đã code** (xem §5). Phase 3 mới phủ SQL dump; XLSX/JSON/CSV vẫn dựng trong RAM.
 
 ## 1. Triệu chứng
 
@@ -233,9 +233,22 @@ dụng. Giờ nhánh Postgres giữ **một** connection như nhánh MySQL, dùn
 quanh cả các câu session-level (một `SET` bị từ chối từng đầu độc cả transaction, 25P02). SQLite cũng
 không đi qua funnel nữa.
 
-### Phase 3 — sink ghi file cho họ B
-`export_open/append/close` + `buildDump(onChunk)` + `ExportTableDialog` ghi theo trang. Thêm nhường
-event loop giữa các bảng/trang.
+### Phase 3 — sink ghi file cho họ B — ✅ ĐÃ CODE (phần SQL dump)
+- Rust `export_sink.rs`: `export_open(path, gzip)` / `export_append` / `export_close` /
+  `export_abort`. Ghi vào `<path>.part`, chỉ đổi tên sang tên thật khi `close` — job lỗi hoặc bị huỷ
+  không để lại một tệp trông như backup hoàn chỉnh, và backup cũ chỉ bị thay khi bản mới đã đủ. Nén
+  gzip tăng dần bằng `flate2` (`CompressionStream` của webview cần cả input trong một `Blob`, đúng thứ
+  đang bỏ). I/O chạy trên `spawn_blocking`.
+- `dumpBuilder.ts`: `writeDump(spec, reader, emit)` đẩy dump ra theo từng đoạn, mỗi đoạn kết thúc
+  giữa hai câu lệnh — header, mỗi bảng, **mỗi TRANG dữ liệu** (`readTablePages`), rồi constraints/view/
+  routine. `buildDump` giờ chỉ gom các đoạn lại và trả về đúng từng byte như trước, nên mọi test thứ
+  tự vẫn giữ nghĩa. `EXPORT_PAGE_SIZE` (2000) là bội của số dòng mỗi INSERT (500) nên câu lệnh ra y hệt.
+- `fileSave.ts`: `openFileSink` (gom ~1M ký tự mỗi lần IPC) và `saveDumpToFolder` — không có thư mục
+  hoặc không tạo được tệp thì quay về đường cũ trong RAM, nên một thư mục không ghi được chỉ tốn bộ
+  nhớ chứ không mất bản xuất.
+- Dùng bởi Export Database (SQL) và Backup của Connection Manager.
+- **Chưa** stream: XLSX/JSON/CSV của Export Database và Export một bảng (XLSX cần cả workbook; hai
+  định dạng kia có thể làm theo cùng khuôn nếu cần), và Copy database (restore nhận cả chuỗi dump).
 
 ### Phase 4 — lịch sử job — ✅ ĐÃ CODE
 `utils/jobHistory.ts`: `settle()` của `jobs.ts` ghi một bản ghi nhỏ (`tf_job_history`, 50 mục, text

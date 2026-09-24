@@ -17,8 +17,8 @@ import {
   commentOnlyFromBody,
 } from '../utils/dumpPreview';
 import { splitStatements } from '../sql/statements';
-import { buildDump, dumpReaderFor } from '../utils/dumpBuilder';
-import { gzipText, getLastExportDir, saveExportFile, saveExportFileAtPath, pickOpenFile, pickSaveFilePath, pickSqliteDatabaseFile } from '../utils/fileSave';
+import { buildDump, dumpReaderFor, writeDump, type DumpSpec } from '../utils/dumpBuilder';
+import { getLastExportDir, saveDumpToFolder, saveExportFileAtPath, pickOpenFile, pickSaveFilePath, pickSqliteDatabaseFile } from '../utils/fileSave';
 import { fileBaseFromPath, fileStamp, safeFileBase } from '../utils/exportHelper';
 import { startJob } from '../utils/jobs';
 import { runOnJobConnection } from '../utils/jobConnection';
@@ -1562,7 +1562,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
             ]);
             ctx.throwIfCancelled();
 
-            const sqlText = await buildDump({
+            const dumpSpec: DumpSpec = {
               dbType: config.type,
               tables,
               views: list.filter(item => item.type === 'view').map(item => item.name),
@@ -1582,16 +1582,15 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                 ctx.throwIfCancelled();
                 ctx.report(p);
               },
-            }, dumpReaderFor(dbHelper, jobConnId));
-            ctx.throwIfCancelled();
-
-            ctx.report({ label: t('app.exportWriting') });
-            const payload = gzip ? await gzipText(sqlText) : sqlText;
-            const saved = await saveExportFile(
+            };
+            const reader = dumpReaderFor(dbHelper, jobConnId);
+            // Streamed into the file as it is built — see saveDumpToFolder.
+            const saved = await saveDumpToFolder(
               getLastExportDir() || null,
               fileName,
-              payload,
-              gzip ? 'application/gzip' : 'text/plain;charset=utf-8'
+              gzip,
+              (emit) => writeDump(dumpSpec, reader, emit),
+              () => buildDump(dumpSpec, reader),
             );
             return {
               message: `${t('connection.backupSuccess')} — ${saved.path || fileName}`,

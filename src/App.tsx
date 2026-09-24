@@ -86,8 +86,8 @@ import { collectColumns, inferColType } from './utils/importPreview';
 import { addExistsHint } from './utils/dumpPreview';
 import { ProgressBar, type ProgressState } from './components/ProgressBar';
 import { buildDatabaseFile } from './utils/exportHelper';
-import { buildDump, readTableRows, dumpReaderFor } from './utils/dumpBuilder';
-import { gzipText, saveExportFile } from './utils/fileSave';
+import { buildDump, readTableRows, dumpReaderFor, writeDump, type DumpSpec } from './utils/dumpBuilder';
+import { saveDumpToFolder, saveExportFile } from './utils/fileSave';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { Modal, ModalBody, ModalFooter } from './components/Modal';
 import type { XlsxSheet } from './utils/xlsxWriter';
@@ -570,7 +570,7 @@ export const App: React.FC = () => {
 
         // SQL: the dump is built in dumpBuilder.ts — shared with Connection Manager's Backup button,
         // so any change to statement order has to be made in exactly ONE place.
-        const sqlText = await buildDump({
+        const dumpSpec: DumpSpec = {
           dbType,
           tables: opts.tables,
           views: opts.views,
@@ -581,20 +581,21 @@ export const App: React.FC = () => {
           // re-importing elsewhere puts everything into whatever schema leads that host's search_path.
           schema,
           onProgress: report,
-        }, dumpReaderFor(dbHelper, jobConnId));
-        ctx.throwIfCancelled();
+        };
+        const reader = dumpReaderFor(dbHelper, jobConnId);
 
         const ext = opts.compressGzip ? '.sql.gz' : '.sql';
         const base = opts.filename.replace(/\.(sql|sql\.gz|gz)$/i, '');
         const fileName = base + ext;
 
-        report({ label: opts.compressGzip ? t('app.exportCompressing') : t('app.exportWriting') });
-        const payload = opts.compressGzip ? await gzipText(sqlText) : sqlText;
-        const saved = await saveExportFile(
+        // Streamed straight into the file as it is built (and gzipped on the way), so the dump is
+        // never one string in memory; without a folder it falls back to building it in memory.
+        const saved = await saveDumpToFolder(
           opts.dir,
           fileName,
-          payload,
-          opts.compressGzip ? 'application/gzip' : 'text/plain;charset=utf-8'
+          opts.compressGzip,
+          (emit) => writeDump(dumpSpec, reader, emit),
+          () => buildDump(dumpSpec, reader),
         );
 
         return {
