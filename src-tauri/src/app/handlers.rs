@@ -9,6 +9,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
     tauri::generate_handler![
         crate::database::connect_db,
         crate::database::disconnect_db,
+        crate::database::open_job_connection,
+        crate::database::close_job_connection,
         crate::database::list_connections,
         crate::database::set_connection_read_only,
         crate::database::set_connection_mcp_exposed,
@@ -53,6 +55,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         crate::database::commit_changes,
         crate::app::ai::ai_chat,
         crate::database::restore_backup,
+        crate::database::cancel_restore,
         crate::database::import_new_table,
         crate::database::create_table,
         crate::database::drop_table,

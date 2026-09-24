@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Ban, Bell, CheckCircle2, FolderOpen, Loader2 } from 'lucide-react';
+import type { TFunction } from 'i18next';
+import { AlertTriangle, Ban, Bell, CheckCircle2, FolderOpen, Loader2, X } from 'lucide-react';
 import {
   activeJobs,
   cancelJob,
@@ -10,6 +11,13 @@ import {
   subscribeJobs,
   type JobRecord,
 } from '../utils/jobs';
+import {
+  clearJobHistory,
+  listJobHistory,
+  removeJobHistoryEntry,
+  subscribeJobHistory,
+  type JobHistoryEntry,
+} from '../utils/jobHistory';
 import { CLOSE_PRIORITY_JOBS, forceClose, registerCloseBlocker } from '../utils/closeGuard';
 import { openInFileManager } from '../utils/fileSave';
 import { ProgressBar } from './ProgressBar';
@@ -34,12 +42,17 @@ const POP_WIDTH = 380;
 export const JobsTray: React.FC = () => {
   const { t } = useTranslation();
   const jobs = useSyncExternalStore(subscribeJobs, listJobs);
+  const history = useSyncExternalStore(subscribeJobHistory, listJobHistory);
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
   const [askOnClose, setAskOnClose] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
 
   const active = jobs.filter((j) => j.state === 'running' || j.state === 'queued');
   const finished = jobs.filter((j) => j.state !== 'running' && j.state !== 'queued');
+  // A job of this session is already shown above with its live row; the history lists the rest —
+  // what earlier sessions did, plus this session's rows the user cleared from the list.
+  const shownIds = new Set(jobs.map((j) => j.id));
+  const earlier = history.filter((h) => !shownIds.has(h.id));
 
   // Closing the app with a job running = a half-loaded restore that cannot be resumed. Ask first.
   // A blocker rather than a listener of its own — see `closeGuard.ts`.
@@ -58,8 +71,10 @@ export const JobsTray: React.FC = () => {
     return () => document.removeEventListener('keydown', onKey);
   }, [anchor]);
 
-  // With no job ever queued, it takes no space on the title bar.
-  if (jobs.length === 0) return null;
+  // With no job ever queued and nothing remembered, it takes no space on the title bar. Once the
+  // history holds something the bell stays, because "did last night's backup finish?" is asked
+  // precisely when nothing is running.
+  if (jobs.length === 0 && history.length === 0) return null;
 
   const failed = finished.some((j) => j.state === 'error');
   const capsuleTitle = active.length
@@ -119,6 +134,22 @@ export const JobsTray: React.FC = () => {
                 {jobs.map((job) => (
                   <JobRow key={job.id} job={job} />
                 ))}
+                {jobs.length === 0 && earlier.length > 0 && (
+                  <div className="jobs-row-note jobs-empty">{t('jobs.nothingRunning')}</div>
+                )}
+                {earlier.length > 0 && (
+                  <>
+                    <div className="jobs-history-head">
+                      <span>{t('jobs.historyTitle')}</span>
+                      <button type="button" className="jobs-pop-clear" onClick={clearJobHistory}>
+                        {t('jobs.clearHistory')}
+                      </button>
+                    </div>
+                    {earlier.map((entry) => (
+                      <HistoryRow key={entry.id} entry={entry} />
+                    ))}
+                  </>
+                )}
               </div>
             </div>
           </>,
@@ -161,6 +192,73 @@ const STATE_KEY: Record<JobRecord['state'], string> = {
   error: 'jobs.stateError',
   cancelled: 'jobs.stateCancelled',
 };
+
+/**
+ * One job from an earlier session (or cleared from this one). Read-only: there is nothing left to
+ * cancel, only to read — when it ended, how, and where its file went.
+ */
+const HistoryRow: React.FC<{ entry: JobHistoryEntry }> = ({ entry }) => {
+  const { t, i18n } = useTranslation();
+  const icon = entry.state === 'done' ? (
+    <CheckCircle2 size={13} className="jobs-icon-ok" />
+  ) : entry.state === 'error' ? (
+    <AlertTriangle size={13} className="jobs-icon-error" />
+  ) : (
+    <Ban size={13} className="jobs-icon-muted" />
+  );
+  const endedAt = new Date(entry.endedAt).toLocaleString(i18n.language);
+  const took = entry.startedAt !== null ? formatTook(entry.endedAt - entry.startedAt, t) : '';
+
+  return (
+    <div className="jobs-row jobs-row-history">
+      <div className="jobs-row-icon">{icon}</div>
+      <div className="jobs-row-body">
+        <div className="jobs-row-head">
+          <span className="jobs-row-title">{entry.title}</span>
+          <span className="jobs-row-state">{t(STATE_KEY[entry.state] as 'jobs.stateDone')}</span>
+        </div>
+        <div className="jobs-row-note">{took ? t('jobs.historyWhenTook', { when: endedAt, took }) : endedAt}</div>
+        {entry.error && <div className="jobs-row-error">{entry.error}</div>}
+        {entry.message && (
+          <div className="jobs-row-result">
+            {entry.message}
+            {entry.warning && <div className="jobs-row-warn">{entry.warning}</div>}
+          </div>
+        )}
+      </div>
+      <div className="jobs-row-actions">
+        {entry.dir && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            title={entry.path || entry.dir}
+            onClick={() => void openInFileManager(entry.dir!)}
+          >
+            <FolderOpen size={12} />
+          </button>
+        )}
+        <button
+          type="button"
+          className="btn btn-secondary"
+          title={t('jobs.removeHistoryEntry')}
+          aria-label={t('jobs.removeHistoryEntry')}
+          onClick={() => removeJobHistoryEntry(entry.id)}
+        >
+          <X size={12} />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+/** "42 s" / "3 min 5 s" / "1 h 20 min" — how long a finished job ran. */
+function formatTook(ms: number, t: TFunction): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return t('jobs.tookSeconds', { s });
+  const m = Math.floor(s / 60);
+  if (m < 60) return t('jobs.tookMinutes', { m, s: s % 60 });
+  return t('jobs.tookHours', { h: Math.floor(m / 60), m: m % 60 });
+}
 
 const JobRow: React.FC<{ job: JobRecord }> = ({ job }) => {
   const { t } = useTranslation();

@@ -68,7 +68,9 @@ import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './components/DbI
 import { dbHelper, activeConnId, setActiveConnId } from './utils/dbHelper';
 import { installCloseGuard } from './utils/closeGuard';
 import { startJob } from './utils/jobs';
-import { makeRestoreReporter } from './utils/restoreProgress';
+import { withJobConnection } from './utils/jobConnection';
+import { approveJob, connKeyOfConn, type JobApproval } from './utils/safeMode';
+import { makeRestoreReporter, restoreCancelledResult } from './utils/restoreProgress';
 import { isProduction, normalizeEnv, type ConnEnv } from './utils/connEnv';
 import type { DbConnectionConfig } from './utils/dbHelper';
 import { invalidateCatalog } from './sql/catalog';
@@ -521,7 +523,7 @@ export const App: React.FC = () => {
     // Fixed at submit time: if the user switches connection while the job runs, the job still reads
     // the place it was given. `connId` is already a (server, database) pair, so it doubles as the
     // exclusivity key — see jobs.ts.
-    const jobConnId = activeConnIdState;
+    const sourceConnId = activeConnIdState;
     const dbType = connection?.dbType || 'sqlite';
     const schema = connection?.schema;
     const dbLabel = connection?.dbName || opts.filename;
@@ -530,9 +532,16 @@ export const App: React.FC = () => {
       kind: 'dump',
       title: t('jobs.titleExport', { n: dbLabel }),
       db: connection?.dbName || '',
-      lockKey: `${jobConnId}|${connection?.dbName || ''}`,
-      run: async (ctx) => {
-        const report = (p: ProgressState | null) => ctx.report(p);
+      conn: connKeyOfConn(sourceConnId),
+      lockKey: `${sourceConnId}|${connection?.dbName || ''}`,
+      // A connection of its own: an export reading through the user's id would read through their
+      // manual transaction, i.e. dump rows they have not committed. Read-only, so no approval.
+      run: (ctx) => withJobConnection(sourceConnId, [], async ({ connId: jobConnId }) => {
+        // Throwing from the progress callback is what stops a dump between two pages.
+        const report = (p: ProgressState | null) => {
+          ctx.throwIfCancelled();
+          ctx.report(p);
+        };
         const totalTables = opts.tables.length;
 
         // Data (XLSX/JSON/CSV): the file is built client-side.
@@ -594,7 +603,7 @@ export const App: React.FC = () => {
           dir: saved.dir,
           viaDownload: saved.savedTo === 'download',
         };
-      },
+      }),
     });
 
     return true;
@@ -739,6 +748,20 @@ export const App: React.FC = () => {
       const wantDb = targetDb.trim();
       const canManageDb = !!connection && connection.dbType !== 'sqlite';
 
+      // Safe Mode asks NOW, while the user is in front of the dialog, and before anything is created:
+      // the job may sit in the queue, and a question popping up when it finally starts would be about
+      // an action the user has long moved on from. Same server either way, so the current id answers.
+      let approval: JobApproval;
+      try {
+        approval = await approveJob(
+          'restore_backup',
+          activeConnIdState,
+          t('jobs.approveRestore', { n: wantDb || connection?.dbName || '' }),
+        );
+      } catch {
+        return false;
+      }
+
       // The connection the restore actually runs on, passed explicitly to `restoreBackup`. A local
       // rather than `activeConnIdState`, which is React state and still holds the OLD id inside this
       // closure when the import opens a database of its own — that would also mis-address the
@@ -779,33 +802,41 @@ export const App: React.FC = () => {
       // there. Only the restore itself goes to the background — it is the long part, and the part
       // nobody needs to watch.
       const restoreConnId = targetConnId;
+      const restoreDb = wantDb || connection?.dbName || '';
+      // Set once the job's own connection is open; `onCancel` has to name it.
+      let jobConnId = '';
       startJob({
         kind: 'restore',
-        title: t('jobs.titleRestore', { n: wantDb || connection?.dbName || '' }),
-        db: wantDb || connection?.dbName || '',
+        title: t('jobs.titleRestore', { n: restoreDb }),
+        db: restoreDb,
+        conn: connKeyOfConn(restoreConnId),
         write: true,
-        lockKey: `${restoreConnId}|${wantDb || connection?.dbName || ''}`,
-        run: async (ctx) => {
+        lockKey: `${restoreConnId}|${restoreDb}`,
+        onCancel: () => {
+          if (jobConnId) void dbHelper.cancelRestore(jobConnId);
+        },
+        run: (ctx) => withJobConnection(restoreConnId, [approval], async ({ connId }) => {
           const toProgress = makeRestoreReporter(t);
           const resData = await dbHelper.restoreBackup(
             sqlText,
             tables,
             (msg) => ctx.report(toProgress(msg)),
             continueOnError,
-            restoreConnId,
+            connId,
           );
+          if (resData.cancelled) return restoreCancelledResult(t, resData);
           if (!resData.success) throw new Error(addExistsHint(resData.error || '', false));
 
-          // A `USE <db>` inside the dump changes this connection's database, so the title-bar label
-          // has to follow — but ONLY while the user is still looking at that connection. The job runs
-          // in the background, so by the time it finishes they may have moved to another one, and
-          // overwriting that connection's label would show the name of a database it never opened.
-          if (resData.activeDatabase && activeConnIdRef.current === restoreConnId) {
-            const activeDb = resData.activeDatabase;
-            setConnection(prev => prev ? { ...prev, dbName: activeDb } : null);
-          }
           invalidateCatalog();
           window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: restoreConnId } }));
+
+          // A `USE <db>` inside the dump used to switch the user's connection onto that database. The
+          // restore now runs on the job's own connection, so only THAT one moved — which is right for
+          // a background job (switching the database under a tab the user may be typing in is what
+          // background mode exists to avoid), but the user has to be told where the data went.
+          const usedDb = resData.activeDatabase && resData.activeDatabase !== restoreDb
+            ? t('jobs.restoreUsedDb', { n: resData.activeDatabase })
+            : undefined;
 
           // Skipped statements MUST be reported: a plain "success" while dozens are missing leaves
           // the user believing the database is complete.
@@ -815,11 +846,13 @@ export const App: React.FC = () => {
                 n: resData.statementsCount || 0,
                 failed: resData.failedCount,
               }),
-              warning: (resData.failedSamples || []).map((f) => `• ${f.error}`).join('\n'),
+              warning: [usedDb, ...(resData.failedSamples || []).map((f) => `• ${f.error}`)]
+                .filter(Boolean)
+                .join('\n'),
             };
           }
-          return { message: t('app.importDbSuccess', { n: resData.statementsCount || 0 }) };
-        },
+          return { message: t('app.importDbSuccess', { n: resData.statementsCount || 0 }), warning: usedDb };
+        }, (id) => { jobConnId = id; }),
       });
       return true;
     } catch (e: any) {
@@ -843,12 +876,29 @@ export const App: React.FC = () => {
    * time it runs, the user may be looking at a third connection entirely.
    */
   const handleCopyDatabase = async (opts: CopyDatabaseOptions): Promise<boolean> => {
+    // Asked at submit, on the TARGET's server — that is where the writes go. See `approveJob`.
+    let approval: JobApproval;
+    try {
+      approval = await approveJob(
+        'restore_backup',
+        opts.targetConnId,
+        t('jobs.approveCopy', { from: opts.sourceLabel, to: opts.targetLabel }),
+      );
+    } catch {
+      return false;
+    }
+    // The job's connection on the target, once open; cancelling during the write phase names it.
+    let targetJobConnId = '';
     startJob({
       kind: 'copy-db',
       title: t('jobs.titleCopy', { from: opts.sourceLabel, to: opts.targetLabel }),
       db: opts.targetDb,
+      conn: connKeyOfConn(opts.targetConnId),
       write: true,
       lockKey: `${opts.targetConnId}|${opts.targetDb}`,
+      onCancel: () => {
+        if (targetJobConnId) void dbHelper.cancelRestore(targetJobConnId);
+      },
       run: async (ctx) => {
         /**
          * Close the connections the dialog opened for this copy — see `ownedConnIds`.
@@ -865,9 +915,11 @@ export const App: React.FC = () => {
         };
 
         try {
-          // Phase 1 — read the source into a dump. The dump's own label ("Exporting table film…")
-          // becomes the detail line, so the phase stays legible while the table name keeps moving.
-          const sqlText = await buildDump({
+          // Phase 1 — read the source into a dump, on a connection of the job's own (an export
+          // through the user's id would read through their manual transaction). The dump's own label
+          // ("Exporting table film…") becomes the detail line, so the phase stays legible while the
+          // table name keeps moving.
+          const sqlText = await withJobConnection(opts.sourceConnId, [], ({ connId }) => buildDump({
             dbType: opts.dbType,
             tables: opts.tables,
             views: opts.views,
@@ -878,12 +930,16 @@ export const App: React.FC = () => {
             // The SOURCE schema, exactly as the export path passes it: it is what the header names and
             // therefore where the objects land on the target. The dialog warns when the two differ.
             schema: opts.sourceSchema,
-            onProgress: (p) => ctx.report({
-              ...p,
-              label: t('copyDb.phaseRead', { n: opts.sourceLabel }),
-              detail: p.label,
-            }),
-          }, dumpReaderFor(dbHelper, opts.sourceConnId));
+            onProgress: (p) => {
+              // Throwing here is what stops the dump between two pages.
+              ctx.throwIfCancelled();
+              ctx.report({
+                ...p,
+                label: t('copyDb.phaseRead', { n: opts.sourceLabel }),
+                detail: p.label,
+              });
+            },
+          }, dumpReaderFor(dbHelper, connId)));
           ctx.throwIfCancelled();
 
           // Phase 2 — replay it onto the target. `runAll` with an empty `tables`: this dump was built
@@ -891,14 +947,15 @@ export const App: React.FC = () => {
           // it cannot see `film` inside `CREATE SEQUENCE film_film_id_seq`, and dropping that statement
           // makes the CREATE TABLE behind it fail on a sequence that was never created.
           const toProgress = makeRestoreReporter(t);
-          const res = await dbHelper.restoreBackup(
+          const res = await withJobConnection(opts.targetConnId, [approval], ({ connId }) => dbHelper.restoreBackup(
             sqlText,
             [],
             (msg) => ctx.report({ ...toProgress(msg), label: t('copyDb.phaseWrite', { n: opts.targetLabel }) }),
             opts.continueOnError,
-            opts.targetConnId,
+            connId,
             true,
-          );
+          ), (id) => { targetJobConnId = id; });
+          if (res.cancelled) return restoreCancelledResult(t, res);
           if (!res.success) throw new Error(res.error || '');
 
           // The TARGET's catalog changed. `invalidateCatalog` is global, but the event carries the id so

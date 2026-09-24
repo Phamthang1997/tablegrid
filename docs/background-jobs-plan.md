@@ -1,6 +1,6 @@
 # Kế hoạch: chạy Export / Generate Data / Import-Restore / Backup ở chế độ nền (background jobs)
 
-> Trạng thái: **Phase 0 đã code** (xem §5). Phase 1–4 chưa.
+> Trạng thái: **Phase 0, 1, 2 và 4 đã code** (xem §5). Phase 3 (sink ghi file) chưa.
 
 ## 1. Triệu chứng
 
@@ -194,28 +194,55 @@ Mỗi phase ship được độc lập, và Phase 0 đã lấy được phần l
 - Export **một bảng** (`ExportTableDialog`) và **Redis transfer** vẫn chạy trong dialog. Cả hai đều
   ngắn hơn hẳn (một bảng, hoặc một tiền tố key) và Redis transfer đã có nút Stop riêng; đổi chúng
   kéo theo bỏ `done`/`onSuccess` của dialog và sửa cả chuỗi prop ở `App.tsx`/`DataGrid`/`Sidebar`.
-- Connection Manager: job **tự mở kết nối riêng rồi đóng**, nhưng `connect()` đổi ambient
-  `currentConnId` trong lúc chạy nên có một khe hẹp (từ lúc `connect()` tới lúc trả ambient về) mà
-  lệnh khác của người dùng có thể đi sai kết nối. `open_job_connection` của Phase 1 xoá khe đó.
-- Safe Mode vẫn hỏi **mỗi lệnh** trong một job (chưa có cửa mở theo job — §4.4).
+- ~~Connection Manager: `connect()` đổi ambient `currentConnId` trong lúc chạy~~ — xoá ở Phase 1
+  (`connectJob`).
+- ~~Safe Mode vẫn hỏi mỗi lệnh trong một job~~ — xoá ở Phase 1 (`approveJob` + `openJobDoor`).
 
-### Phase 1 — kết nối riêng cho job
-`purpose: 'job'` trong `ConnRegistry`; `open_job_connection`; rail/switcher bỏ qua; cửa Safe Mode
-theo job; guard manual-mode của restore/generate xét theo kết nối của job.
+### Phase 1 — kết nối riêng cho job — ✅ ĐÃ CODE
+- `ConnEntry.purpose: ConnPurpose { User, Job }` — field bắt buộc, nên compiler chỉ ra mọi chỗ dựng
+  entry. `list()` (rail), `handles()` (ping), `find()` và `find_sqlite()` bỏ qua `Job`.
+- `open_job_connection(conn_id)` **dùng chung pool** của kết nối nguồn thay vì dựng pool mới (khác
+  với §4.2 ở trên): không phải xác thực lại, tunnel SSH/IAM vẫn là của `Arc<ServerHandle>` dùng chung,
+  và job vẫn chạy tiếp nếu người dùng ngắt kết nối nguồn giữa chừng (một clone của pool giữ pool
+  sống). Thứ cần tách là `conn_id` — session transaction, cờ huỷ, guard manual-mode đều khoá theo nó —
+  chứ không phải socket: session-level state nằm trên từng connection của pool, và mọi job có đặt
+  state đều tự `acquire` một connection rồi trả về sạch. SQLite không có pool nên mở **handle thứ
+  hai** trên tệp, `busy_timeout` 30s (Phụ lục A). `close_job_connection` chỉ đóng entry `Job`.
+- `connect_db(job: true)` cho Backup/Restore của Connection Manager (mở từ form, không có kết nối
+  nguồn): không đổi ambient `currentConnId` nữa — xoá luôn khe hẹp ghi ở "Còn lại của Phase 0" — và
+  không dedupe SQLite lên kết nối của người dùng (trước đây `finally` của job có thể đóng đúng kết
+  nối người dùng đang mở trên cùng tệp).
+- Frontend: `utils/jobConnection.ts` (`withJobConnection` / `runOnJobConnection`) là đường DUY NHẤT;
+  Export, Import, Copy, Backup/Restore và Data Generator đều đi qua nó.
+- Safe Mode: `approveJob` / `approveJobForServer` hỏi **lúc submit**, `openJobDoor` mở cửa cho đúng
+  lệnh đó trên đúng `conn_id` của job (id đó chỉ job này dùng). Từ chối thì job không được xếp hàng.
+- `USE <db>` trong dump giờ chỉ đổi database của kết nối job, không đổi kết nối người dùng đang xem;
+  kết quả job nói dữ liệu đã vào database nào.
 
-### Phase 2 — huỷ được restore
-Cờ huỷ theo đúng khuôn `generate_data` (`cancel_flags` + `cancel_key(conn_id)` — khoá theo kết nối
-giờ đã đồng nghĩa với "theo job", vì job sở hữu kết nối của nó). Kiểm cờ giữa hai câu lệnh, rollback
-(hoặc dừng và báo đã chạy tới đâu khi `continue_on_error`), trả `cancelled: true` như streamer query.
+### Phase 2 — huỷ được restore — ✅ ĐÃ CODE
+`cancel_restore(conn_id)` + cờ `__restore__:<conn_id>` trong `cancel_flags`, gỡ bằng một guard `Drop`
+nên mọi lối ra (kể cả `?`) đều dọn. Kiểm cờ giữa hai câu lệnh, `ROLLBACK`, trả `cancelled: true` kèm
+số câu đã chạy; tray nói thẳng rằng trên MySQL các DDL đã chạy vẫn còn (implicit commit).
+
+Kèm một bug thật tìm ra khi làm phase này: nhánh Postgres của `restore_backup` gửi `BEGIN` và từng câu
+qua `execute_raw_sql_generic` (mỗi lần một connection của pool). Transaction chỉ dính lại được vì
+`should_route` thấy `BEGIN` và **mở session transaction thủ công trên conn_id của người dùng** — nên
+bộ đếm pending đếm từng INSERT của restore, và câu người dùng gõ trong lúc đó chui vào transaction của
+restore. `SET CONSTRAINTS ALL DEFERRED` thì chạy trước `BEGIN` trên một connection khác, tức vô tác
+dụng. Giờ nhánh Postgres giữ **một** connection như nhánh MySQL, dùng `raw_sql`, và bọc savepoint
+quanh cả các câu session-level (một `SET` bị từ chối từng đầu độc cả transaction, 25P02). SQLite cũng
+không đi qua funnel nữa.
 
 ### Phase 3 — sink ghi file cho họ B
 `export_open/append/close` + `buildDump(onChunk)` + `ExportTableDialog` ghi theo trang. Thêm nhường
 event loop giữa các bảng/trang.
 
-### Phase 4 — lịch sử job
-Lưu ~50 job đã xong vào localStorage theo đúng khuôn `queryHistory.ts` (`conn` + `db`, filter theo
-scope khi hiện). Trả lời được "backup tối qua xong chưa". Tuỳ chọn: OS notification khi cửa sổ không
-focus.
+### Phase 4 — lịch sử job — ✅ ĐÃ CODE
+`utils/jobHistory.ts`: `settle()` của `jobs.ts` ghi một bản ghi nhỏ (`tf_job_history`, 50 mục, text
+cắt ở 600 ký tự, hết quota thì giữ nửa mới nhất) cho mọi job ĐÃ CHẠY — job huỷ khi còn trong hàng đợi
+không được ghi. Tray có mục "Trước đó" và nút chuông vẫn hiện khi chỉ còn lịch sử, vì câu "backup tối
+qua xong chưa" được hỏi đúng lúc không có gì đang chạy. Chưa lọc theo scope — tiêu đề job đã mang tên
+database. Chưa làm: OS notification (cần thêm `tauri-plugin-notification`).
 
 ## 6. Ước lượng & rủi ro
 

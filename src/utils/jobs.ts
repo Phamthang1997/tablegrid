@@ -17,7 +17,9 @@
 // (`title`, `result.message`, `progress.label`) arrives **already translated** from the call site,
 // the same rule `SafeModeRequest.detail` follows.
 
-export type JobKind = 'dump' | 'restore' | 'generate' | 'export-table' | 'redis-transfer' | 'copy-db';
+import { recordJobHistory } from './jobHistory';
+
+export type JobKind ='dump' | 'restore' | 'generate' | 'export-table' | 'redis-transfer' | 'copy-db';
 
 /**
  * `queued` -> `running` -> one of `done` / `error` / `cancelled`. A job that is cancelled before it
@@ -52,6 +54,8 @@ export interface JobRecord {
   readonly title: string;
   /** Database the job acts on, for display only. */
   readonly db: string;
+  /** `connKey` of the server, for the history record (`jobHistory.ts`). Not an identity to act on. */
+  readonly conn?: string;
   /** Writes into the database (restore, generate). Decides exclusivity — see `canStart`. */
   readonly write: boolean;
   /** Identity of "the thing being touched": server + database. Two jobs sharing it can conflict. */
@@ -81,6 +85,8 @@ export interface JobSpec {
   kind: JobKind;
   title: string;
   db?: string;
+  /** `connKey` of the server the job acts on — kept in the history so an entry says where it ran. */
+  conn?: string;
   write?: boolean;
   lockKey?: string;
   /**
@@ -193,6 +199,10 @@ function trimFinished(): void {
 
 function settle(id: string, state: JobState, result: JobResult | null, error: string | null): void {
   patch(id, { state, result, error, progress: null, endedAt: Date.now() }, true);
+  // Recorded before the trim below can drop it. A job cancelled while still queued never ran, so
+  // there is nothing to remember about it — the history answers "what happened", not "what was asked".
+  const settled = entries.get(id)?.rec;
+  if (settled && settled.startedAt !== null) recordJobHistory(settled);
   trimFinished();
   flush();
 }
@@ -242,6 +252,7 @@ export function startJob(spec: JobSpec): string {
     kind: spec.kind,
     title: spec.title,
     db: spec.db || '',
+    conn: spec.conn || undefined,
     write: !!spec.write,
     lockKey: spec.lockKey || spec.db || '',
     state: 'queued',

@@ -187,6 +187,7 @@ pub async fn open_database(conn_id: String, name: String) -> Result<Value, Strin
             // Inherits the read-only flag of the connection it was opened FROM: those two are the same
             // server, and someone who marked production read-only means every database on it.
             crate::state::ConnEntry {
+                purpose: crate::state::ConnPurpose::User,
                 read_only: inherit_read_only,
                 // Deliberately NOT inherited - see `ConnEntry::mcp_exposed`.
                 mcp_exposed: false,
