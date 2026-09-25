@@ -4,8 +4,12 @@ import {
   JOB_HISTORY_MAX,
   JOB_HISTORY_TEXT_MAX,
   clearJobHistory,
+  countUnseen,
+  getJobsSeenAt,
   listJobHistory,
+  markJobsSeen,
   recordJobHistory,
+  unseenLabel,
   removeJobHistoryEntry,
   resetJobHistoryCache,
   toHistoryEntry,
@@ -149,6 +153,46 @@ describe('the stored list', () => {
     expect(listJobHistory().map((e) => e.id)).toEqual(['b']);
     clearJobHistory();
     expect(listJobHistory()).toEqual([]);
+  });
+});
+
+describe('the unseen count on the bell', () => {
+  const e = (state: 'done' | 'error' | 'cancelled', endedAt: number) => ({ state, endedAt });
+
+  it('counts what finished after the popover was last opened', () => {
+    const list = [e('done', 50), e('error', 40), e('done', 10)];
+    expect(countUnseen(list, 30)).toBe(2);
+    expect(countUnseen(list, 50)).toBe(0);
+  });
+
+  it('never counts a cancel — the user pressed it', () => {
+    expect(countUnseen([e('cancelled', 99), e('done', 99)], 0)).toBe(1);
+  });
+
+  it('labels zero as nothing, then the number, then 9+', () => {
+    expect(unseenLabel(0)).toBe('');
+    expect(unseenLabel(1)).toBe('1');
+    expect(unseenLabel(9)).toBe('9');
+    expect(unseenLabel(10)).toBe('9+');
+    expect(unseenLabel(250)).toBe('9+');
+  });
+
+  it('first run sets "seen" to now, so existing history does not all light up', () => {
+    recordJobHistory(rec({ id: 'old', endedAt: 1000 }));
+    const seenAt = getJobsSeenAt(5000);
+    expect(seenAt).toBe(5000);
+    expect(countUnseen(listJobHistory(), seenAt)).toBe(0);
+    // …and it is remembered, not reset on the next read.
+    expect(getJobsSeenAt(9999)).toBe(5000);
+  });
+
+  it('opening the popover moves the mark forward, and it survives a reload', () => {
+    getJobsSeenAt(100);
+    recordJobHistory(rec({ id: 'new', endedAt: 200 }));
+    expect(countUnseen(listJobHistory(), getJobsSeenAt())).toBe(1);
+    markJobsSeen(300);
+    resetJobHistoryCache();
+    expect(countUnseen(listJobHistory(), getJobsSeenAt())).toBe(0);
   });
 });
 

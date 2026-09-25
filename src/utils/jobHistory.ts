@@ -153,6 +153,54 @@ export function subscribeJobHistory(fn: () => void): () => void {
   };
 }
 
+// ---- Unseen count (the bell's red badge) ----
+//
+// "Unseen" is every job that finished — done or failed — after the moment the user last opened the
+// jobs popover. A single timestamp rather than a set of ids: opening the popover shows the whole
+// list at once, so "everything up to now" is exactly what has been seen, and a timestamp cannot grow.
+// It is persisted, so a job that finished while the user was away still counts after a restart.
+
+export const JOBS_SEEN_KEY = 'tf_jobs_seen_at';
+
+/**
+ * Finished jobs the user has not looked at yet. Cancelled ones are left out: the user pressed Cancel,
+ * so there is nothing in them they do not already know.
+ */
+export function countUnseen(entries: Pick<JobHistoryEntry, 'state' | 'endedAt'>[], seenAt: number): number {
+  return entries.filter((e) => e.state !== 'cancelled' && e.endedAt > seenAt).length;
+}
+
+/** What the badge shows: nothing at zero, the number up to 9, then "9+". */
+export function unseenLabel(n: number): string {
+  return n <= 0 ? '' : n > 9 ? '9+' : String(n);
+}
+
+/**
+ * When the popover was last opened. With nothing stored yet — the first run with this feature — it
+ * is set to NOW rather than to zero, so the history an upgrading user already has does not all
+ * light up as "unseen" at once.
+ */
+export function getJobsSeenAt(now = Date.now()): number {
+  try {
+    if (typeof localStorage === 'undefined') return now;
+    const raw = Number(localStorage.getItem(JOBS_SEEN_KEY));
+    if (Number.isFinite(raw) && raw > 0) return raw;
+    localStorage.setItem(JOBS_SEEN_KEY, String(now));
+  } catch {
+    /* blocked storage: nothing is ever unseen, which is the quiet failure */
+  }
+  return now;
+}
+
+export function markJobsSeen(at = Date.now()): number {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(JOBS_SEEN_KEY, String(at));
+  } catch {
+    /* the badge just comes back next launch */
+  }
+  return at;
+}
+
 /** Test seam: forget the parsed copy so the next read goes back to storage. */
 export function resetJobHistoryCache(): void {
   cache = null;

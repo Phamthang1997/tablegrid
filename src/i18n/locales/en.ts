@@ -2787,6 +2787,7 @@ const en = {
     trayRunning: '{{n}} running',
     trayIdle: 'Background jobs',
     trayFailed: 'A background job failed',
+    trayUnseen: '{{n}} finished since you last looked',
     stateQueued: 'Queued',
     stateRunning: 'Running',
     stateDone: 'Done',

@@ -2753,6 +2753,7 @@ const ja: typeof en = {
     trayRunning: '{{n}} 件実行中',
     trayIdle: 'バックグラウンド処理',
     trayFailed: 'バックグラウンド処理が失敗しました',
+    trayUnseen: '前回確認以降に {{n}} 件完了',
     stateQueued: '待機中',
     stateRunning: '実行中',
     stateDone: '完了',

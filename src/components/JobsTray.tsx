@@ -23,7 +23,11 @@ import {
 } from '../utils/jobNotify';
 import {
   clearJobHistory,
+  countUnseen,
+  getJobsSeenAt,
   listJobHistory,
+  markJobsSeen,
+  unseenLabel,
   removeJobHistoryEntry,
   subscribeJobHistory,
   type JobHistoryEntry,
@@ -56,6 +60,17 @@ export const JobsTray: React.FC = () => {
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
   const [askOnClose, setAskOnClose] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
+  // When the popover was last looked at — the bell's red count is what finished after it.
+  const [seenAt, setSeenAt] = useState(() => getJobsSeenAt());
+  // While the popover is open everything in it is being seen, so the count is zero; closing it
+  // records "seen up to now". Done on close rather than on open so a job that finishes while the
+  // popover is open is counted as seen too — and in the handlers rather than an effect, which is
+  // what a state write in response to a user action belongs in.
+  const unseen = anchor ? 0 : countUnseen(history, seenAt);
+  const close = () => {
+    setSeenAt(markJobsSeen());
+    setAnchor(null);
+  };
 
   const active = jobs.filter((j) => j.state === 'running' || j.state === 'queued');
   const finished = jobs.filter((j) => j.state !== 'running' && j.state !== 'queued');
@@ -98,7 +113,10 @@ export const JobsTray: React.FC = () => {
   useEffect(() => {
     if (!anchor) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setAnchor(null);
+      if (e.key === 'Escape') {
+        setSeenAt(markJobsSeen());
+        setAnchor(null);
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -112,9 +130,11 @@ export const JobsTray: React.FC = () => {
   const failed = finished.some((j) => j.state === 'error');
   const capsuleTitle = active.length
     ? t('jobs.trayRunning', { n: active.length })
-    : failed
-      ? t('jobs.trayFailed')
-      : t('jobs.trayIdle');
+    : unseen > 0
+      ? t('jobs.trayUnseen', { n: unseen })
+      : failed
+        ? t('jobs.trayFailed')
+        : t('jobs.trayIdle');
 
   // Anchored to the button's right and then clamped, so the whole popover is visible however close to an edge the button sits.
   const open = () => {
@@ -132,14 +152,18 @@ export const JobsTray: React.FC = () => {
         <button
           ref={btnRef}
           className={`tb-capsule-btn ${active.length ? 'is-active-accent' : ''} ${!active.length && failed ? 'is-active-warn' : ''}`}
-          onClick={() => (anchor ? setAnchor(null) : open())}
+          onClick={() => (anchor ? close() : open())}
           title={capsuleTitle}
           aria-label={capsuleTitle}
         >
-          {/* A bell is the notification symbol; the count of running jobs is the badge beside it — read
-              the way every notification tray is read, rather than an icon that changes shape by state. */}
-          <Bell size={13} />
-          {active.length > 0 && <span className="jobs-badge">{active.length}</span>}
+          {/* A bell is the notification symbol. The red count on it is what finished since the popover
+              was last opened — the way every notification tray is read. With nothing unseen, the
+              number of running jobs sits beside it instead, as before. */}
+          <span className="jobs-bell">
+            <Bell size={13} />
+            {unseen > 0 && <span className="jobs-bell-count">{unseenLabel(unseen)}</span>}
+          </span>
+          {unseen === 0 && active.length > 0 && <span className="jobs-badge">{active.length}</span>}
         </button>
       </div>
 
@@ -149,7 +173,7 @@ export const JobsTray: React.FC = () => {
             {/* `.jobs-backdrop`/`.jobs-pop` SHARE a rule with Safe Mode's `.sm-backdrop`/`.sm-pop` (one
                 combined selector in index.css, not a copy) — so the title bar's popover shape is edited
                 in one place and both follow. `.sm-pop-title` is that shape's heading row. */}
-            <div className="jobs-backdrop" onClick={() => setAnchor(null)} />
+            <div className="jobs-backdrop" onClick={close} />
             {/* Only `top`/`left` are inline — they are measured at render; the shape lives in .jobs-pop. */}
             <div className="jobs-pop" style={{ top: anchor.top, left: anchor.left }} role="dialog">
               <div className="jobs-pop-head">

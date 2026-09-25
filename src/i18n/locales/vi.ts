@@ -2758,6 +2758,7 @@ const vi: typeof en = {
     trayRunning: 'Đang chạy {{n}} việc',
     trayIdle: 'Việc chạy nền',
     trayFailed: 'Có việc chạy nền bị lỗi',
+    trayUnseen: '{{n}} việc đã xong từ lần xem trước',
     stateQueued: 'Đang chờ',
     stateRunning: 'Đang chạy',
     stateDone: 'Xong',

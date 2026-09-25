@@ -15366,6 +15366,33 @@ input.rename-input {
   margin-left: 3px;
 }
 
+/* The bell, as the anchor for its unseen count. */
+.jobs-bell {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The red count of jobs finished since the popover was last opened, pinned to the bell's top-right
+   corner like any notification badge. Absolutely positioned so it never widens the capsule. */
+.jobs-bell-count {
+  position: absolute;
+  top: -7px;
+  left: 7px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: var(--win-danger, #ef4444);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .jobs-icon-ok {
   color: var(--win-status-added);
 }
