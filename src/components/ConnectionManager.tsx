@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { activeConnId, dbHelper, setActiveConnId } from '../utils/dbHelper';
+import { dbHelper } from '../utils/dbHelper';
 import type { DbConnectionConfig } from '../utils/dbHelper';
 import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, ArrowRight, Check, Cloud, DatabaseBackup, LogIn, KeyRound } from 'lucide-react';
 import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './DbIcons';
@@ -17,12 +17,14 @@ import {
   commentOnlyFromBody,
 } from '../utils/dumpPreview';
 import { splitStatements } from '../sql/statements';
-import { buildDump, dumpReaderFor } from '../utils/dumpBuilder';
-import { gzipText, getLastExportDir, saveExportFile, saveExportFileAtPath, pickOpenFile, pickSaveFilePath, pickSqliteDatabaseFile } from '../utils/fileSave';
+import { buildDump, dumpReaderFor, writeDump, type DumpSpec } from '../utils/dumpBuilder';
+import { getLastExportDir, saveDumpToFolder, saveExportFileAtPath, pickOpenFile, pickSaveFilePath, pickSqliteDatabaseFile } from '../utils/fileSave';
 import { fileBaseFromPath, fileStamp, safeFileBase } from '../utils/exportHelper';
 import { startJob } from '../utils/jobs';
+import { runOnJobConnection } from '../utils/jobConnection';
+import { approveJobForServer, type JobApproval } from '../utils/safeMode';
 import { connKey } from '../utils/connKey';
-import { formatRestoreEta, makeRestoreReporter } from '../utils/restoreProgress';
+import { formatRestoreEta, makeRestoreReporter, restoreCancelledResult } from '../utils/restoreProgress';
 import { ConfirmDialog } from './ConfirmDialog';
 import { MasterPasswordModal } from './MasterPasswordModal';
 import { refreshVaultStatus } from '../utils/vault';
@@ -1504,34 +1506,46 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     const selectedTables = [...brSelectedTables];
     const continueOnError = brContinueOnError;
 
+    // Safe Mode asks now, by server — nothing is connected yet, and the job may wait in the queue.
+    // A backup only reads, so it is never asked about.
+    let approvals: JobApproval[] = [];
+    if (!isBackup) {
+      try {
+        approvals = [
+          await approveJobForServer('restore_backup', connKey(config), t('jobs.approveRestore', { n: dbLabel })),
+        ];
+      } catch {
+        return;
+      }
+    }
+    // Set once the job's connection is open; `onCancel` has to name it.
+    let restoreConnId = '';
+
     startJob({
       kind: isBackup ? 'dump' : 'restore',
       title: t(isBackup ? 'jobs.titleBackup' : 'jobs.titleRestore', { n: dbLabel }),
       db: dbLabel,
+      conn: connKey(config),
       write: !isBackup,
       lockKey: `br|${connKey(config)}|${dbLabel}`,
+      onCancel: () => {
+        if (restoreConnId) void dbHelper.cancelRestore(restoreConnId);
+      },
       run: async (ctx) => {
-        // This job opens a CONNECTION OF ITS OWN and closes it again — which this screen already did
-        // ("no existing connection required"), and which matches Phase 1 of the plan: a job does not
-        // share the user's connection, so it never turns FK checks off on the session they are
-        // browsing in.
-        const prevConnId = activeConnId();
-        let jobConnId = '';
-        try {
-          const connRes = await dbHelper.connect(config);
-          if (!connRes.success) {
-            throw new Error(t('connection.errConnectFailed', { message: connRes.message }));
-          }
-          // Every command carries the id just minted — not the workspace's `connId` prop: with
-          // nothing connected the prop is an empty string and `getTables` returns an empty array,
-          // i.e. it claims "this database has no tables"; with a connection open it points at a
-          // DIFFERENT database.
-          jobConnId = connRes.connId || activeConnId();
-          // `connect()` also changes the app's active connection. Put it back AT ONCE, because the job
-          // runs in the background: leaving the ambient id pointing at the job's private connection
-          // sends every other action the user takes to the wrong place.
-          setActiveConnId(prevConnId);
-
+        // This job opens a CONNECTION OF ITS OWN and closes it again ("no existing connection
+        // required"). `connectJob`, not `connect`: it leaves the app's active connection alone — this
+        // used to switch the ambient id to the job's connection and put it back afterwards, and any
+        // command the user issued in between went to the job's database — and the backend registers
+        // it as a job connection, so it never appears in the rail.
+        const connRes = await dbHelper.connectJob(config);
+        if (!connRes.success || !connRes.connId) {
+          throw new Error(t('connection.errConnectFailed', { message: connRes.message }));
+        }
+        // Every command carries the id just minted — not the workspace's `connId` prop: with nothing
+        // connected the prop is an empty string and `getTables` returns an empty array, i.e. it claims
+        // "this database has no tables"; with a connection open it points at a DIFFERENT database.
+        const jobConn = { connId: connRes.connId, schema: connRes.schema ?? null };
+        return runOnJobConnection(jobConn, approvals, async ({ connId: jobConnId }) => {
           if (isBackup) {
             // The dump is built by the very code the "Export Database" dialog uses (buildDump): this
             // used to call the Rust `export_multi_tables`, which treated views as tables (emitting
@@ -1548,7 +1562,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
             ]);
             ctx.throwIfCancelled();
 
-            const sqlText = await buildDump({
+            const dumpSpec: DumpSpec = {
               dbType: config.type,
               tables,
               views: list.filter(item => item.type === 'view').map(item => item.name),
@@ -1563,17 +1577,20 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
               // from. There is no schema picker on this screen, so this is always the first schema in
               // search_path.
               schema: connRes.schema,
-              onProgress: (p) => ctx.report(p),
-            }, dumpReaderFor(dbHelper, jobConnId));
-            ctx.throwIfCancelled();
-
-            ctx.report({ label: t('app.exportWriting') });
-            const payload = gzip ? await gzipText(sqlText) : sqlText;
-            const saved = await saveExportFile(
+              onProgress: (p) => {
+                // Throwing here is what stops the dump between two pages.
+                ctx.throwIfCancelled();
+                ctx.report(p);
+              },
+            };
+            const reader = dumpReaderFor(dbHelper, jobConnId);
+            // Streamed into the file as it is built — see saveDumpToFolder.
+            const saved = await saveDumpToFolder(
               getLastExportDir() || null,
               fileName,
-              payload,
-              gzip ? 'application/gzip' : 'text/plain;charset=utf-8'
+              gzip,
+              (emit) => writeDump(dumpSpec, reader, emit),
+              () => buildDump(dumpSpec, reader),
             );
             return {
               message: `${t('connection.backupSuccess')} — ${saved.path || fileName}`,
@@ -1600,6 +1617,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
             continueOnError,
             jobConnId,
           );
+          if (resData.cancelled) return restoreCancelledResult(t, resData);
           if (!resData.success) {
             throw new Error(addExistsHint(resData.error || t('connection.errRestore'), overwrite));
           }
@@ -1613,13 +1631,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
           return resData.failedCount
             ? { message: t('app.importDbPartial', { n: resData.statementsCount || 0, failed: resData.failedCount }) }
             : { message: t('connection.restoreSuccess', { n: resData.statementsCount || 0 }) };
-        } finally {
-          // Only the connection this job opened is closed. `disconnect()` without an argument closes
-          // the active one — that is, the connection the user is in the middle of using, in the case
-          // where `connect()` failed partway.
-          if (jobConnId) await dbHelper.disconnect(jobConnId);
-          setActiveConnId(prevConnId);
-        }
+        }, (id) => { restoreConnId = id; });
       },
     });
 

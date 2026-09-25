@@ -77,8 +77,25 @@ pub struct SessionInfo {
     pub tls_version: String,
 }
 
+/// Who an entry belongs to.
+///
+/// A required field rather than an `Option` so the compiler names every place an entry is built:
+/// a site that forgets to decide is the bug this exists to prevent — a background job sharing the
+/// user's `conn_id`, and with it their manual-transaction session, their cancel flag and their
+/// session-level `SET`s (docs/background-jobs-plan.md §3.4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConnPurpose {
+    /// Opened by the user; shown in the rail, the quick switcher and the MCP settings.
+    User,
+    /// Opened by a background job for its own use (`open_job_connection`). Invisible everywhere
+    /// the user picks a connection, and never handed out by `find`/`find_sqlite`: a job's private
+    /// id reaching a tab would put the user's statements back on the job's session.
+    Job,
+}
+
 /// One open `(server, database)`.
 pub struct ConnEntry {
+    pub purpose: ConnPurpose,
     /// Refuse every write on this connection.
     ///
     /// Lives here, in the backend, **not only in the UI** — the same call `redis_db` used to make

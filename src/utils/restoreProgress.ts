@@ -8,7 +8,24 @@
 // Module-level, so no hook: `t` is passed in, the same way `formatRestoreEta` already took it.
 
 import type { TFunction } from 'i18next';
-import type { JobProgress } from './jobs';
+import type { JobProgress, JobResult } from './jobs';
+
+/**
+ * What the tray says about a restore the user stopped.
+ *
+ * The statements that ran were rolled back — except on MySQL, which commits implicitly on every
+ * CREATE/DROP/ALTER, so the tables the dump had already created are still there, empty or not. That
+ * is said out loud rather than promising a clean undo the server did not do.
+ */
+export function restoreCancelledResult(
+  t: TFunction,
+  res: { statementsCount?: number; dialect?: string },
+): JobResult {
+  return {
+    message: t('jobs.restoreCancelled', { n: (res.statementsCount || 0).toLocaleString() }),
+    warning: res.dialect === 'mysql' ? t('jobs.restoreCancelledMysql') : undefined,
+  };
+}
 
 /** Message shape `restore_backup` sends over its Channel. */
 export interface RestoreProgressMsg {

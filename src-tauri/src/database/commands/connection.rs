@@ -97,10 +97,25 @@ pub async fn list_connections() -> Result<Value, String> {
 /// was the first whose state machine outgrew the main thread's 1MB Windows stack, and the release
 /// binary died at launch. `app` stays because `spawn_iam_refresh` needs it; an `AppHandle` is owned
 /// and `'static`, so it costs the future nothing.
+///
+/// `job: true` opens the connection for a background job (Connection Manager's Backup/Restore,
+/// which works from a form rather than from an open connection): it is registered as
+/// `ConnPurpose::Job`, so it never shows in the rail, and it is never deduplicated onto a
+/// connection the user already has open — the job closes it when it finishes, and closing the
+/// user's own SQLite connection from under them is what deduplicating would do.
 #[tauri::command]
-pub async fn connect_db(app: tauri::AppHandle, config: Value) -> Result<Value, String> {
+pub async fn connect_db(
+    app: tauri::AppHandle,
+    config: Value,
+    job: Option<bool>,
+) -> Result<Value, String> {
     Box::pin(async move {
         let state = crate::state::require_state()?;
+        let purpose = if job.unwrap_or(false) {
+            crate::state::ConnPurpose::Job
+        } else {
+            crate::state::ConnPurpose::User
+        };
         let db_type = config
             .get("dbType")
             .and_then(|v| v.as_str())
@@ -111,6 +126,7 @@ pub async fn connect_db(app: tauri::AppHandle, config: Value) -> Result<Value, S
         // `SQLITE_BUSY` as soon as both write. Hand back the connection that is already open instead.
         // Postgres/MySQL are deliberately not deduplicated — see `ConnRegistry::find_sqlite`.
         if db_type == "sqlite"
+            && purpose == crate::state::ConnPurpose::User
             && let Some(path) = config.get("filePath").and_then(|v| v.as_str())
             && let Some(existing) = state.connections.find_sqlite(path)?
         {
@@ -135,6 +151,9 @@ pub async fn connect_db(app: tauri::AppHandle, config: Value) -> Result<Value, S
                     .and_then(|v| v.as_str())
                     .ok_or("Thiếu đường dẫn tệp SQLite")?;
                 let conn = SqliteConnection::open(path).map_err(|e| e.to_string())?;
+                if purpose == crate::state::ConnPurpose::Job {
+                    job_busy_timeout(&conn)?;
+                }
                 DbKind::Sqlite(Arc::new(Mutex::new(conn)))
             }
             "postgres" => {
@@ -195,6 +214,7 @@ pub async fn connect_db(app: tauri::AppHandle, config: Value) -> Result<Value, S
             state.connections.insert(
                 conn_id.clone(),
                 crate::state::ConnEntry {
+                    purpose,
                     // A new connection starts writable; the UI turns this on for a production label.
                     read_only: false,
                     // Never exposed to an AI client until the user says so, per connection.
@@ -222,6 +242,113 @@ pub async fn connect_db(app: tauri::AppHandle, config: Value) -> Result<Value, S
         // never derived from the config (multi-connection-plan §4.3). Phase 1d is what starts sending it
         // back down as a command argument.
         Ok(json!({ "success": true, "schema": schema, "connId": &*conn_id }))
+    })
+    .await
+}
+
+/// How long a job's own SQLite handle waits for the file lock before giving up.
+///
+/// A second handle on one file is the price of isolation (docs/background-jobs-plan.md, Appendix A):
+/// the user's handle and the job's now take turns on the write lock instead of sharing one
+/// transaction. rusqlite's default is 5s, which a user's grid save can outlast; a job waiting a
+/// little longer is better than a restore failing with `database is locked` halfway through.
+fn job_busy_timeout(conn: &SqliteConnection) -> Result<(), String> {
+    conn.busy_timeout(std::time::Duration::from_secs(30))
+        .map_err(|e| e.to_string())
+}
+
+/// A connection of its own for a background job, on the same server and database as `conn_id`.
+///
+/// This is what keeps a job off the user's session (docs/background-jobs-plan.md §3.4, §4.2). The
+/// job gets a fresh `conn_id`, and everything that is keyed by one follows from that: it has no
+/// manual-transaction session to be routed into (`should_route`), its cancel flag cannot collide
+/// with another run's, and `reject_if_manual_or_open` asks about the JOB's connection — so a user
+/// with a transaction open in their tab can still restore in the background.
+///
+/// Postgres/MySQL share the source's **pool** rather than building a new one: no re-authentication
+/// (an IAM token or an SSH tunnel is the server's, held by the shared `Arc<ServerHandle>`), no second
+/// pool's worth of sockets, and a pool clone keeps working if the user disconnects the source while
+/// the job runs. Session state is per pooled connection, and every job that sets any (`SET
+/// FOREIGN_KEY_CHECKS`, `BEGIN`) acquires a dedicated one and puts it back clean.
+///
+/// SQLite has no pool: one `rusqlite::Connection` is one session, so the job opens a second handle on
+/// the file. That is the case `find_sqlite` otherwise prevents, and it is deliberate here — a shared
+/// handle meant the restore's `PRAGMA foreign_keys = OFF` and its open transaction applied to the
+/// grid the user was browsing with.
+///
+/// Inherits the read-only flag: a connection marked read-only must not become writable by being
+/// handed to a job. Close it with `close_job_connection`.
+#[tauri::command]
+pub async fn open_job_connection(conn_id: String) -> Result<Value, String> {
+    Box::pin(async move {
+        let state = crate::state::require_state()?;
+        let (server, db, schema, kind) = {
+            let ctx = state.connections.acquire(&conn_id)?;
+            (
+                ctx.server_arc(),
+                ctx.db().to_string(),
+                ctx.raw_schema().map(str::to_string),
+                ctx.conn().kind.clone(),
+            )
+        };
+        let read_only = state.connections.is_read_only(&conn_id);
+
+        let kind = match kind {
+            DbKind::Sqlite(_) => {
+                let conn = SqliteConnection::open(&db).map_err(|e| e.to_string())?;
+                job_busy_timeout(&conn)?;
+                DbKind::Sqlite(Arc::new(Mutex::new(conn)))
+            }
+            shared => shared,
+        };
+
+        let new_id = crate::state::mint_id();
+        let conn = DbConnection::session(new_id.clone(), kind);
+        state.connections.insert(
+            new_id.clone(),
+            crate::state::ConnEntry {
+                purpose: crate::state::ConnPurpose::Job,
+                read_only,
+                mcp_exposed: false,
+                mcp_write: false,
+                server,
+                db,
+                conn: crate::state::LiveConn::Sql(conn),
+                current_schema: schema.clone(),
+                session_info: None,
+            },
+        )?;
+        Ok(json!({ "success": true, "connId": &*new_id, "schema": schema }))
+    })
+    .await
+}
+
+/// Close a connection `open_job_connection` (or `connect_db` with `job: true`) opened.
+///
+/// Refuses anything else, so a job's `finally` holding a wrong id can never close a connection the
+/// user is working in. An id already gone is fine — that is the state the caller wanted.
+///
+/// The pool is NOT closed: on Postgres/MySQL it is the source connection's pool, still in use.
+/// Dropping the entry drops this clone of it, and a pool lives until its last clone goes.
+#[tauri::command]
+pub async fn close_job_connection(conn_id: String) -> Result<Value, String> {
+    Box::pin(async move {
+        let state = crate::state::require_state()?;
+        match state.connections.purpose(&conn_id) {
+            None => return Ok(json!({ "success": true })),
+            Some(crate::state::ConnPurpose::User) => {
+                return Err(
+                    "internal: close_job_connection called on a user connection".to_string()
+                );
+            }
+            Some(crate::state::ConnPurpose::Job) => {}
+        }
+        let entry = state.connections.remove(&conn_id)?;
+        // A job never opens a manual transaction, but the state machine is cleared the same way
+        // `disconnect_db` clears it, so no session outlives its id either way.
+        crate::tx::reset(entry.as_ref().and_then(|e| e.conn.sql())).await;
+        drop(entry);
+        Ok(json!({ "success": true }))
     })
     .await
 }

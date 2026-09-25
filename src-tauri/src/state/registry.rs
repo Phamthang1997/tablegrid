@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use serde_json::Value;
 
 use super::ctx::{ConnCtx, RedisCtx, ctx_of, redis_ctx_of};
-use super::entry::{ConnEntry, LiveConn, RedisConn, SessionInfo};
+use super::entry::{ConnEntry, ConnPurpose, LiveConn, RedisConn, SessionInfo};
 use super::ids::ConnScopeId;
 use crate::database::DbConnection;
 
@@ -69,10 +69,15 @@ impl ConnRegistry {
     /// it used to run against the active connection.
     ///
     /// Sorted by id so the rail does not reshuffle itself on every poll — a `HashMap` has no order.
+    ///
+    /// A background job's own connections are left out: they come and go with the job, and a rail
+    /// cell that appears for thirty seconds and vanishes again reads as a connection the user never
+    /// opened — and clicking it would put their tab on the job's session.
     pub fn list(&self) -> Result<Vec<Value>, String> {
         let map = self.inner.lock().map_err(|e| e.to_string())?;
         let mut out: Vec<(ConnScopeId, Value)> = map
             .iter()
+            .filter(|(_, e)| e.purpose == ConnPurpose::User)
             .map(|(id, e)| {
                 (
                     id.clone(),
@@ -107,6 +112,8 @@ impl ConnRegistry {
         let map = self.inner.lock().map_err(|e| e.to_string())?;
         let mut out: Vec<(ConnScopeId, DbConnection)> = map
             .iter()
+            // The same set the rail shows: the ping answers "is the connection in that cell alive".
+            .filter(|(_, e)| e.purpose == ConnPurpose::User)
             .filter_map(|(id, e)| e.conn.sql().map(|c| (id.clone(), c.clone())))
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -167,11 +174,14 @@ impl ConnRegistry {
 
     /// The connection already open on this `(server, database)`, if any. Makes `open_database`
     /// idempotent: clicking a database twice must not mint a second pool for the same place.
+    ///
+    /// Never a job's connection — handing that id to a tab is exactly the sharing `ConnPurpose`
+    /// exists to prevent, and the job closes it when it finishes, under the tab.
     pub fn find(&self, server: &str, db: &str) -> Result<Option<ConnScopeId>, String> {
         let map = self.inner.lock().map_err(|e| e.to_string())?;
         Ok(map
             .iter()
-            .find(|(_, e)| &*e.server.id == server && e.db == db)
+            .find(|(_, e)| e.purpose == ConnPurpose::User && &*e.server.id == server && e.db == db)
             .map(|(id, _)| id.clone()))
     }
 
@@ -191,6 +201,11 @@ impl ConnRegistry {
         Ok(map
             .iter()
             .find(|(_, e)| {
+                // A job's second handle on the file is deliberate (see `open_job_connection`) and
+                // is not something a user connect may reuse — the job closes it when it is done.
+                if e.purpose != ConnPurpose::User {
+                    return false;
+                }
                 let Some(conn) = e.conn.sql() else {
                     return false;
                 };
@@ -205,6 +220,15 @@ impl ConnRegistry {
                 }
             })
             .map(|(id, _)| id.clone()))
+    }
+
+    /// Who an entry belongs to, or `None` when the id is not open.
+    pub fn purpose(&self, id: &str) -> Option<ConnPurpose> {
+        let map = match self.inner.lock() {
+            Ok(m) => m,
+            Err(e) => e.into_inner(),
+        };
+        map.get(id).map(|e| e.purpose)
     }
 
     /// Drops one entry and hands it back, so the caller can roll back its transaction session and

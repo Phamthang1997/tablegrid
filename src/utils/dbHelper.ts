@@ -586,6 +586,44 @@ function translateWarnings<T extends { warnings?: string[] }>(res: T): T {
   return res;
 }
 
+/** The config shape `connect_db` reads, built from the frontend's `DbConnectionConfig`. */
+function sqlConnectConfig(config: DbConnectionConfig): Record<string, unknown> {
+  return {
+    dbType: config.type,
+    filePath: config.sqlitePath,
+    host: config.host,
+    port: config.port,
+    user: config.user,
+    password: config.password,
+    database: config.database,
+    useSsh: config.sshEnabled,
+    sshHost: config.sshHost,
+    sshPort: config.sshPort,
+    sshUser: config.sshUser,
+    sshAuthType: config.sshAuthType,
+    sshPassword: config.sshPassword,
+    sshKeyPath: config.sshKeyPath,
+    sshKeyContent: config.sshKeyContent,
+    sshPassphrase: config.sshPassphrase,
+    sslEnabled: config.sslEnabled,
+    sslMode: config.sslMode,
+    sslKeyPath: config.sslKeyPath,
+    sslCertPath: config.sslCertPath,
+    sslCaPath: config.sslCaPath,
+    // The statement time limit is stored per server in localStorage (the Safe Mode popover),
+    // not in the profile. It is read here so a freshly opened connection carries the right limit
+    // from its very first statement — `setStatementTimeout` is only for changing it mid-session.
+    statementTimeoutSecs: getStmtTimeoutForConfig(config),
+    authMethod: config.authMethod,
+    awsAuthType: config.awsAuthType,
+    awsAccessKeyId: config.awsAccessKeyId,
+    awsSecretAccessKey: config.awsSecretAccessKey,
+    awsSessionToken: config.awsSessionToken,
+    awsProfile: config.awsProfile,
+    awsRegion: config.awsRegion,
+  };
+}
+
 export const dbHelper = {
   async connect(
     config: DbConnectionConfig,
@@ -646,42 +684,7 @@ export const dbHelper = {
       }
     }
     try {
-      const mappedConfig = {
-        dbType: config.type,
-        filePath: config.sqlitePath,
-        host: config.host,
-        port: config.port,
-        user: config.user,
-        password: config.password,
-        database: config.database,
-        useSsh: config.sshEnabled,
-        sshHost: config.sshHost,
-        sshPort: config.sshPort,
-        sshUser: config.sshUser,
-        sshAuthType: config.sshAuthType,
-        sshPassword: config.sshPassword,
-        sshKeyPath: config.sshKeyPath,
-        sshKeyContent: config.sshKeyContent,
-        sshPassphrase: config.sshPassphrase,
-        sslEnabled: config.sslEnabled,
-        sslMode: config.sslMode,
-        sslKeyPath: config.sslKeyPath,
-        sslCertPath: config.sslCertPath,
-        sslCaPath: config.sslCaPath,
-        // The statement time limit is stored per server in localStorage (the Safe Mode popover),
-        // not in the profile. It is read here so a freshly opened connection carries the right limit
-        // from its very first statement — `setStatementTimeout` is only for changing it mid-session.
-        statementTimeoutSecs: getStmtTimeoutForConfig(config),
-        authMethod: config.authMethod,
-        awsAuthType: config.awsAuthType,
-        awsAccessKeyId: config.awsAccessKeyId,
-        awsSecretAccessKey: config.awsSecretAccessKey,
-        awsSessionToken: config.awsSessionToken,
-        awsProfile: config.awsProfile,
-        awsRegion: config.awsRegion,
-      };
-
-      const res: any = await invoke('connect_db', { config: mappedConfig });
+      const res: any = await invoke('connect_db', { config: sqlConnectConfig(config) });
       if (res.success) {
         // The backend mints the id and hands it back; it is never derived from `config`, which
         // carries credentials (multi-connection-plan §4.3). Every later command carries it.
@@ -731,6 +734,57 @@ export const dbHelper = {
       forgetConnection(target);
       return { success: false };
     }
+  },
+
+  /**
+   * Opens a SQL connection for a background job from a config, not from an open connection
+   * (Connection Manager's Backup/Restore works from its form).
+   *
+   * Unlike `connect()` it leaves the ambient id alone — the job runs in the background, and pointing
+   * the app at its private connection used to send the user's next action there — and the backend
+   * registers it as a job connection, so it never shows in the rail. Close it with
+   * `closeJobConnection`.
+   */
+  async connectJob(config: DbConnectionConfig): Promise<{
+    success: boolean;
+    message: string;
+    schema?: string | null;
+    connId?: string;
+  }> {
+    try {
+      const res: any = await invoke('connect_db', { config: sqlConnectConfig(config), job: true });
+      if (!res.success || !res.connId) {
+        return { success: false, message: res.message || i18n.t('db.errConnect') };
+      }
+      // Safe Mode still needs to know which server this id is on: a job connection is not exempt
+      // from the mode, it is asked about once, up front (`jobConnection.ts`).
+      registerConnection(res.connId, config);
+      return { success: true, message: i18n.t('db.connected'), schema: res.schema ?? null, connId: res.connId };
+    } catch (err: any) {
+      return { success: false, message: i18n.t('db.errBackendUnreachable', { message: String(err) }) };
+    }
+  },
+
+  /**
+   * A connection of its own for a background job, on the same server and database as
+   * `sourceConnId` — see `open_job_connection` for why a job must not run on the user's id.
+   * Throws on failure: the caller is a job, and a thrown string is what settles it as an error.
+   */
+  async openJobConnection(sourceConnId: string): Promise<{ connId: string; schema: string | null }> {
+    const res: any = await invoke('open_job_connection', { connId: sourceConnId });
+    // Same server, so the same Safe Mode policy — a job is not a way around it.
+    inheritConnection(sourceConnId, res.connId);
+    return { connId: res.connId, schema: res.schema ?? null };
+  },
+
+  /** Closes a job's connection. Never throws: it runs in a `finally`, after the job's real outcome. */
+  async closeJobConnection(connId: string): Promise<void> {
+    try {
+      await invoke('close_job_connection', { connId });
+    } catch {
+      // The backend refuses only a user connection, which a job never holds.
+    }
+    forgetConnection(connId);
   },
 
   async getConnectionStatus(): Promise<ConnectionStatus> {
@@ -1871,6 +1925,10 @@ export const dbHelper = {
     runAll?: boolean,
   ): Promise<{
     success: boolean;
+    /** Stopped by `cancelRestore` and rolled back. `success` is false, `error` empty. */
+    cancelled?: boolean;
+    /** Only with `cancelled`: the dialect, because on MySQL the DDL that ran stays committed. */
+    dialect?: string;
     statementsCount?: number;
     activeDatabase?: string;
     error?: string;
@@ -1892,6 +1950,8 @@ export const dbHelper = {
       }, connId));
       return {
         success: !!res.success,
+        cancelled: !!res.cancelled,
+        dialect: res.dialect,
         statementsCount: res.statementsCount,
         activeDatabase: res.activeDatabase,
         error: res.message,
@@ -1900,6 +1960,18 @@ export const dbHelper = {
       };
     } catch (err: any) {
       return { success: false, error: err.toString() };
+    }
+  },
+
+  /**
+   * Asks the restore running on `connId` to stop; it rolls back and its own `restoreBackup` call
+   * answers `cancelled: true`. Best effort, like `cancelDataGeneration`.
+   */
+  async cancelRestore(connId: string): Promise<void> {
+    try {
+      await invoke('cancel_restore', { connId });
+    } catch {
+      // Nothing for the user to act on — the job's own call reports how it ended.
     }
   },
 
@@ -1980,10 +2052,12 @@ export const dbHelper = {
     pattern: string,
     cursor: number,
     count: number,
-    typeFilter?: string
+    typeFilter?: string,
+    /** Explicit for a background job, which may run after the ambient id moved on. */
+    connId?: string,
   ): Promise<{ success: boolean; cursor: number; keys: RedisKeyItem[]; error?: string }> {
     try {
-      const res: any = await invoke('redis_scan_keys', { pattern, cursor, count, typeFilter: typeFilter || null });
+      const res: any = await invoke('redis_scan_keys', withConnId({ pattern, cursor, count, typeFilter: typeFilter || null }, connId));
       return { success: !!res.success, cursor: res.cursor ?? 0, keys: res.keys || [] };
     } catch (err: any) {
       return { success: false, cursor: 0, keys: [], error: err.toString() };
@@ -2478,14 +2552,14 @@ export const dbHelper = {
   // already merged `currentConnId` in.
 
   /** DUMP + PTTL + TYPE for a batch of keys. `payload` is base64. */
-  async redisDumpKeys(keys: string[]): Promise<{
+  async redisDumpKeys(keys: string[], connId?: string): Promise<{
     success: boolean;
     entries: { key: string; type: string; ttlMs: number; payload: string }[];
     missing: string[];
     error?: string;
   }> {
     try {
-      const res: any = await invoke('redis_dump_keys', { keys });
+      const res: any = await invoke('redis_dump_keys', withConnId({ keys }, connId));
       return { success: !!res.success, entries: res.entries || [], missing: res.missing || [] };
     } catch (err: any) {
       return { success: false, entries: [], missing: [], error: err.toString() };
@@ -2500,6 +2574,7 @@ export const dbHelper = {
   async redisRestoreKeys(
     entries: { key: string; type: string; ttlMs: number; payload: string }[],
     replace: boolean,
+    connId?: string,
   ): Promise<{
     success: boolean;
     restored: number;
@@ -2508,7 +2583,7 @@ export const dbHelper = {
     error?: string;
   }> {
     try {
-      const res: any = await invoke('redis_restore_keys', { entries, replace });
+      const res: any = await invoke('redis_restore_keys', withConnId({ entries, replace }, connId));
       return {
         success: !!res.success,
         restored: res.restored ?? 0,

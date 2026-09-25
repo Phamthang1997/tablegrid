@@ -517,6 +517,8 @@ export const CopyDatabaseDialog: React.FC<CopyDatabaseDialogProps> = ({
       });
       // Queued, not closed — see `queuedSig`.
       if (ok) setQueuedSig(formSig);
+      // Not queued (Safe Mode declined): no job took the connections, so they are ours to close again.
+      else for (const id of owned) ownedRef.current.add(id);
     } catch (e: any) {
       setError(String(e?.message || e));
     } finally {

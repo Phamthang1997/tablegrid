@@ -1,15 +1,37 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Ban, Bell, CheckCircle2, FolderOpen, Loader2 } from 'lucide-react';
+import type { TFunction } from 'i18next';
+import { AlertTriangle, Ban, Bell, CheckCircle2, FolderOpen, Loader2, X } from 'lucide-react';
 import {
   activeJobs,
   cancelJob,
   clearFinishedJobs,
   listJobs,
+  onJobSettled,
   subscribeJobs,
   type JobRecord,
 } from '../utils/jobs';
+import {
+  JOB_NOTIFY_CHANGED_EVENT,
+  appIsInBackground,
+  getJobNotifyEnabled,
+  jobNotification,
+  setJobNotifyEnabled,
+  shouldNotifyJob,
+  showNotification,
+} from '../utils/jobNotify';
+import {
+  clearJobHistory,
+  countUnseen,
+  getJobsSeenAt,
+  listJobHistory,
+  markJobsSeen,
+  unseenLabel,
+  removeJobHistoryEntry,
+  subscribeJobHistory,
+  type JobHistoryEntry,
+} from '../utils/jobHistory';
 import { CLOSE_PRIORITY_JOBS, forceClose, registerCloseBlocker } from '../utils/closeGuard';
 import { openInFileManager } from '../utils/fileSave';
 import { ProgressBar } from './ProgressBar';
@@ -34,12 +56,51 @@ const POP_WIDTH = 380;
 export const JobsTray: React.FC = () => {
   const { t } = useTranslation();
   const jobs = useSyncExternalStore(subscribeJobs, listJobs);
+  const history = useSyncExternalStore(subscribeJobHistory, listJobHistory);
   const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
   const [askOnClose, setAskOnClose] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
+  // When the popover was last looked at — the bell's red count is what finished after it.
+  const [seenAt, setSeenAt] = useState(() => getJobsSeenAt());
+  // While the popover is open everything in it is being seen, so the count is zero; closing it
+  // records "seen up to now". Done on close rather than on open so a job that finishes while the
+  // popover is open is counted as seen too — and in the handlers rather than an effect, which is
+  // what a state write in response to a user action belongs in.
+  const unseen = anchor ? 0 : countUnseen(history, seenAt);
+  const close = () => {
+    setSeenAt(markJobsSeen());
+    setAnchor(null);
+  };
 
   const active = jobs.filter((j) => j.state === 'running' || j.state === 'queued');
   const finished = jobs.filter((j) => j.state !== 'running' && j.state !== 'queued');
+  // A job of this session is already shown above with its live row; the history lists the rest —
+  // what earlier sessions did, plus this session's rows the user cleared from the list.
+  const shownIds = new Set(jobs.map((j) => j.id));
+  const earlier = history.filter((h) => !shownIds.has(h.id));
+
+  // An OS notification when a job finishes while the user is in another window. Registered here
+  // because this component is mounted for the whole life of the app (it returns null while empty,
+  // after its hooks), and it is the one place with `t` to word the outcome. `t` goes through a ref
+  // so a language switch does not re-register.
+  const tRef = useRef(t);
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
+  const [notifyOn, setNotifyOn] = useState(getJobNotifyEnabled);
+  useEffect(() => {
+    const sync = () => setNotifyOn(getJobNotifyEnabled());
+    window.addEventListener(JOB_NOTIFY_CHANGED_EVENT, sync);
+    const off = onJobSettled((rec) => {
+      if (!shouldNotifyJob(rec, { enabled: getJobNotifyEnabled(), background: appIsInBackground() })) return;
+      const { title, body } = jobNotification(rec, tRef.current);
+      void showNotification(title, body);
+    });
+    return () => {
+      off();
+      window.removeEventListener(JOB_NOTIFY_CHANGED_EVENT, sync);
+    };
+  }, []);
 
   // Closing the app with a job running = a half-loaded restore that cannot be resumed. Ask first.
   // A blocker rather than a listener of its own — see `closeGuard.ts`.
@@ -52,21 +113,28 @@ export const JobsTray: React.FC = () => {
   useEffect(() => {
     if (!anchor) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setAnchor(null);
+      if (e.key === 'Escape') {
+        setSeenAt(markJobsSeen());
+        setAnchor(null);
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [anchor]);
 
-  // With no job ever queued, it takes no space on the title bar.
-  if (jobs.length === 0) return null;
+  // With no job ever queued and nothing remembered, it takes no space on the title bar. Once the
+  // history holds something the bell stays, because "did last night's backup finish?" is asked
+  // precisely when nothing is running.
+  if (jobs.length === 0 && history.length === 0) return null;
 
   const failed = finished.some((j) => j.state === 'error');
   const capsuleTitle = active.length
     ? t('jobs.trayRunning', { n: active.length })
-    : failed
-      ? t('jobs.trayFailed')
-      : t('jobs.trayIdle');
+    : unseen > 0
+      ? t('jobs.trayUnseen', { n: unseen })
+      : failed
+        ? t('jobs.trayFailed')
+        : t('jobs.trayIdle');
 
   // Anchored to the button's right and then clamped, so the whole popover is visible however close to an edge the button sits.
   const open = () => {
@@ -84,14 +152,18 @@ export const JobsTray: React.FC = () => {
         <button
           ref={btnRef}
           className={`tb-capsule-btn ${active.length ? 'is-active-accent' : ''} ${!active.length && failed ? 'is-active-warn' : ''}`}
-          onClick={() => (anchor ? setAnchor(null) : open())}
+          onClick={() => (anchor ? close() : open())}
           title={capsuleTitle}
           aria-label={capsuleTitle}
         >
-          {/* A bell is the notification symbol; the count of running jobs is the badge beside it — read
-              the way every notification tray is read, rather than an icon that changes shape by state. */}
-          <Bell size={13} />
-          {active.length > 0 && <span className="jobs-badge">{active.length}</span>}
+          {/* A bell is the notification symbol. The red count on it is what finished since the popover
+              was last opened — the way every notification tray is read. With nothing unseen, the
+              number of running jobs sits beside it instead, as before. */}
+          <span className="jobs-bell">
+            <Bell size={13} />
+            {unseen > 0 && <span className="jobs-bell-count">{unseenLabel(unseen)}</span>}
+          </span>
+          {unseen === 0 && active.length > 0 && <span className="jobs-badge">{active.length}</span>}
         </button>
       </div>
 
@@ -101,7 +173,7 @@ export const JobsTray: React.FC = () => {
             {/* `.jobs-backdrop`/`.jobs-pop` SHARE a rule with Safe Mode's `.sm-backdrop`/`.sm-pop` (one
                 combined selector in index.css, not a copy) — so the title bar's popover shape is edited
                 in one place and both follow. `.sm-pop-title` is that shape's heading row. */}
-            <div className="jobs-backdrop" onClick={() => setAnchor(null)} />
+            <div className="jobs-backdrop" onClick={close} />
             {/* Only `top`/`left` are inline — they are measured at render; the shape lives in .jobs-pop. */}
             <div className="jobs-pop" style={{ top: anchor.top, left: anchor.left }} role="dialog">
               <div className="jobs-pop-head">
@@ -119,6 +191,32 @@ export const JobsTray: React.FC = () => {
                 {jobs.map((job) => (
                   <JobRow key={job.id} job={job} />
                 ))}
+                {jobs.length === 0 && earlier.length > 0 && (
+                  <div className="jobs-row-note jobs-empty">{t('jobs.nothingRunning')}</div>
+                )}
+                {earlier.length > 0 && (
+                  <>
+                    <div className="jobs-history-head">
+                      <span>{t('jobs.historyTitle')}</span>
+                      <button type="button" className="jobs-pop-clear" onClick={clearJobHistory}>
+                        {t('jobs.clearHistory')}
+                      </button>
+                    </div>
+                    {earlier.map((entry) => (
+                      <HistoryRow key={entry.id} entry={entry} />
+                    ))}
+                  </>
+                )}
+              </div>
+              <div className="jobs-notify-toggle">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={notifyOn}
+                    onChange={(e) => setJobNotifyEnabled(e.target.checked)}
+                  />
+                  <span>{t('jobs.notifyToggle')}</span>
+                </label>
               </div>
             </div>
           </>,
@@ -161,6 +259,73 @@ const STATE_KEY: Record<JobRecord['state'], string> = {
   error: 'jobs.stateError',
   cancelled: 'jobs.stateCancelled',
 };
+
+/**
+ * One job from an earlier session (or cleared from this one). Read-only: there is nothing left to
+ * cancel, only to read — when it ended, how, and where its file went.
+ */
+const HistoryRow: React.FC<{ entry: JobHistoryEntry }> = ({ entry }) => {
+  const { t, i18n } = useTranslation();
+  const icon = entry.state === 'done' ? (
+    <CheckCircle2 size={13} className="jobs-icon-ok" />
+  ) : entry.state === 'error' ? (
+    <AlertTriangle size={13} className="jobs-icon-error" />
+  ) : (
+    <Ban size={13} className="jobs-icon-muted" />
+  );
+  const endedAt = new Date(entry.endedAt).toLocaleString(i18n.language);
+  const took = entry.startedAt !== null ? formatTook(entry.endedAt - entry.startedAt, t) : '';
+
+  return (
+    <div className="jobs-row jobs-row-history">
+      <div className="jobs-row-icon">{icon}</div>
+      <div className="jobs-row-body">
+        <div className="jobs-row-head">
+          <span className="jobs-row-title">{entry.title}</span>
+          <span className="jobs-row-state">{t(STATE_KEY[entry.state] as 'jobs.stateDone')}</span>
+        </div>
+        <div className="jobs-row-note">{took ? t('jobs.historyWhenTook', { when: endedAt, took }) : endedAt}</div>
+        {entry.error && <div className="jobs-row-error">{entry.error}</div>}
+        {entry.message && (
+          <div className="jobs-row-result">
+            {entry.message}
+            {entry.warning && <div className="jobs-row-warn">{entry.warning}</div>}
+          </div>
+        )}
+      </div>
+      <div className="jobs-row-actions">
+        {entry.dir && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            title={entry.path || entry.dir}
+            onClick={() => void openInFileManager(entry.dir!)}
+          >
+            <FolderOpen size={12} />
+          </button>
+        )}
+        <button
+          type="button"
+          className="btn btn-secondary"
+          title={t('jobs.removeHistoryEntry')}
+          aria-label={t('jobs.removeHistoryEntry')}
+          onClick={() => removeJobHistoryEntry(entry.id)}
+        >
+          <X size={12} />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+/** "42 s" / "3 min 5 s" / "1 h 20 min" — how long a finished job ran. */
+function formatTook(ms: number, t: TFunction): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return t('jobs.tookSeconds', { s });
+  const m = Math.floor(s / 60);
+  if (m < 60) return t('jobs.tookMinutes', { m, s: s % 60 });
+  return t('jobs.tookHours', { h: Math.floor(m / 60), m: m % 60 });
+}
 
 const JobRow: React.FC<{ job: JobRecord }> = ({ job }) => {
   const { t } = useTranslation();

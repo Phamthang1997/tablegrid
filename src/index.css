@@ -15284,6 +15284,54 @@ input.rename-input {
   color: var(--win-text-secondary);
 }
 
+/* The notification switch at the foot of the jobs popover, under a rule like the history heading. */
+.jobs-notify-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px 10px 2px;
+  border-top: 1px solid var(--win-border);
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+
+.jobs-notify-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+/* "Nothing running" above the history, when this session has no job of its own. */
+.jobs-empty {
+  padding: 8px 10px;
+}
+
+/* The heading between this session's jobs and the history of earlier ones. A rule above it says
+   "a different list starts here"; the clear button reuses .jobs-pop-clear, minus its bottom pad. */
+.jobs-history-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px 0 0 10px;
+  border-top: 1px solid var(--win-border);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--win-text-secondary);
+}
+
+.jobs-history-head .jobs-pop-clear {
+  padding-bottom: 0;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+
 .jobs-row-state {
   flex-shrink: 0;
 }
@@ -15316,6 +15364,33 @@ input.rename-input {
   font-size: 10px;
   font-weight: 600;
   margin-left: 3px;
+}
+
+/* The bell, as the anchor for its unseen count. */
+.jobs-bell {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The red count of jobs finished since the popover was last opened, pinned to the bell's top-right
+   corner like any notification badge. Absolutely positioned so it never widens the capsule. */
+.jobs-bell-count {
+  position: absolute;
+  top: -7px;
+  left: 7px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: var(--win-danger, #ef4444);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .jobs-icon-ok {

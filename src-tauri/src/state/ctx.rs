@@ -67,8 +67,8 @@ impl ConnCtx {
     }
 
     /// Kept so `ConnEntry::db` has a reader: `set_db` still writes it on a MySQL `USE` inside a
-    /// restore, and the left rail displays it (§4.2c).
-    #[allow(dead_code)]
+    /// restore, and the left rail displays it (§4.2c). `open_job_connection` reads it to point the
+    /// job's connection at the same database (the file path, on SQLite).
     pub fn db(&self) -> &str {
         &self.db
     }

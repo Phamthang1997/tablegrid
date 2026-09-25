@@ -1,13 +1,81 @@
 //! `restore_backup` — replays a multi-statement `.sql` dump, filtered to the tables the user selected.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde_json::{Value, json};
 use sqlx::{MySqlPool, PgPool};
 use tauri::ipc::Channel;
 
 use crate::database::{
-    DbConnection, DbKind, build_mysql_url, build_pg_url, execute_raw_sql_generic,
-    reject_conn_read_only, split_sql_statements, strip_leading_comments,
+    DbConnection, DbKind, build_mysql_url, build_pg_url, reject_conn_read_only,
+    split_sql_statements, sqlite_raw, strip_leading_comments,
 };
+
+/// Key of a running restore's cancel flag in `AppState::cancel_flags`.
+///
+/// Per `conn_id`, like `datagen`'s `cancel_key`. That is also per JOB now: every background restore
+/// runs on a connection of its own (`open_job_connection`), so two restores can never share a key.
+fn restore_cancel_key(conn_id: &str) -> String {
+    format!("__restore__:{conn_id}")
+}
+
+/// Removes the flag when the restore returns, whichever way it returns.
+///
+/// A guard rather than a `remove` before each `return`: `restore_backup` has a dozen exits, most of
+/// them `?`, and a flag left behind would make the NEXT restore on that id start out cancelled.
+struct CancelFlagGuard {
+    state: crate::AppState,
+    key: String,
+}
+
+impl CancelFlagGuard {
+    fn register(
+        state: &crate::AppState,
+        key: String,
+        flag: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        state
+            .cancel_flags
+            .lock()
+            .map_err(|e| e.to_string())?
+            .insert(key.clone(), flag);
+        Ok(Self {
+            state: state.clone(),
+            key,
+        })
+    }
+}
+
+impl Drop for CancelFlagGuard {
+    fn drop(&mut self) {
+        if let Ok(mut flags) = self.state.cancel_flags.lock() {
+            flags.remove(&self.key);
+        }
+    }
+}
+
+/// Ask a running restore on `conn_id` to stop.
+///
+/// Raises the flag and returns at once; the restore notices between two statements, rolls back and
+/// answers its own call with `cancelled: true`. Not an error when nothing is running — the restore
+/// may have finished while the click was on its way.
+#[tauri::command]
+pub async fn cancel_restore(conn_id: String) -> Result<Value, String> {
+    Box::pin(async move {
+        let state = crate::state::require_state()?;
+        let flags = state.cancel_flags.lock().map_err(|e| e.to_string())?;
+        let found = match flags.get(&restore_cancel_key(&conn_id)) {
+            Some(flag) => {
+                flag.store(true, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        };
+        Ok(json!({ "success": true, "found": found }))
+    })
+    .await
+}
 
 /// The head of a statement, upper-cased — enough to classify it with `is_skipped_stmt`/`is_session_level_stmt`.
 ///
@@ -185,6 +253,12 @@ pub async fn restore_backup(
     // Restore replays a whole dump on its own connection, so none of the funnels sees it.
     reject_conn_read_only(&conn_type)?;
 
+    // Registered before the dump is even split, so a cancel pressed during "Preparing…" is not
+    // lost; removed by the guard on every way out, including the `?`s below.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let _cancel_guard = CancelFlagGuard::register(&state, restore_cancel_key(&conn_id), cancel.clone())?;
+    let mut cancelled = false;
+
     let mut statements_count = 0;
     let mut last_use_db: Option<String> = None;
 
@@ -275,6 +349,12 @@ pub async fn restore_backup(
 
             // 3. Run the statements
             for (idx, (q, session_level)) in to_run.iter().enumerate() {
+                // Checked between statements, never inside one: a statement is the unit the
+                // server can roll back, so stopping here leaves nothing half-applied.
+                if cancel.load(Ordering::Relaxed) {
+                    cancelled = true;
+                    break;
+                }
                 let session_level = *session_level;
 
                 // raw_sql = the text protocol: MySQL does NOT allow CREATE/DROP TRIGGER|PROCEDURE|FUNCTION|
@@ -307,47 +387,105 @@ pub async fn restore_backup(
 
             }
 
-            let _ = sqlx::query("COMMIT;").execute(&mut *conn).await;
+            // A cancelled run is rolled back like a failed one. MySQL commits implicitly on DDL, so
+            // tables the dump had already created stay behind — the UI says so rather than promising
+            // a clean undo.
+            let end = if cancelled { "ROLLBACK;" } else { "COMMIT;" };
+            let _ = sqlx::query(end).execute(&mut *conn).await;
             // 4. Hand the connection back to the pool clean: drop the locks (in case a LOCK slipped through) + turn FKs back on
             let _ = sqlx::raw_sql("UNLOCK TABLES;").execute(&mut *conn).await;
             let _ = sqlx::query("SET FOREIGN_KEY_CHECKS = 1;").execute(&mut *conn).await;
         }
-        _ => {
-            // Turn off foreign-key checking and begin the transaction
-            match &conn_type.kind {
-                DbKind::Postgres(_) => {
-                    let _ = execute_raw_sql_generic(&conn_type, "SET CONSTRAINTS ALL DEFERRED;".to_string()).await;
-                    let _ = execute_raw_sql_generic(&conn_type, "BEGIN;".to_string()).await;
+        DbKind::Postgres(pool) => {
+            // ONE connection for the whole restore, exactly like the MySQL branch.
+            //
+            // This branch used to send `BEGIN;` and every statement through `execute_raw_sql_generic`,
+            // which acquires a pooled connection PER CALL — so the transaction only held together
+            // because `should_route` recognises a `BEGIN` and opened a manual-transaction session on
+            // the connection's id. When that id was the user's, the restore became the user's
+            // transaction: their pending counter counted every INSERT, and anything they ran in a tab
+            // meanwhile joined the restore's transaction and went down with its ROLLBACK. And
+            // `SET CONSTRAINTS ALL DEFERRED` ran before that `BEGIN`, on some other pooled
+            // connection, outside any transaction — i.e. it did nothing.
+            //
+            // Nothing here goes through a funnel any more, so no session is ever opened. `raw_sql`
+            // (the simple query protocol) because a restore runs statements and never reads a row back.
+            let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+            async fn run(conn: &mut sqlx::PgConnection, sql: &str) -> Result<(), String> {
+                sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_string()))
+                    .execute(&mut *conn)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }
+            let _ = run(&mut conn, "BEGIN;").await;
+            // Only valid inside a transaction, hence after BEGIN; only affects DEFERRABLE constraints.
+            let _ = run(&mut conn, "SET CONSTRAINTS ALL DEFERRED;").await;
+
+            for (idx, (q, session_level)) in to_run.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    cancelled = true;
+                    break;
                 }
-                DbKind::Sqlite(conn_arc) => {
-                    if let Ok(conn) = conn_arc.lock() {
-                        let _ = conn.execute("PRAGMA foreign_keys = OFF;", []);
-                        let _ = conn.execute("BEGIN TRANSACTION;", []);
+                let session_level = *session_level;
+                let exec_sql = q.replace("`", "\"");
+                // One error puts a Postgres transaction into the aborted state (25P02), after which
+                // every later statement fails with "current transaction is aborted". Carrying on needs
+                // a rollback point per statement. Paid when the user asked to carry on, and for every
+                // session-level statement: those are allowed to fail (a MySQL `SET` line in a dump
+                // from another dialect), and without a savepoint that "allowed" failure used to poison
+                // the whole transaction and fail everything after it.
+                let savepoint = continue_on_error || session_level;
+                if savepoint {
+                    let _ = run(&mut conn, "SAVEPOINT tn_restore_sp;").await;
+                }
+                if let Err(e) = run(&mut conn, &exec_sql).await {
+                    if savepoint {
+                        let _ = run(&mut conn, "ROLLBACK TO SAVEPOINT tn_restore_sp;").await;
                     }
+                    if session_level {
+                        continue;
+                    }
+                    if continue_on_error {
+                        failed_count += 1;
+                        if failed_samples.len() < FAILED_SAMPLES_MAX {
+                            failed_samples.push(json!({ "sql": stmt_for_error(q), "error": e.to_string() }));
+                        }
+                        continue;
+                    }
+                    let _ = run(&mut conn, "ROLLBACK;").await;
+                    return Err(format!("Lỗi khi chạy lệnh SQL: {}. Chi tiết: {}", stmt_for_error(q), e));
                 }
-                _ => {}
+                // Release the rollback point as soon as the statement is through, so savepoints do not pile up.
+                if savepoint {
+                    let _ = run(&mut conn, "RELEASE SAVEPOINT tn_restore_sp;").await;
+                }
+                statements_count += 1;
+                if idx % PROGRESS_EVERY == 0 || idx + 1 == total {
+                    send_progress(idx + 1);
+                }
+            }
+
+            let end = if cancelled { "ROLLBACK;" } else { "COMMIT;" };
+            let _ = run(&mut conn, end).await;
+        }
+        DbKind::Sqlite(conn_arc) => {
+            // Statements go straight to the handle rather than through `execute_raw_sql_generic`, for
+            // the reason the Postgres branch gives: the restore owns this transaction, and no
+            // manual-transaction session may be opened or consulted for it.
+            if let Ok(conn) = conn_arc.lock() {
+                let _ = conn.execute("PRAGMA foreign_keys = OFF;", []);
+                let _ = conn.execute("BEGIN TRANSACTION;", []);
             }
 
             for (idx, (q, session_level)) in to_run.iter().enumerate() {
-                let session_level = *session_level;
-
-                let exec_sql = match &conn_type.kind {
-                    DbKind::Postgres(_) => q.replace("`", "\""),
-                    _ => q.clone(),
-                };
-                // Postgres: one error puts the whole transaction into the aborted state (25P02), and
-                // every later statement then fails with "current transaction is aborted". Continuing
-                // requires a rollback point per statement. The 2 extra round trips are only paid when the user turns
-                // this mode on; MySQL and SQLite need none of it, since one failing statement does not abort their transaction.
-                let pg_savepoint = continue_on_error && matches!(&conn_type.kind, DbKind::Postgres(_));
-                if pg_savepoint {
-                    let _ = execute_raw_sql_generic(&conn_type, "SAVEPOINT tn_restore_sp;".to_string()).await;
+                if cancel.load(Ordering::Relaxed) {
+                    cancelled = true;
+                    break;
                 }
-                if let Err(e) = execute_raw_sql_generic(&conn_type, exec_sql).await {
+                let session_level = *session_level;
+                if let Err(e) = sqlite_raw(conn_arc, q) {
                     if !session_level && continue_on_error {
-                        if pg_savepoint {
-                            let _ = execute_raw_sql_generic(&conn_type, "ROLLBACK TO SAVEPOINT tn_restore_sp;".to_string()).await;
-                        }
                         failed_count += 1;
                         if failed_samples.len() < FAILED_SAMPLES_MAX {
                             failed_samples.push(json!({ "sql": stmt_for_error(q), "error": e.to_string() }));
@@ -355,53 +493,36 @@ pub async fn restore_backup(
                         continue;
                     }
                     if !session_level {
-                        // Roll back on error
-                        match &conn_type.kind {
-                            DbKind::Postgres(_) => {
-                                let _ = execute_raw_sql_generic(&conn_type, "ROLLBACK;".to_string()).await;
-                            }
-                            DbKind::Sqlite(conn_arc) => {
-                                if let Ok(conn) = conn_arc.lock() {
-                                    let _ = conn.execute("ROLLBACK;", []);
-                                    let _ = conn.execute("PRAGMA foreign_keys = ON;", []);
-                                }
-                            }
-                            _ => {}
+                        if let Ok(conn) = conn_arc.lock() {
+                            let _ = conn.execute("ROLLBACK;", []);
+                            let _ = conn.execute("PRAGMA foreign_keys = ON;", []);
                         }
                         return Err(format!("Lỗi khi chạy lệnh SQL: {}. Chi tiết: {}", stmt_for_error(q), e));
                     }
                     continue;
                 }
-                // Release the rollback point as soon as the statement is through, so savepoints do not pile up.
-                if pg_savepoint {
-                    let _ = execute_raw_sql_generic(&conn_type, "RELEASE SAVEPOINT tn_restore_sp;".to_string()).await;
-                }
                 statements_count += 1;
                 if idx % PROGRESS_EVERY == 0 || idx + 1 == total {
                     send_progress(idx + 1);
                 }
-
             }
 
-            // Commit transaction
-            match &conn_type.kind {
-                DbKind::Postgres(_) => {
-                    let _ = execute_raw_sql_generic(&conn_type, "COMMIT;".to_string()).await;
-                }
-                DbKind::Sqlite(conn_arc) => {
-                    if let Ok(conn) = conn_arc.lock() {
-                        let _ = conn.execute("COMMIT;", []);
-                    }
-                }
-                _ => {}
+            if let Ok(conn) = conn_arc.lock() {
+                let _ = conn.execute(if cancelled { "ROLLBACK;" } else { "COMMIT;" }, []);
+                let _ = conn.execute("PRAGMA foreign_keys = ON;", []);
             }
-
-            // Turn foreign keys back on
-            if let DbKind::Sqlite(conn_arc) = &conn_type.kind
-                && let Ok(conn) = conn_arc.lock() {
-                    let _ = conn.execute("PRAGMA foreign_keys = ON;", []);
-                }
         }
+    }
+
+    if cancelled {
+        // Not an `Err`: nothing failed, and an error string would be translated and shown as one.
+        // The count is what ran before the stop — on MySQL, DDL among those stays committed.
+        return Ok(json!({
+            "success": false,
+            "cancelled": true,
+            "statementsCount": statements_count,
+            "dialect": crate::tx::dialect_of(&conn_type),
+        }));
     }
 
     if let Some(ref db_name) = last_use_db {

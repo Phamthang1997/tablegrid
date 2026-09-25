@@ -184,31 +184,60 @@ export async function readTableRows(
   onProgress?: (p: DumpProgress) => void
 ): Promise<any[]> {
   const rows: any[] = [];
+  await readTablePages(reader, table, tableIndex, total, onProgress, (batch) => {
+    rows.push(...batch);
+  });
+  return rows;
+}
+
+/** What `readTablePages` knows about a page when it hands it over. */
+export interface TablePageInfo {
+  /** The table's exact row count, when the backend reported one. */
+  totalRows: number | null;
+  /** No page follows. True on the first call for a table that fits in one page. */
+  last: boolean;
+}
+
+/**
+ * `readTableRows`, one page at a time: `onPage` receives each page as soon as it is read, and the
+ * rows are not kept. This is what lets a dump of a table far larger than memory be written — a page
+ * becomes INSERT statements and goes to disk before the next one is read.
+ */
+export async function readTablePages(
+  reader: Pick<DumpReader, 'getTableData'>,
+  table: string,
+  tableIndex: number,
+  total: number,
+  onProgress: ((p: DumpProgress) => void) | undefined,
+  onPage: (rows: any[], info: TablePageInfo) => void | Promise<void>,
+): Promise<number> {
+  let seen = 0;
   let page = 1;
   let totalRows = 0;
   for (;;) {
     const data = await reader.getTableData(table, page, EXPORT_PAGE_SIZE);
     const batch = data.rows || [];
-    rows.push(...batch);
+    seen += batch.length;
     if (!totalRows && data.totalCount) totalRows = data.totalCount;
-    const inner = totalRows ? Math.min(1, rows.length / totalRows) : 0;
+    const inner = totalRows ? Math.min(1, seen / totalRows) : 0;
     onProgress?.({
       label: i18n.t('app.exportTableProgress', { i: tableIndex + 1, total, table }),
       current: tableIndex + inner,
       total,
       detail: totalRows
         ? i18n.t('app.exportRowsPct', {
-            rows: fmtNum(rows.length),
+            rows: fmtNum(seen),
             total: fmtNum(totalRows),
             pct: Math.round(inner * 100),
           })
-        : i18n.t('app.exportRows', { rows: fmtNum(rows.length) }),
+        : i18n.t('app.exportRows', { rows: fmtNum(seen) }),
     });
-    if (batch.length < EXPORT_PAGE_SIZE) break;
-    if (totalRows && rows.length >= totalRows) break;
+    const last = batch.length < EXPORT_PAGE_SIZE || (!!totalRows && seen >= totalRows);
+    await onPage(batch, { totalRows: totalRows || null, last });
+    if (last) break;
     page++;
   }
-  return rows;
+  return seen;
 }
 
 /**
@@ -226,6 +255,31 @@ export async function readTableRows(
  * already in the base tables anyway.
  */
 export async function buildDump(spec: DumpSpec, reader: DumpReader): Promise<string> {
+  const chunks: string[] = [];
+  await writeDump(spec, reader, (text) => {
+    chunks.push(text);
+  });
+  // Every chunk ends in '\n' (see `flush`); the single string this returned before streaming
+  // existed did not, and the tests pin that exact text.
+  return chunks.join('').slice(0, -1);
+}
+
+/**
+ * `buildDump`, written out a piece at a time instead of returned as one string.
+ *
+ * `emit` receives the dump in order, in chunks that each end in '\n': the header, then each table
+ * (its DDL, then one chunk per PAGE of its data), then the constraints, views, routines and
+ * triggers. A chunk boundary always falls between two statements, never inside one — that is what
+ * makes it safe to write each chunk straight to a file. `emit` is awaited before anything else is
+ * read, so a slow disk slows the export down instead of letting unwritten chunks pile up in memory.
+ *
+ * Throwing from `onProgress` (a cancelled job does) stops the dump between two pages.
+ */
+export async function writeDump(
+  spec: DumpSpec,
+  reader: DumpReader,
+  emit: (text: string) => void | Promise<void>,
+): Promise<void> {
   const { onProgress, sqlOptions } = spec;
   const isMysql = spec.dbType === 'mysql';
   const isPostgres = spec.dbType === 'postgres';
@@ -245,6 +299,13 @@ export async function buildDump(spec: DumpSpec, reader: DumpReader): Promise<str
     '',
     ...dumpHeader(spec.dbType, spec.schema),
   ];
+  /** Hands everything collected so far to `emit` and forgets it. See `writeDump`. */
+  const flush = async () => {
+    if (parts.length === 0) return;
+    const text = parts.join('\n') + '\n';
+    parts.length = 0;
+    await emit(text);
+  };
 
   const viewSet = new Set(spec.views.map((v) => v.toLowerCase()));
   const baseTables = spec.tables.filter((name) => !viewSet.has(name.toLowerCase()));
@@ -299,27 +360,40 @@ export async function buildDump(spec: DumpSpec, reader: DumpReader): Promise<str
       parts.push('');
     }
     if (sqlOptions.includeContent) {
-      const rows = await readTableRows(reader, table, i, total, onProgress);
-      if (rows.length > 0) {
-        const schema = await reader.getTableSchema(table);
-        const schemaCols = schema.columns || [];
-        // GENERATED/IDENTITY columns are dropped from the INSERT: the database computes them, and
-        // writing to one is an error (MySQL 3105; Postgres demands OVERRIDING SYSTEM VALUE) that
-        // rolls back the entire import.
-        const colNames = schemaCols.filter((c) => !c.generated).map((c) => c.name);
-        const cols = colNames.length ? colNames : Object.keys(rows[0]);
-        // A binary cell arrives as a byte array; unmarked, JSON.stringify turns it into
-        // '[137,80,78,71,...]' and the original file is effectively lost.
-        const binaryCols = new Set(
-          schemaCols.filter((c) => isBinaryType(c.type, spec.dbType)).map((c) => c.name)
-        );
-        // An identity column is the OPPOSITE of a generated one: kept in the INSERT so the original
-        // ids survive, but the statement has to ask permission to override.
-        const needsOverriding = schemaCols.some((c) => c.identityAlways);
-        parts.push(i18n.t('app.exportDataComment', { table: `${q}${table}${q}`, rows: rows.length }));
-        parts.push(buildSql(table, cols, rows, spec.dbType, binaryCols, needsOverriding));
-        parts.push('');
-      }
+      // Page by page: each page becomes INSERTs and is flushed before the next is read, so the
+      // table is never in memory as a whole (Phase 3 of docs/background-jobs-plan.md). A page is
+      // EXPORT_PAGE_SIZE rows, a multiple of `buildSql`'s rows-per-INSERT, so the statements come
+      // out the same as when the whole table was batched at once.
+      let shape: { cols: string[]; binaryCols: Set<string>; needsOverriding: boolean } | null = null;
+      await readTablePages(reader, table, i, total, onProgress, async (rows, info) => {
+        if (rows.length === 0) return;
+        if (!shape) {
+          const schema = await reader.getTableSchema(table);
+          const schemaCols = schema.columns || [];
+          // GENERATED/IDENTITY columns are dropped from the INSERT: the database computes them, and
+          // writing to one is an error (MySQL 3105; Postgres demands OVERRIDING SYSTEM VALUE) that
+          // rolls back the entire import.
+          const colNames = schemaCols.filter((c) => !c.generated).map((c) => c.name);
+          shape = {
+            cols: colNames.length ? colNames : Object.keys(rows[0]),
+            // A binary cell arrives as a byte array; unmarked, JSON.stringify turns it into
+            // '[137,80,78,71,...]' and the original file is effectively lost.
+            binaryCols: new Set(
+              schemaCols.filter((c) => isBinaryType(c.type, spec.dbType)).map((c) => c.name)
+            ),
+            // An identity column is the OPPOSITE of a generated one: kept in the INSERT so the
+            // original ids survive, but the statement has to ask permission to override.
+            needsOverriding: schemaCols.some((c) => c.identityAlways),
+          };
+          // The row count is written before the rows exist on the page: exact when the table fits
+          // in one page, the backend's count otherwise. It is a comment — nothing replays it.
+          const count = info.last ? rows.length : (info.totalRows ?? '?');
+          parts.push(i18n.t('app.exportDataComment', { table: `${q}${table}${q}`, rows: count }));
+        }
+        parts.push(buildSql(table, shape.cols, rows, spec.dbType, shape.binaryCols, shape.needsOverriding));
+        await flush();
+      });
+      if (shape) parts.push('');
       deferredSequenceValues.push(...extras.sequenceValues);
     }
     onProgress?.({
@@ -328,6 +402,7 @@ export async function buildDump(spec: DumpSpec, reader: DumpReader): Promise<str
       total,
       detail: i18n.t('app.exportTableDone'),
     });
+    await flush();
   }
 
   // Foreign keys and the other table-level constraints: attachable only once EVERY table exists.
@@ -476,5 +551,5 @@ export async function buildDump(spec: DumpSpec, reader: DumpReader): Promise<str
   }
 
   parts.push(...dumpFooter(spec.dbType));
-  return parts.join('\n');
+  await flush();
 }

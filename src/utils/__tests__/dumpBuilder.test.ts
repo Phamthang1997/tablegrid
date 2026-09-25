@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDump, type DumpReader, type DumpSpec } from '../dumpBuilder';
+import { EXPORT_PAGE_SIZE, buildDump, writeDump, type DumpReader, type DumpSpec } from '../dumpBuilder';
 import { parseDumpObjects, parseDumpTableNames } from '../dumpPreview';
 import { splitStatements } from '../../sql/statements';
 
@@ -47,6 +47,86 @@ const spec = (over: Partial<DumpSpec> = {}): DumpSpec => ({
 
 /** Where a string first appears in the dump (-1 when it does not). */
 const at = (dump: string, needle: string) => dump.indexOf(needle);
+
+describe('writeDump — streaming to a sink', () => {
+  /** A table of `n` rows served in pages, the way `get_table_data` pages. */
+  const pagedReader = (n: number, pageCalls: number[] = []) =>
+    fakeReader({
+      getTableData: async (_t, page = 1, size = EXPORT_PAGE_SIZE) => {
+        pageCalls.push(page);
+        const start = (page - 1) * size;
+        const rows = Array.from({ length: Math.max(0, Math.min(size, n - start)) }, (_, i) => ({ id: start + i + 1 }));
+        return { rows, totalCount: n };
+      },
+    });
+  const tableOnly = spec({ tables: ['film'], views: [], routines: [], triggers: [] });
+  /** Two builds differ only in the header's timestamp. */
+  const undated = (dump: string) => dump.replace(/^-- Date: .*$/m, '');
+
+  it('emits exactly what buildDump returns, plus the trailing newline', async () => {
+    const chunks: string[] = [];
+    await writeDump(spec(), fakeReader(), (c) => { chunks.push(c); });
+    expect(undated(chunks.join(''))).toBe(undated((await buildDump(spec(), fakeReader())) + '\n'));
+  });
+
+  it('writes a large table one page at a time, never holding it whole', async () => {
+    const n = EXPORT_PAGE_SIZE * 2 + 7;
+    const chunks: string[] = [];
+    await writeDump(tableOnly, pagedReader(n), (c) => { chunks.push(c); });
+    // One chunk per page of data, each carrying only its own rows.
+    const dataChunks = chunks.filter((c) => c.includes('INSERT INTO `film`'));
+    expect(dataChunks).toHaveLength(3);
+    const idsIn = (c: string) => [...c.matchAll(/\((\d+)\)/g)].length;
+    expect(dataChunks.map(idsIn)).toEqual([EXPORT_PAGE_SIZE, EXPORT_PAGE_SIZE, 7]);
+    // The row-count comment rides in the first data chunk and carries the backend's count, since
+    // the rows of the later pages have not been read when it is written.
+    expect(dataChunks[0]).toContain(String(n));
+  });
+
+  it('every chunk ends between statements, so each can go to disk as is', async () => {
+    const chunks: string[] = [];
+    await writeDump(tableOnly, pagedReader(EXPORT_PAGE_SIZE + 1), (c) => { chunks.push(c); });
+    for (const c of chunks) {
+      expect(c.endsWith('\n')).toBe(true);
+      // Re-splitting a chunk on its own gives only whole statements: nothing is cut mid-INSERT.
+      for (const st of splitStatements(c)) {
+        if (/^INSERT/i.test(st.text.trim())) expect(st.text.trim()).toMatch(/\);?$/);
+      }
+    }
+    // And the concatenation replays the same rows as the single-string build.
+    expect(undated(chunks.join(''))).toBe(undated((await buildDump(tableOnly, pagedReader(EXPORT_PAGE_SIZE + 1))) + '\n'));
+  });
+
+  it('waits for the sink before reading the next page', async () => {
+    const calls: number[] = [];
+    const order: string[] = [];
+    await writeDump(tableOnly, pagedReader(EXPORT_PAGE_SIZE * 2, calls), async (c) => {
+      order.push(`write@${calls.length}`);
+      await new Promise((r) => setTimeout(r, 0));
+      if (c.includes('INSERT')) order.push('written');
+    });
+    // The second page is not requested until the first page's chunk has been written.
+    const firstData = order.indexOf('written');
+    expect(order[firstData - 1]).toBe('write@1');
+    expect(calls).toEqual([1, 2]);
+  });
+
+  it('stops between pages when onProgress throws (a cancelled job)', async () => {
+    const chunks: string[] = [];
+    let reports = 0;
+    const cancelling = spec({
+      ...tableOnly,
+      onProgress: () => {
+        reports++;
+        if (reports > 3) throw new Error('cancelled');
+      },
+    });
+    await expect(
+      writeDump(cancelling, pagedReader(EXPORT_PAGE_SIZE * 5), (c) => { chunks.push(c); }),
+    ).rejects.toThrow('cancelled');
+    expect(chunks.join('')).not.toContain('SET FOREIGN_KEY_CHECKS = 1');
+  });
+});
 
 describe('buildDump — thứ tự câu lệnh', () => {
   it('bảng -> view -> routine -> trigger, dù danh sách vào theo alphabet', async () => {
