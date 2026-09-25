@@ -11,6 +11,8 @@
 // Both fields are optional: entries written before this existed have neither and
 // are always shown.
 
+import { newSavedQueries, type SharedQuery } from './queryShare';
+
 export interface HistoryEntry {
   id: string;
   sql: string;
@@ -244,6 +246,32 @@ export function addSavedQuery(
   const updated = writeList(SAVED_KEY, [entry, ...loadSavedQueries()]);
   notifyChanged();
   return updated;
+}
+
+/**
+ * Adds the saved queries from an imported file (`queryShare.ts`), skipping those already here.
+ *
+ * Read-modify-write against storage like every mutation in this module, so an import in one tab
+ * cannot resurrect what another tab deleted. Imported entries carry no `conn`/`db` — the file does
+ * not either, see `buildShareFile` — and so show under every connection, the way pre-scope history
+ * does. They go to the top in file order, newest first after that.
+ */
+export function importSavedQueries(incoming: SharedQuery[]): { added: number; skipped: number } {
+  const current = loadSavedQueries();
+  const { added, skipped } = newSavedQueries(current, incoming);
+  if (added.length === 0) return { added: 0, skipped };
+  const base = Date.now();
+  const stamp = new Date(base).toISOString();
+  const entries: SavedQueryEntry[] = added.map((q, i) => ({
+    // `Date.now()` alone is how an id is minted elsewhere; a suffix keeps a batch unique.
+    id: `${base}_${i}`,
+    name: q.name,
+    sql: q.sql,
+    timestamp: stamp,
+  }));
+  writeList(SAVED_KEY, [...entries, ...current]);
+  notifyChanged();
+  return { added: added.length, skipped };
 }
 
 export function deleteSavedQuery(id: string): SavedQueryEntry[] {

@@ -109,7 +109,7 @@ function registerSqlFormatter(dbType: string) {
     monaco.languages.registerDocumentFormattingEditProvider(lang, formatProvider)
   );
 }
-import { Play, Clipboard, Trash2, CheckCircle2, AlertTriangle, ChevronLeft, ChevronRight, Copy, AlignLeft, History, X, Bookmark, ChevronDown, MoreHorizontal, SlidersHorizontal, Star, Columns, Rows, Settings, Network, Zap, FileText, Square, Calendar, BarChart2, Search, FileClock } from 'lucide-react';
+import { Play, Clipboard, Trash2, CheckCircle2, AlertTriangle, ChevronLeft, ChevronRight, Copy, AlignLeft, History, X, Bookmark, ChevronDown, MoreHorizontal, SlidersHorizontal, Star, Columns, Rows, Settings, Network, Zap, FileText, Square, Calendar, BarChart2, Search, FileClock, FolderOpen, Save, Download, Upload } from 'lucide-react';
 import { getQueryParamsConfig, saveQueryParamsConfig, extractQueryParams, buildParameterizedSql, type QueryParamsConfig } from '../utils/queryParamHelper';
 import { buildExplainQuery, explainJsonLabel, parseExplainOutput, supportsJsonExplain, type ExplainResult } from '../utils/explainHelper';
 import {
@@ -119,6 +119,7 @@ import {
   clearHistory,
   deleteHistoryEntry,
   deleteSavedQuery,
+  importSavedQueries,
   loadHistory,
   loadSavedQueries,
   matchesScope,
@@ -128,6 +129,9 @@ import {
   type HistoryScope,
   type SavedQueryEntry,
 } from '../utils/queryHistory';
+import { SHARE_ERROR_KEY, buildShareFile, parseShareFile, shareFileName } from '../utils/queryShare';
+import { pickSaveFilePath, saveExportFileAtPath } from '../utils/fileSave';
+import { fileStamp, safeFileBase } from '../utils/exportHelper';
 import { QueryParamsConfigModal } from './QueryParamsConfigModal';
 import { QueryParamsModal } from './QueryParamsModal';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -179,6 +183,9 @@ const SCOPE_OPTIONS = [
 ] as const;
 
 // The read-only statements allowed to run in read-only mode
+/** Past this a .sql file is a dump rather than something to edit, and Monaco would stall on it. */
+const SQL_FILE_MAX_BYTES = 10 * 1024 * 1024;
+
 const READ_ONLY_PREFIXES = ['SELECT', 'SHOW', 'EXPLAIN', 'DESCRIBE', 'DESC', 'PRAGMA', 'WITH'];
 function isReadOnlySql(text: string): boolean {
   // Shares the editor's splitter: a ';' inside a string, a comment or a dollar-quoted block, and a
@@ -1747,6 +1754,104 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     }
   };
 
+  // ---- .sql files ----
+  //
+  // A query tab is a localStorage draft, so until now the only way to get SQL in from a file or out to
+  // one was the clipboard. Open reads through a hidden <input type="file"> (`File.text()`), which
+  // needs no filesystem permission; Save goes through the same Save As dialog + write the exports use.
+
+  const sqlFileInputRef = useRef<HTMLInputElement>(null);
+  // Which pane the picked file goes into — set when the menu item is clicked, read when the
+  // browser hands the file back, which is a separate event.
+  const sqlFileTargetPane = useRef<1 | 2>(1);
+
+  const flashMsg = (paneId: 1 | 2, text: string) => {
+    const setMsg = paneId === 1 ? setStatusMsg : setStatusMsg2;
+    setMsg(text);
+    setTimeout(() => setMsg(null), 3000);
+  };
+
+  const handleOpenSqlFile = (paneId: 1 | 2 = focusedEditor) => {
+    sqlFileTargetPane.current = paneId;
+    sqlFileInputRef.current?.click();
+  };
+
+  const onSqlFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Cleared at once, so picking the same file twice still fires a change.
+    e.target.value = '';
+    if (!file) return;
+    const paneId = sqlFileTargetPane.current;
+    if (file.size > SQL_FILE_MAX_BYTES) {
+      flashMsg(paneId, t('sqlEditor.errSqlFileTooBig', { mb: Math.round(SQL_FILE_MAX_BYTES / 1024 / 1024) }));
+      return;
+    }
+    try {
+      // A BOM would otherwise sit invisibly at the front of the first statement.
+      const text = (await file.text()).replace(/^﻿/, '');
+      const editor = getPaneEditor(paneId);
+      if (!editor) return;
+      // Through `replacePaneText`, so the text it replaces is snapshotted to local history and the
+      // open is one Ctrl+Z away — opening a file over a half-written query must not lose it.
+      replacePaneText(editor, paneId, text, 'open-sql-file');
+      if (paneId === 1) { setSql(text); onSqlChange?.(text); }
+      else { setSql2(text); onSql2Change?.(text); }
+      editor.focus();
+      flashMsg(paneId, t('sqlEditor.sqlFileOpened', { name: file.name }));
+    } catch (err: any) {
+      flashMsg(paneId, t('sqlEditor.errSqlFileRead', { message: String(err?.message ?? err) }));
+    }
+  };
+
+  const handleSaveSqlFile = async (paneId: 1 | 2 = focusedEditor) => {
+    const text = getPaneSql(paneId);
+    if (!text.trim()) {
+      flashMsg(paneId, t('sqlEditor.errNoSqlToSave'));
+      return;
+    }
+    const path = await pickSaveFilePath(`${safeFileBase(dbName || 'query')}_${fileStamp()}`, 'sql', t('fileDialog.sqlFilter'));
+    if (!path) return;
+    const written = await saveExportFileAtPath(path, text, 'application/sql');
+    flashMsg(paneId, written ? t('sqlEditor.sqlFileSaved', { path }) : t('sqlEditor.sqlFileDownloaded'));
+  };
+
+  // ---- Saved queries: export / import ----
+
+  const savedFileInputRef = useRef<HTMLInputElement>(null);
+
+  /** Exports what the Saved tab is showing — its scope and search are the user's selection. */
+  const handleExportSaved = async () => {
+    const list = getFilteredSaved();
+    if (list.length === 0) {
+      flashMsg(1, t('sqlEditor.errNothingToExport'));
+      return;
+    }
+    const path = await pickSaveFilePath(shareFileName(fileStamp(), 'queries'), 'json', t('fileDialog.jsonFilter'));
+    if (!path) return;
+    const text = buildShareFile({ savedQueries: list }, new Date().toISOString());
+    const written = await saveExportFileAtPath(path, text, 'application/json');
+    flashMsg(1, written ? t('sqlEditor.savedExported', { n: list.length, path }) : t('sqlEditor.sqlFileDownloaded'));
+  };
+
+  const onSavedFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const parsed = parseShareFile(await file.text());
+      if (!parsed.ok) {
+        flashMsg(1, t(SHARE_ERROR_KEY[parsed.error]));
+        return;
+      }
+      // The list reloads itself: `importSavedQueries` dispatches the change event every open editor
+      // listens for.
+      const res = importSavedQueries(parsed.data.savedQueries);
+      flashMsg(1, t('sqlEditor.savedImported', { added: res.added, skipped: res.skipped + parsed.dropped }));
+    } catch (err: any) {
+      flashMsg(1, t('sqlEditor.errSqlFileRead', { message: String(err?.message ?? err) }));
+    }
+  };
+
   const handlePasteSql = async (paneId: 1 | 2 = focusedEditor) => {
     const setMsg = paneId === 1 ? setStatusMsg : setStatusMsg2;
     try {
@@ -2035,6 +2140,16 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                     <button className="context-menu-item" onClick={() => { setMoreMenuPane(null); setShowQueryParamsConfigModal(true); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}>
                       <Settings size={12} style={{ flexShrink: 0, color: queryParamsConfig.enabled ? 'var(--win-accent)' : undefined }} />
                       <span>{t('sqlEditor.paramOptions')}</span>
+                    </button>
+
+                    <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
+                    <button className="context-menu-item" onClick={() => { setMoreMenuPane(null); handleOpenSqlFile(paneId); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}>
+                      <FolderOpen size={12} style={{ flexShrink: 0 }} />
+                      <span>{t('sqlEditor.openSqlFile')}</span>
+                    </button>
+                    <button className="context-menu-item" onClick={() => { setMoreMenuPane(null); void handleSaveSqlFile(paneId); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}>
+                      <Save size={12} style={{ flexShrink: 0 }} />
+                      <span>{t('sqlEditor.saveSqlFileAs')}</span>
                     </button>
 
                     <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
@@ -3858,6 +3973,11 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
         />
       )}
 
+      {/* The pickers behind "Open .sql file…" and the Saved tab's Import. Always mounted, because the
+          click that opens them comes from menus that unmount as soon as they are clicked. */}
+      <input ref={sqlFileInputRef} type="file" accept=".sql,.txt,text/plain" className="sql-hidden-file-input" onChange={onSqlFilePicked} />
+      <input ref={savedFileInputRef} type="file" accept=".json,application/json" className="sql-hidden-file-input" onChange={onSavedFilePicked} />
+
       {showHistory && (
         <div className="sql-history-panel">
           <div className="sql-history-header" style={{ padding: '0', display: 'flex', flexDirection: 'column' }}>
@@ -3866,13 +3986,37 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                 <History size={13} />
                 <span>{t('sqlEditor.queryTable')}</span>
               </div>
-              <button
-                className="btn btn-secondary"
-                onClick={() => setShowHistory(false)}
-                style={{ padding: '2px 6px', height: '20px', minWidth: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-              >
-                <X size={12} />
-              </button>
+              <div className="sql-history-actions">
+                {/* Export / import belong to the Saved tab only: history is a log of what ran, not a
+                    collection someone would hand to a colleague. */}
+                {historyTab === 'saved' && (
+                  <>
+                    <button
+                      className="btn btn-secondary sql-history-icon-btn"
+                      onClick={() => savedFileInputRef.current?.click()}
+                      title={t('sqlEditor.importSaved')}
+                      aria-label={t('sqlEditor.importSaved')}
+                    >
+                      <Upload size={12} />
+                    </button>
+                    <button
+                      className="btn btn-secondary sql-history-icon-btn"
+                      onClick={() => void handleExportSaved()}
+                      title={t('sqlEditor.exportSaved')}
+                      aria-label={t('sqlEditor.exportSaved')}
+                    >
+                      <Download size={12} />
+                    </button>
+                  </>
+                )}
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setShowHistory(false)}
+                  style={{ padding: '2px 6px', height: '20px', minWidth: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
             </div>
             <div style={{ display: 'flex', background: 'rgba(0,0,0,0.02)', width: '100%' }}>
               <button

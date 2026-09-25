@@ -8,6 +8,7 @@ import {
   clearHistory,
   deleteHistoryEntry,
   deleteSavedQuery,
+  importSavedQueries,
   loadHistory,
   loadSavedQueries,
   matchesConn,
@@ -331,5 +332,34 @@ describe('saved queries', () => {
     addSavedQuery('B', 'select 2', CONN_A, 'sakila', '2');
     expect(deleteSavedQuery('1').map(e => e.id)).toEqual(['2']);
     expect(storage.getItem(SAVED_KEY)).toContain('select 2');
+  });
+});
+
+describe('importSavedQueries', () => {
+  it('adds new queries on top, untagged, and skips what is already saved', () => {
+    addSavedQuery('Mine', 'SELECT 1', CONN_A, 'shop', 'x1');
+    const res = importSavedQueries([
+      { name: 'Mine', sql: 'SELECT 1' },
+      { name: 'Theirs', sql: 'SELECT 2' },
+    ]);
+    expect(res).toEqual({ added: 1, skipped: 1 });
+    const list = loadSavedQueries();
+    expect(list.map((q) => q.name)).toEqual(['Theirs', 'Mine']);
+    // Untagged, so it shows under every connection (matchesScope treats a missing conn as "any").
+    expect(list[0].conn).toBeUndefined();
+    expect(matchesScope(list[0], CONN_A, 'other', 'db')).toBe(true);
+  });
+
+  it('gives every entry of one batch its own id', () => {
+    importSavedQueries([{ name: 'a', sql: 'SELECT 1' }, { name: 'b', sql: 'SELECT 2' }]);
+    const ids = loadSavedQueries().map((q) => q.id);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it('writes nothing when there is nothing new', () => {
+    importSavedQueries([{ name: 'a', sql: 'SELECT 1' }]);
+    const before = storage.getItem(SAVED_KEY);
+    expect(importSavedQueries([{ name: 'a', sql: 'SELECT 1' }])).toEqual({ added: 0, skipped: 1 });
+    expect(storage.getItem(SAVED_KEY)).toBe(before);
   });
 });

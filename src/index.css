@@ -5491,6 +5491,64 @@ select.form-input {
   gap: 6px;
 }
 
+/* The history drawer's header buttons: Import / Export (Saved tab only) and Close. */
+.sql-history-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Same footprint as the Close button beside them. */
+.sql-history-icon-btn {
+  padding: 2px 6px;
+  height: 20px;
+  min-width: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Snippet panel header: Import / Export / Close, drawn like the panel's existing bare icon buttons. */
+.snippet-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.snippet-header-btn {
+  background: transparent;
+  border: none;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.snippet-header-btn:hover {
+  color: var(--win-text-primary);
+}
+
+/* What an import/export did, under the header for a few seconds. */
+.snippet-transfer-msg {
+  padding: 6px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--win-text-secondary);
+  border-bottom: 1px solid var(--win-border-light, var(--win-border));
+  word-break: break-all;
+}
+
+.snippet-transfer-msg.is-error {
+  color: var(--win-danger, #ef4444);
+}
+
+/* The file pickers behind "Open .sql file…" and the Saved import, opened by .click(). */
+.sql-hidden-file-input {
+  display: none;
+}
+
 .sql-history-search {
   padding: 8px 12px;
   border-bottom: 1px solid var(--win-border);
