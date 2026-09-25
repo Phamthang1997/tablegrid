@@ -267,7 +267,7 @@ dùng `tauri-plugin-notification` 2.4 và **không hiện gì trong dev**: plugi
 Windows bỏ thông báo mà không báo lỗi (plugin còn nuốt lỗi). `utils/jobNotify.ts`: một job **xong hoặc lỗi**
 khi cửa sổ KHÔNG được focus (`document.hidden || !document.hasFocus()`) thì bật thông báo; đang nhìn app
 thì không (tray đã đủ), huỷ thì không (người dùng tự bấm). Nghe qua `onJobSettled` của `jobs.ts`, đăng
-ký trong `JobsTray`; công tắc + nút "Gửi thử" ở cuối popover (`tf_job_notify`, mặc định bật). Trên
+ký trong `JobsTray`; công tắc ở cuối popover (`tf_job_notify`, mặc định bật). Trên
 Windows ở chế độ dev, thông báo hiện dưới tên "Windows PowerShell" — bản cài đặt mới mang tên app (AUMID
 do installer đăng ký).
 

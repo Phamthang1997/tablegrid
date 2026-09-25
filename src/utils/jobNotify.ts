@@ -81,8 +81,8 @@ export function jobNotification(
 /**
  * Shows it, through `notify_os` (`app/notify.rs` — why not the notification plugin is explained
  * there). Never throws: a notification the OS refuses must not turn a finished job into an error.
- * Resolves to the reason when it failed, `null` when the OS accepted it, so the tray's "send a test"
- * button can say what went wrong instead of silently showing nothing.
+ * Resolves to the reason when it failed, `null` when the OS accepted it; the reason is also logged,
+ * since a notification that silently never appears is exactly how the plugin this replaced failed.
  */
 export async function showNotification(title: string, body: string): Promise<string | null> {
   try {
