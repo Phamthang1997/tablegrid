@@ -1975,14 +1975,49 @@ export const dbHelper = {
     }
   },
 
-  async importTableData(connId: string, name: string, rows: any[]): Promise<{ success: boolean; error?: string }> {
+  /**
+   * Starts a one-transaction import into an existing table (`table_import.rs`). Run on a job
+   * connection. `columns` fixes the order every chunk's row arrays use. Throws on failure.
+   */
+  async importBegin(
+    connId: string,
+    table: string,
+    columns: string[],
+    mode: 'atomic' | 'skip',
+    schema?: string | null,
+  ): Promise<{ handle: string; batchRows: number }> {
+    const res: any = await invoke('import_begin', { connId, table, columns, mode, schemaOverride: schema || null });
+    return { handle: res.handle, batchRows: res.batchRows };
+  },
+
+  /**
+   * Inserts one chunk. `failed[].row` is `firstRow` + the row's position in this chunk, so the
+   * caller passes 0 and maps positions back to file rows itself. Throws on failure.
+   */
+  async importChunk(
+    handle: string,
+    rows: (string | number | boolean | null)[][],
+    firstRow = 0,
+  ): Promise<{ inserted: number; failed: { row: number; error: string }[]; stopped: boolean }> {
+    const res: any = await invoke('import_chunk', { handle, rows, firstRow });
+    return { inserted: res.inserted ?? 0, failed: res.failed || [], stopped: !!res.stopped };
+  },
+
+  /** COMMIT (or ROLLBACK when `commit` is false). Throws on failure. */
+  async importFinish(handle: string, commit: boolean): Promise<{ inserted: number }> {
+    const res: any = await invoke('import_finish', { handle, commit });
+    return { inserted: res.inserted ?? 0 };
+  },
+
+  /** Rolls back and forgets. Never throws — it runs in a `finally`. */
+  async importAbort(handle: string): Promise<void> {
     try {
-      const res: any = await invoke('import_table_data', { connId, name, rows });
-      return { success: !!res.success, error: res.message };
-    } catch (err: any) {
-      return { success: false, error: err.toString() };
+      await invoke('import_abort', { handle });
+    } catch {
+      // Nothing left to undo.
     }
   },
+
 
   async getDatabasesList(config: DbConnectionConfig): Promise<{ success: boolean; databases: string[]; error?: string }> {
     try {

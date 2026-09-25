@@ -48,6 +48,8 @@ export const EXACT: Record<string, string> = {
     'backend.txOpenRestore',
   'Đang bật commit thủ công — hãy kết thúc transaction và chuyển về tự động trước khi sinh dữ liệu':
     'backend.txOpenGenerate',
+  'Đang bật commit thủ công — hãy kết thúc transaction và chuyển về tự động trước khi nhập dữ liệu':
+    'backend.txOpenImport',
   'Kết nối không khớp với phiên transaction': 'backend.txConnMismatch',
   'Tên savepoint chỉ gồm chữ, số và dấu gạch dưới, bắt đầu bằng chữ': 'backend.txBadSavepointName',
   'Chưa kết nối database': 'backend.notConnected',
@@ -145,6 +147,8 @@ export const NORMALIZED_ALIASES = new Set(['Chưa kết nối database']);
  */
 export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   { re: /^Lỗi khi chạy lệnh SQL: ([\s\S]*?)\. Chi tiết: ([\s\S]*)$/, key: 'backend.sqlFailed' },
+  // database/commands/table_import.rs — a mapped column the table does not have.
+  { re: /^Bảng không có cột '([^']*)'$/, key: 'backend.importNoColumn' },
   // terminal/docker.rs — the payload is the OS spawn error or docker's own stderr, which stays
   // in its own words the way `failed[].error` does for a Redis RESTORE.
   { re: /^Không chạy được ([^:]+): ([\s\S]*)$/, key: 'backend.dockerRunFailed' },

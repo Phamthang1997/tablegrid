@@ -170,7 +170,8 @@ function cellValue(c: XmlElement, shared: string[], xfIsDate: boolean[], date190
   return num;
 }
 
-function parseSheet(doc: XmlElement, shared: string[], xfIsDate: boolean[], date1904: boolean): any[] {
+/** A sheet as a grid of cell values, exactly as laid out — no header interpretation. */
+function sheetMatrix(doc: XmlElement, shared: string[], xfIsDate: boolean[], date1904: boolean): any[][] {
   const rowsEl = doc.getElementsByTagName('row');
   const matrix: any[][] = [];
   for (let i = 0; i < rowsEl.length; i++) {
@@ -182,8 +183,14 @@ function parseSheet(doc: XmlElement, shared: string[], xfIsDate: boolean[], date
       const idx = ref ? colIndexFromRef(ref) : j;
       rowArr[idx >= 0 ? idx : j] = cellValue(c, shared, xfIsDate, date1904);
     }
-    matrix.push(rowArr);
+    // `rowArr[5] = x` on an empty array leaves holes; the importer reads indexes, so fill them.
+    matrix.push(Array.from(rowArr, (v) => (v === undefined ? null : v)));
   }
+  return matrix;
+}
+
+function parseSheet(doc: XmlElement, shared: string[], xfIsDate: boolean[], date1904: boolean): any[] {
+  const matrix = sheetMatrix(doc, shared, xfIsDate, date1904);
   if (matrix.length === 0) return [];
 
   const headerArr = matrix[0] || [];
@@ -265,4 +272,62 @@ export async function parseXlsx(buffer: ArrayBuffer): Promise<any[]> {
   if (!sheetText) throw new Error(i18n.t('errors.xlsxNoWorksheet'));
 
   return parseSheet(parseXmlPart(sheetText), shared, xfIsDate, date1904);
+}
+
+/**
+ * Every worksheet of an .xlsx, in workbook order, each as a raw grid (`sheetMatrix`) — for the table
+ * importer, which lets the user pick the sheet and say whether the first row is a header. Unlike
+ * `parseXlsx`, nothing here decides what a header is.
+ */
+export async function readXlsxSheets(buffer: ArrayBuffer): Promise<{ name: string; rows: any[][] }[]> {
+  const buf = new Uint8Array(buffer);
+  const entries = readZipEntries(buf);
+  const byName = new Map(entries.map((e) => [e.name, e]));
+  const textOf = async (name: string): Promise<string | null> => {
+    const e = byName.get(name);
+    if (!e) return null;
+    return new TextDecoder().decode(await readEntryData(buf, e));
+  };
+
+  const ssText = await textOf('xl/sharedStrings.xml');
+  const shared = ssText ? parseSharedStrings(parseXmlPart(ssText)) : [];
+  const stylesText = await textOf('xl/styles.xml');
+  const xfIsDate = stylesText ? parseStyles(parseXmlPart(stylesText)) : [];
+
+  const wbText = await textOf('xl/workbook.xml');
+  const relsText = await textOf('xl/_rels/workbook.xml.rels');
+  let date1904 = false;
+  const sheets: { name: string; path: string }[] = [];
+  if (wbText) {
+    const wb = parseXmlPart(wbText);
+    const pr = wb.getElementsByTagName('workbookPr')[0];
+    const d = pr?.getAttribute('date1904');
+    date1904 = d === '1' || d === 'true';
+    const targets = new Map<string, string>();
+    if (relsText) {
+      const relEls = parseXmlPart(relsText).getElementsByTagName('Relationship');
+      for (let i = 0; i < relEls.length; i++) {
+        const target = (relEls[i].getAttribute('Target') || '').replace(/^\//, '');
+        targets.set(relEls[i].getAttribute('Id') || '', target.startsWith('xl/') ? target : 'xl/' + target);
+      }
+    }
+    const sheetEls = wb.getElementsByTagName('sheet');
+    for (let i = 0; i < sheetEls.length; i++) {
+      const rid = sheetEls[i].getAttribute('r:id') || '';
+      sheets.push({
+        name: sheetEls[i].getAttribute('name') || `Sheet${i + 1}`,
+        path: targets.get(rid) || `xl/worksheets/sheet${i + 1}.xml`,
+      });
+    }
+  }
+  if (sheets.length === 0) sheets.push({ name: 'Sheet1', path: 'xl/worksheets/sheet1.xml' });
+
+  // Parallel: these are entries of a zip already in memory, not queries against a database.
+  const texts = await Promise.all(sheets.map((s) => textOf(s.path)));
+  const out = sheets.flatMap((s, i) => {
+    const text = texts[i];
+    return text ? [{ name: s.name, rows: sheetMatrix(parseXmlPart(text), shared, xfIsDate, date1904) }] : [];
+  });
+  if (out.length === 0) throw new Error(i18n.t('errors.xlsxNoWorksheet'));
+  return out;
 }

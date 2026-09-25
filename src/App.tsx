@@ -54,6 +54,7 @@ import {
 /** Six Redis tool tab types for quick lookup in render branch. */
 const REDIS_TOOL_TAB_TYPES = new Set<string>(REDIS_TOOL_TABS);
 import { ImportFilePicker } from './components/ImportFilePicker';
+import { ImportTableDataDialog } from './components/ImportTableDataDialog';
 import { ExportTableDialog } from './components/ExportTableDialog';
 import { ExportDatabaseDialog } from './components/ExportDatabaseDialog';
 import type { DatabaseExportOptions } from './components/ExportDatabaseDialog';
@@ -167,9 +168,6 @@ const QueryTabPanel = React.memo(function QueryTabPanel(props: QueryTabPanelProp
   );
 });
 
-/** Rows per batch when importing into an existing table, so progress can be reported. */
-const IMPORT_BATCH_SIZE = 500;
-
 /**
  * Has the MCP autostart attempt already been made this run?
  *
@@ -230,9 +228,7 @@ function parseCSV(text: string): string[][] {
 }
 
 export const App: React.FC = () => {
-  const { t, i18n } = useTranslation();
-  const locale = i18n.language;
-  const fmtNum = (n: number) => n.toLocaleString(locale);
+  const { t } = useTranslation();
 
   const [connection, setConnection] = useState<{
     /**
@@ -436,9 +432,17 @@ export const App: React.FC = () => {
     setExportTableTarget(tableName);
   };
 
+  // Rows from a file into an EXISTING table go to the mapping dialog, the same one DataGrid opens.
+  // A new table (no target) and a .sql script keep the flow below.
+  const [importIntoTable, setImportIntoTable] = useState<{ table: string; file: File } | null>(null);
+
   // Takes the file from ImportFilePicker (which already checked the extension) and parses it for the preview.
   const handleGlobalFileImport = async (file: File) => {
     setShowGlobalImportPicker(false);
+    if (globalImportTargetTable && !file.name.toLowerCase().endsWith('.sql')) {
+      setImportIntoTable({ table: globalImportTargetTable, file });
+      return;
+    }
     setGlobalImportTab('structure');
     setGlobalImportFileName(file.name);
     const guessedTableName = file.name.split('.')[0].replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
@@ -750,35 +754,8 @@ export const App: React.FC = () => {
         } else {
           alert(t('app.errImportSql', { message: res.error }));
         }
-      } else if (globalImportTargetTable) {
-        // An existing table: written in batches so real progress can be reported.
-        const table = globalImportTargetTable;
-        const total = globalImportPendingRows.length;
-        let done = 0;
-        let failed: string | null = null;
-        for (let i = 0; i < total; i += IMPORT_BATCH_SIZE) {
-          const batch = globalImportPendingRows.slice(i, i + IMPORT_BATCH_SIZE);
-          const resData = await dbHelper.importTableData(activeConnIdState, table, batch);
-          if (!resData.success) {
-            failed = resData.error || t('app.errImportFailed');
-            break;
-          }
-          done += batch.length;
-          setGlobalImportProgress({
-            label: t('app.importWritingTable', { table }),
-            current: done,
-            total,
-            detail: t('app.importRowsDetail', { done: fmtNum(done), total: fmtNum(total) }),
-          });
-        }
-        if (failed) {
-          alert(done > 0
-            ? t('app.errImportWithProgress', { message: failed, done, total })
-            : t('app.errImport', { message: failed }));
-        } else {
-          alert(t('app.importedRows', { n: done, table }));
-        }
-        window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: activeConnIdState } }));
+      // Rows into an EXISTING table never reach here: handleGlobalFileImport sends them to
+      // ImportTableDataDialog. What is left is a new table (below) and a .sql script (above).
       } else {
         // A new table: the backend creates it and inserts in one call -> indeterminate progress.
         const resData = await dbHelper.importNewTable(globalImportTableName, globalImportPendingRows);
@@ -2841,6 +2818,15 @@ export const App: React.FC = () => {
         onCancel={() => setShowGlobalImportPicker(false)}
         onConfirm={handleGlobalFileImport}
       />
+
+      {importIntoTable && (
+        <ImportTableDataDialog
+          connId={activeConnIdState}
+          tableName={importIntoTable.table}
+          file={importIntoTable.file}
+          onClose={() => setImportIntoTable(null)}
+        />
+      )}
 
       {/* Progress of importing data into a table (the preview modal has closed) */}
       {globalImportProgress && (

@@ -329,22 +329,3 @@ async fn bulk_insert(
     }
     Ok(inserted)
 }
-
-#[tauri::command]
-pub async fn import_table_data(
-    conn_id: String,
-    name: String,
-    rows: Vec<Value>,
-) -> Result<Value, String> {
-    Box::pin(async move {
-        let state = crate::state::require_state()?;
-        let (conn_type, schema) = {
-            let ctx = state.connections.acquire(&conn_id)?;
-            let ct = ctx.conn().clone();
-            (ct, ctx.raw_schema().map(str::to_string))
-        };
-        let inserted = bulk_insert(&conn_type, &schema, &name, &rows).await?;
-        Ok(json!({ "success": true, "inserted": inserted }))
-    })
-    .await
-}

@@ -19,7 +19,7 @@
 
 import { recordJobHistory } from './jobHistory';
 
-export type JobKind ='dump' | 'restore' | 'generate' | 'export-table' | 'redis-transfer' | 'copy-db';
+export type JobKind = 'dump' | 'restore' | 'generate' | 'export-table' | 'import-table' | 'redis-transfer' | 'copy-db';
 
 /**
  * `queued` -> `running` -> one of `done` / `error` / `cancelled`. A job that is cancelled before it
