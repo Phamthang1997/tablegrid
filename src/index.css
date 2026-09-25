@@ -22808,3 +22808,167 @@ input[type="text"].snippet-abbr-input {
 .lh-spacer {
   flex: 1;
 }
+
+/* ---- ImportTableDataDialog: importing a file into an existing table ---- */
+.imp-file {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+}
+
+.imp-file strong {
+  color: var(--win-text-primary);
+  word-break: break-all;
+}
+
+.imp-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  font-size: 11.5px;
+}
+
+.imp-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--win-text-secondary);
+}
+
+.imp-options select,
+.imp-map select {
+  height: 26px;
+  font-size: 11.5px;
+  background: var(--win-bg-input, var(--win-bg-card));
+  color: var(--win-text-primary);
+  border: 1px solid var(--win-border);
+  border-radius: 4px;
+  padding: 0 6px;
+}
+
+.imp-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.imp-map,
+.imp-issues {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--win-border);
+  border-radius: 4px;
+}
+
+.imp-issues {
+  max-height: 200px;
+}
+
+.imp-map table,
+.imp-issues table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.imp-map th,
+.imp-issues th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  font-weight: 600;
+  padding: 6px 8px;
+  background: var(--win-bg-tab-bar);
+  color: var(--win-text-secondary);
+  border-bottom: 1px solid var(--win-border);
+}
+
+.imp-map td,
+.imp-issues td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--win-border-light, var(--win-border));
+  vertical-align: middle;
+}
+
+.imp-map select {
+  width: 100%;
+  max-width: 240px;
+}
+
+.imp-map tr.is-disabled td {
+  opacity: 0.55;
+}
+
+.imp-col-name {
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+
+.imp-badge {
+  margin-left: 6px;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  color: var(--win-accent);
+  border: 1px solid var(--win-accent);
+}
+
+.imp-type,
+.imp-sample,
+.imp-value {
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-text-secondary);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imp-problems {
+  color: var(--win-danger, #ef4444);
+  font-weight: 600;
+}
+
+.imp-muted {
+  color: var(--win-text-secondary);
+  font-size: 11px;
+}
+
+.imp-summary {
+  font-size: 12px;
+  color: var(--win-text-primary);
+}
+
+.imp-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--win-text-secondary);
+}
+
+.imp-mode strong {
+  color: var(--win-text-primary);
+}
+
+.imp-banner {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--win-text-primary);
+  background: var(--win-bg-hover);
+  border: 1px solid var(--win-border);
+}
+
+.imp-banner.is-error {
+  color: var(--win-danger, #ef4444);
+}

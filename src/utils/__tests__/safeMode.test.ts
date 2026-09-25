@@ -85,7 +85,7 @@ describe('COMMAND_KINDS is the twin of dbHelper', () => {
       'restore_backup',
       'generate_data',
       'rename_table',
-      'import_table_data',
+      'import_chunk',
     ]) {
       expect(COMMAND_KINDS[cmd]).toBe('write');
     }
@@ -401,7 +401,7 @@ describe('describeCommand', () => {
 
   it('counts a list of items for the commands that take one', () => {
     expect(describeCommand('redis_delete_keys', { keys: ['a', 'b', 'c'] }).count).toBe(3);
-    expect(describeCommand('import_table_data', { rows: [{}, {}] }).count).toBe(2);
+    expect(describeCommand('import_chunk', { rows: [[1], [2]] }).count).toBe(2);
   });
 
   it('returns nothing rather than inventing a name', () => {

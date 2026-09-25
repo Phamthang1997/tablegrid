@@ -24,11 +24,10 @@ import {
   Search, X, ChevronDown, FileUp, FileDown, BarChart2, Sliders
 } from 'lucide-react';
 import { StructureViewer } from './StructureViewer';
-import { parseXlsx } from '../utils/xlsxReader';
-import { collectColumns, inferColType } from '../utils/importPreview';
 import { ProgressBar, type ProgressState } from './ProgressBar';
 import { ImportFilePicker } from './ImportFilePicker';
 import { ExportTableDialog } from './ExportTableDialog';
+import { ImportTableDataDialog } from './ImportTableDataDialog';
 import ReactDOM from 'react-dom';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 import { LazyModalFallback } from './LazyEditorFallback';
@@ -45,9 +44,6 @@ import { rowMatchesQuery } from '../utils/gridSearch';
 // `npm run build-frontend`.
 const RowDocumentModal = React.lazy(() =>
   import('./RowDocumentModal').then((m) => ({ default: m.RowDocumentModal })));
-
-/** Rows per batch when importing into a table, so progress can be reported. */
-const IMPORT_BATCH_SIZE = 500;
 
 // The platform's modifier symbol, so only one shortcut is ever shown.
 const modKey = /Mac|iPod|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl+';
@@ -157,56 +153,6 @@ interface FilterRow {
   value: string;
 }
 
-function parseCSV(text: string): string[][] {
-  const result: string[][] = [];
-  let row: string[] = [];
-  let cell = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const nextChar = text[i + 1];
-
-    if (inQuotes) {
-      if (char === '"') {
-        if (nextChar === '"') {
-          cell += '"';
-          i++; // skip next quote
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        cell += char;
-      }
-    } else {
-      if (char === '"') {
-        inQuotes = true;
-      } else if (char === ',' || char === '\t') {
-        row.push(cell.trim());
-        cell = '';
-      } else if (char === '\n' || char === '\r') {
-        if (char === '\r' && nextChar === '\n') {
-          i++;
-        }
-        row.push(cell.trim());
-        if (row.length > 1 || row[0] !== '') {
-          result.push(row);
-        }
-        row = [];
-        cell = '';
-      } else {
-        cell += char;
-      }
-    }
-  }
-
-  if (cell !== '' || row.length > 0) {
-    row.push(cell.trim());
-    result.push(row);
-  }
-
-  return result;
-}
 
 export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, initialViewMode = 'data', initialFilter, readOnly = false, onDirtyChange, tableSchema }) => {
   const { t, i18n } = useTranslation();
@@ -428,95 +374,39 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   const [showExportDialog, setShowExportDialog] = useState(false);
 
   // Import Preview State
-  const [importTab, setImportTab] = useState<'structure' | 'data'>('structure');
   const [importProgress, setImportProgress] = useState<ProgressState | null>(null);
   const [showImportPicker, setShowImportPicker] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [importFileName, setImportFileName] = useState('');
-  const [importFileType, setImportFileType] = useState<'csv' | 'json' | 'sql'>('csv');
-  const [importPendingRows, setImportPendingRows] = useState<any[]>([]);
   const [importSqlContent, setImportSqlContent] = useState('');
-
-  // The columns present in the file (the union of every row's keys: CSV/JSON rows may omit some)
-  const importFileCols = React.useMemo(() => collectColumns(importPendingRows), [importPendingRows]);
-
-  // Columns in the file that the target table lacks -> the import would fail, so warn first.
-  const importUnknownCols = React.useMemo(() => {
-    if (columns.length === 0) return [];
-    const target = columns.map(c => c.name.toLowerCase());
-    return importFileCols.filter(c => !target.includes(c.toLowerCase()));
-  }, [importFileCols, columns]);
 
   const handleImportClick = () => {
     setShowImportPicker(true);
   };
 
+  // A CSV / Excel / JSON file for THIS table goes to the mapping dialog (`ImportTableDataDialog`),
+  // which converts and checks every row and imports in one transaction. A .sql file is statements
+  // rather than rows, so it keeps the run-the-script path below.
+  const [importDialogFile, setImportDialogFile] = useState<File | null>(null);
+
   // Takes the file from ImportFilePicker (which already checked the extension) and parses it for the preview.
   const handleFileImport = async (file: File) => {
     setShowImportPicker(false);
-    setImportTab('structure');
+    if (!file.name.toLowerCase().endsWith('.sql')) {
+      setImportDialogFile(file);
+      return;
+    }
     setImportFileName(file.name);
     setErrorMsg(null);
     setSuccessMsg(null);
-
-    // XLSX is binary -> read an ArrayBuffer and parse it separately.
-    if (file.name.toLowerCase().endsWith('.xlsx')) {
-      try {
-        const buf = await file.arrayBuffer();
-        const sheetRows = await parseXlsx(buf);
-        if (sheetRows.length === 0) throw new Error(t('dataGrid.errXlsxEmpty'));
-        setImportFileType('json'); // object-shaped sheetRows, sharing the DB-write branch with CSV/JSON
-        setImportPendingRows(sheetRows);
-        setShowImportModal(true);
-      } catch (err: any) {
-        setErrorMsg(t('dataGrid.errReadFile', { message: err.message }));
-      }
-      return;
-    }
 
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
         const text = event.target?.result as string;
 
-        if (file.name.endsWith('.json')) {
-          const parsedJson = JSON.parse(text);
-          if (!Array.isArray(parsedJson)) {
-            throw new Error(t('dataGrid.errJsonArray'));
-          }
-          setImportFileType('json');
-          setImportPendingRows(parsedJson);
-          setShowImportModal(true);
-        } else if (file.name.endsWith('.csv')) {
-          let cleanText = text;
-          if (cleanText.charCodeAt(0) === 0xFEFF) {
-            cleanText = cleanText.substring(1);
-          }
-          const parsedCsv = parseCSV(cleanText);
-          if (parsedCsv.length < 2) {
-            throw new Error(t('dataGrid.errCsvEmpty'));
-          }
-          const headers = parsedCsv[0];
-          const rowsToImport: any[] = [];
-          for (let i = 1; i < parsedCsv.length; i++) {
-            const values = parsedCsv[i];
-            const row: any = {};
-            headers.forEach((h, idx) => {
-              const val = values[idx];
-              row[h] = val === undefined || val === '' ? null : val;
-            });
-            rowsToImport.push(row);
-          }
-          setImportFileType('csv');
-          setImportPendingRows(rowsToImport);
-          setShowImportModal(true);
-        } else if (file.name.endsWith('.sql')) {
-          setImportFileType('sql');
-          setImportSqlContent(text);
-          setShowImportModal(true);
-        } else {
-          throw new Error(t('dataGrid.errUnsupportedFile'));
-        }
+        setImportSqlContent(text);
+        setShowImportModal(true);
       } catch (err: any) {
         setErrorMsg(t('dataGrid.errReadFile', { message: err.message }));
       }
@@ -529,53 +419,18 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     setLoading(true);
     setErrorMsg(null);
     setSuccessMsg(null);
-    setImportProgress({
-      label: importFileType === 'sql'
-        ? t('dataGrid.importRunningSql')
-        : t('dataGrid.importWritingRows', { n: importPendingRows.length, table: tableName }),
-    });
+    setImportProgress({ label: t('dataGrid.importRunningSql') });
 
     try {
-      if (importFileType === 'sql') {
-        // See the note in App.tsx: a .sql file holds several statements, so it has to go through executeQueryMulti.
-        const res = await dbHelper.executeQueryMulti(connId, importSqlContent);
-        setImportProgress(null);
-        setLoading(false);
-        if (res.success) {
-          setSuccessMsg(t('dataGrid.importSqlSuccess'));
-          refetchAfterWrite();
-        } else {
-          setErrorMsg(t('dataGrid.errImportSql', { message: res.error }));
-        }
-      } else {
-        // Written in batches so real progress can be reported (the backend inserts row by row within each).
-        const total = importPendingRows.length;
-        let done = 0;
-        for (let i = 0; i < total; i += IMPORT_BATCH_SIZE) {
-          const batch = importPendingRows.slice(i, i + IMPORT_BATCH_SIZE);
-          const resData = await dbHelper.importTableData(connId, tableName, batch);
-          if (!resData.success) {
-            setImportProgress(null);
-            setLoading(false);
-            const failure = resData.error || t('dataGrid.errImportFailed');
-            setErrorMsg(
-              done > 0 ? t('dataGrid.errImportWithProgress', { message: failure, done, total }) : failure
-            );
-            refetchAfterWrite();
-            return;
-          }
-          done += batch.length;
-          setImportProgress({
-            label: t('dataGrid.importWriting', { table: tableName }),
-            current: done,
-            total,
-            detail: t('dataGrid.importRowsDetail', { done: fmtNum(done), total: fmtNum(total) }),
-          });
-        }
-        setImportProgress(null);
-        setLoading(false);
-        setSuccessMsg(t('dataGrid.importDone', { n: done, table: tableName }));
+      // See the note in App.tsx: a .sql file holds several statements, so it has to go through executeQueryMulti.
+      const res = await dbHelper.executeQueryMulti(connId, importSqlContent);
+      setImportProgress(null);
+      setLoading(false);
+      if (res.success) {
+        setSuccessMsg(t('dataGrid.importSqlSuccess'));
         refetchAfterWrite();
+      } else {
+        setErrorMsg(t('dataGrid.errImportSql', { message: res.error }));
       }
     } catch (err: any) {
       setImportProgress(null);
@@ -2704,6 +2559,16 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         onClose={() => setShowExportDialog(false)}
       />
 
+      {importDialogFile && (
+        <ImportTableDataDialog
+          connId={connId}
+          tableName={tableName}
+          tableSchema={tableSchema}
+          file={importDialogFile}
+          onClose={() => setImportDialogFile(null)}
+        />
+      )}
+
       {/* File picker: states the allowed formats before opening the OS dialog */}
       <ImportFilePicker
         open={showImportPicker}
@@ -2721,154 +2586,26 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         >
           <ModalBody style={{ gap: '12px' }}>
             <div style={{ fontSize: '11px', color: 'var(--win-text-secondary)' }}>
-              {importFileType === 'sql' ? (
-                <span>{t('dataGrid.importSqlNote')}</span>
-              ) : (
-                <span>
-                  <Trans
-                    i18nKey="dataGrid.importSummary"
-                    values={{
-                      format: importFileType.toUpperCase(),
-                      rows: importPendingRows.length,
-                      cols: importFileCols.length,
-                      table: tableName,
-                    }}
-                    components={{ strong: <b />, code: <b style={{ fontFamily: 'monospace' }} /> }}
-                  />
-                </span>
-              )}
+              <span>{t('dataGrid.importSqlNote')}</span>
             </div>
 
-            {importFileType === 'sql' ? (
-              <textarea
-                readOnly
-                value={importSqlContent.slice(0, 5000) + (importSqlContent.length > 5000 ? t('dataGrid.importTruncated') : '')}
-                style={{
-                  width: '100%',
-                  height: '280px',
-                  background: 'var(--win-bg-window)',
-                  border: '1px solid var(--win-border)',
-                  color: 'var(--win-text-primary)',
-                  fontFamily: 'monospace',
-                  fontSize: '11px',
-                  padding: '10px',
-                  borderRadius: '4px',
-                  resize: 'none',
-                  outline: 'none'
-                }}
-              />
-            ) : (
-              <>
-                {/* Tabs: structure (the file's columns vs the target table) | data (the first 10 rows) */}
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  {([
-                    { id: 'structure', label: t('dataGrid.importTabStructure', { n: importFileCols.length }) },
-                    { id: 'data', label: t('dataGrid.importTabData', { n: importPendingRows.length }) },
-                  ] as const).map(tab => (
-                    <button
-                      key={tab.id}
-                      onClick={() => setImportTab(tab.id)}
-                      style={{
-                        padding: '4px 12px',
-                        fontSize: '11px',
-                        borderRadius: '4px',
-                        border: '1px solid var(--win-border)',
-                        cursor: 'pointer',
-                        background: importTab === tab.id ? 'var(--win-accent)' : 'transparent',
-                        color: importTab === tab.id ? '#fff' : 'var(--win-text-secondary)',
-                        fontWeight: 600
-                      }}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-
-                {importUnknownCols.length > 0 && (
-                  <div style={{
-                    fontSize: '11px',
-                    color: 'var(--st-warn, #d98600)',
-                    background: 'rgba(255,170,0,0.08)',
-                    border: '1px solid rgba(255,170,0,0.35)',
-                    borderRadius: '4px',
-                    padding: '8px 10px',
-                    lineHeight: 1.5
-                  }}>
-                    <Trans
-                      i18nKey="dataGrid.importUnknownCols"
-                      values={{
-                        n: importUnknownCols.length,
-                        table: tableName,
-                        cols: importUnknownCols.join(', '),
-                      }}
-                      components={{ code: <b style={{ fontFamily: 'monospace' }} /> }}
-                    />
-                  </div>
-                )}
-
-                <div style={{
-                  height: '280px',
-                  overflow: 'auto',
-                  border: '1px solid var(--win-border)',
-                  borderRadius: '4px',
-                  background: 'var(--win-bg-window)'
-                }}>
-                  {importPendingRows.length === 0 ? (
-                    <div style={{ padding: '20px', textAlign: 'center', color: 'var(--win-text-disabled)' }}>{t('dataGrid.importNoRows')}</div>
-                  ) : importTab === 'structure' ? (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-                      <thead>
-                        <tr style={{ background: 'var(--win-bg-hover)', borderBottom: '1px solid var(--win-border)' }}>
-                          {[t('dataGrid.colInFile'), t('dataGrid.colInferredType'), t('dataGrid.colInTarget'), t('dataGrid.colTargetType')].map(h => (
-                            <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, borderRight: '1px solid var(--win-border)' }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {importFileCols.map(col => {
-                          const target = columns.find(c => c.name.toLowerCase() === col.toLowerCase());
-                          return (
-                            <tr key={col} style={{ borderBottom: '1px solid var(--win-border)' }}>
-                              <td style={{ padding: '6px 8px', borderRight: '1px solid var(--win-border)', fontFamily: 'monospace', color: 'var(--win-text-primary)' }}>{col}</td>
-                              <td style={{ padding: '6px 8px', borderRight: '1px solid var(--win-border)', color: 'var(--win-text-secondary)' }}>{inferColType(importPendingRows, col)}</td>
-                              <td style={{ padding: '6px 8px', borderRight: '1px solid var(--win-border)', color: target ? 'var(--win-text-primary)' : 'var(--st-warn, #d98600)' }}>
-                                {target ? target.name : t('dataGrid.colMissing')}
-                              </td>
-                              <td style={{ padding: '6px 8px', color: 'var(--win-text-secondary)', fontFamily: 'monospace' }}>{target?.type || '—'}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-                      <thead>
-                        <tr style={{ background: 'var(--win-bg-hover)', borderBottom: '1px solid var(--win-border)' }}>
-                          {importFileCols.map(col => (
-                            <th key={col} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, borderRight: '1px solid var(--win-border)' }}>
-                              {col}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {importPendingRows.slice(0, 10).map((row, rIdx) => (
-                          <tr key={rIdx} style={{ borderBottom: '1px solid var(--win-border)' }}>
-                            {importFileCols.map(col => (
-                              <td key={col} style={{ padding: '6px 8px', color: 'var(--win-text-primary)', borderRight: '1px solid var(--win-border)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '180px' }}>
-                                {row[col] === null || row[col] === undefined
-                                  ? <span style={{ color: 'var(--win-text-disabled)', fontStyle: 'italic' }}>NULL</span>
-                                  : String(row[col])}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              </>
-            )}
+            <textarea
+              readOnly
+              value={importSqlContent.slice(0, 5000) + (importSqlContent.length > 5000 ? t('dataGrid.importTruncated') : '')}
+              style={{
+                width: '100%',
+                height: '280px',
+                background: 'var(--win-bg-window)',
+                border: '1px solid var(--win-border)',
+                color: 'var(--win-text-primary)',
+                fontFamily: 'monospace',
+                fontSize: '11px',
+                padding: '10px',
+                borderRadius: '4px',
+                resize: 'none',
+                outline: 'none'
+              }}
+            />
           </ModalBody>
 
           <ModalFooter>

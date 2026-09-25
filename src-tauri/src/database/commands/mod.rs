@@ -14,6 +14,7 @@ mod row_write;
 mod status;
 mod table_alter;
 mod table_ddl;
+mod table_import;
 mod table_schema;
 
 pub use catalog::*;
@@ -29,4 +30,5 @@ pub use row_write::*;
 pub use status::*;
 pub use table_alter::*;
 pub use table_ddl::*;
+pub use table_import::*;
 pub use table_schema::*;

@@ -62,7 +62,9 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   drop_trigger: 'write',
   generate_data: 'write',
   import_new_table: 'write',
-  import_table_data: 'write',
+  // The chunked import (table_import.rs). Only the chunk writes; begin/finish/abort open and close its
+  // transaction, and the whole import is approved once at submit through pproveJob.
+  import_chunk: 'write',
   rename_database: 'write',
   rename_table: 'write',
   restore_backup: 'write',
@@ -163,6 +165,9 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   cancel_query: 'internal',
   cancel_data_generation: 'internal',
   cancel_restore: 'internal',
+  import_begin: 'internal',
+  import_finish: 'internal',
+  import_abort: 'internal',
 
   // --- Manual transaction. The pending-changes dialog is itself the confirmation. ---
   tx_any_pending: 'internal',
