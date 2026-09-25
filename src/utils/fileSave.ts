@@ -292,6 +292,21 @@ export async function saveDumpToFolder(
   write: (emit: (text: string) => Promise<void>) => Promise<void>,
   build: () => Promise<string>,
 ): Promise<SaveResult> {
+  return saveStreamedToFolder(dir, name, { gzip, mime: 'text/plain;charset=utf-8' }, write, build);
+}
+
+/**
+ * `saveDumpToFolder` for any text export — a table's CSV/JSON/INSERT script, a database's JSON.
+ * `mime` is only used by the in-memory fallback (a WebView download needs one).
+ */
+export async function saveStreamedToFolder(
+  dir: string | null,
+  name: string,
+  opts: { gzip: boolean; mime: string },
+  write: (emit: (text: string) => Promise<void>) => Promise<void>,
+  build: () => Promise<string>,
+): Promise<SaveResult> {
+  const { gzip } = opts;
   if (dir) {
     let sink: FileSink | null = null;
     try {
@@ -313,7 +328,7 @@ export async function saveDumpToFolder(
   }
   const text = await build();
   const payload = gzip ? await gzipText(text) : text;
-  return saveExportFile(dir, name, payload, gzip ? 'application/gzip' : 'text/plain;charset=utf-8');
+  return saveExportFile(dir, name, payload, gzip ? 'application/gzip' : opts.mime);
 }
 
 /**

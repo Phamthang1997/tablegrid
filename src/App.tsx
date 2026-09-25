@@ -85,9 +85,9 @@ import { parseXlsx } from './utils/xlsxReader';
 import { collectColumns, inferColType } from './utils/importPreview';
 import { addExistsHint } from './utils/dumpPreview';
 import { ProgressBar, type ProgressState } from './components/ProgressBar';
-import { buildDatabaseFile } from './utils/exportHelper';
-import { buildDump, readTableRows, dumpReaderFor, writeDump, type DumpSpec } from './utils/dumpBuilder';
-import { saveDumpToFolder, saveExportFile } from './utils/fileSave';
+import { buildDatabaseFile, createDatabaseJsonWriter, createTableFileWriter } from './utils/exportHelper';
+import { buildDump, readTablePages, readTableRows, dumpReaderFor, writeDump, type DumpSpec } from './utils/dumpBuilder';
+import { saveDumpToFolder, saveExportFile, saveStreamedToFolder } from './utils/fileSave';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { Modal, ModalBody, ModalFooter } from './components/Modal';
 import type { XlsxSheet } from './utils/xlsxWriter';
@@ -545,6 +545,66 @@ export const App: React.FC = () => {
         const totalTables = opts.tables.length;
 
         // Data (XLSX/JSON/CSV): the file is built client-side.
+        // JSON, and CSV of a single table, stream straight into the file a page at a time — the
+        // same as the SQL dump below. XLSX and a multi-table CSV (a .zip) are archives whose index
+        // comes last, so those two are still built in memory.
+        const streamFormat =
+          opts.format === 'json' ? 'json' : opts.format === 'csv' && opts.tables.length === 1 ? 'csv' : null;
+        if (streamFormat) {
+          const reader = dumpReaderFor(dbHelper, jobConnId);
+          const csv = streamFormat === 'csv';
+          // Name and type from the in-memory builder, so both paths name the file the same way.
+          const target = buildDatabaseFile(
+            csv ? [{ name: opts.tables[0], colNames: [], rows: [] }] : [],
+            streamFormat,
+            opts.filename,
+          );
+          const colsOf = async (table: string) =>
+            ((await dbHelper.getTableSchema(jobConnId, table)).columns || []).map((c) => c.name);
+
+          const saved = await saveStreamedToFolder(
+            opts.dir,
+            target.name,
+            { gzip: false, mime: target.mime },
+            async (emit) => {
+              const put = async (text: string) => {
+                if (text) await emit(text);
+              };
+              if (csv) {
+                const table = opts.tables[0];
+                const writer = createTableFileWriter('csv', table, await colsOf(table), dbType);
+                await readTablePages(reader, table, 0, 1, report, (rows) => put(writer.page(rows)));
+                await put(writer.finish());
+                return;
+              }
+              const writer = createDatabaseJsonWriter();
+              for (let i = 0; i < opts.tables.length; i++) {
+                ctx.throwIfCancelled();
+                await put(writer.table(opts.tables[i]));
+                await readTablePages(reader, opts.tables[i], i, totalTables, report, (rows) => put(writer.page(rows)));
+              }
+              await put(writer.finish());
+            },
+            // No folder to stream into: the in-memory build, then a WebView download.
+            async () => {
+              const sheets: XlsxSheet[] = [];
+              for (let i = 0; i < opts.tables.length; i++) {
+                const table = opts.tables[i];
+                const rows = await readTableRows(reader, table, i, totalTables, report);
+                const cols = await colsOf(table);
+                sheets.push({ name: table, colNames: cols.length ? cols : (rows[0] ? Object.keys(rows[0]) : []), rows });
+              }
+              return buildDatabaseFile(sheets, streamFormat, opts.filename).data as string;
+            },
+          );
+          return {
+            message: t('app.exportedSheets', { n: opts.tables.length, format: opts.format.toUpperCase(), file: target.name }),
+            path: saved.path,
+            dir: saved.dir,
+            viaDownload: saved.savedTo === 'download',
+          };
+        }
+
         if (opts.format !== 'sql') {
           const sheets: XlsxSheet[] = [];
           for (let i = 0; i < opts.tables.length; i++) {

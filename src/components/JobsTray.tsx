@@ -200,8 +200,8 @@ export const JobsTray: React.FC = () => {
                   type="button"
                   className="jobs-pop-clear"
                   onClick={async () => {
-                    const failed = await showNotification(t('jobs.panelTitle'), t('jobs.notifyTestBody'));
-                    setNotifyTestError(failed);
+                    const reason = await showNotification(t('jobs.panelTitle'), t('jobs.notifyTestBody'));
+                    setNotifyTestError(reason);
                   }}
                 >
                   {t('jobs.notifyTest')}

@@ -2,8 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { FolderOpen } from 'lucide-react';
 import { dbHelper } from '../utils/dbHelper';
-import { buildTableFile, buildPreview, type ExportFormat } from '../utils/exportHelper';
-import { getLastExportDir, pickExportFolder, saveExportFile } from '../utils/fileSave';
+import { buildTableFile, buildPreview, createTableFileWriter, type ExportFormat } from '../utils/exportHelper';
+import {
+  getLastExportDir,
+  pickExportFolder,
+  saveExportFile,
+  saveStreamedToFolder,
+  type SaveResult,
+} from '../utils/fileSave';
 import { startJob, type JobContext } from '../utils/jobs';
 import { withJobConnection } from '../utils/jobConnection';
 import { connKeyOfConn } from '../utils/safeMode';
@@ -48,6 +54,15 @@ const FORMATS: ExportFormat[] = ['csv', 'json', 'sql', 'xlsx'];
 
 /** Rows per call while loading a whole table for export, so progress can be reported. */
 const FETCH_PAGE_SIZE = 2000;
+/** How a background export reads the table — copied from the dialog at submit time. */
+interface ReadOpts {
+  useView: boolean;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
+  filter?: string;
+  knownTotal: number;
+}
+
 /** How many sample rows the preview step fetches. */
 const PREVIEW_ROWS = 20;
 
@@ -169,23 +184,24 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
    * far. Everything it reads from the dialog is passed in, because it runs inside a background job:
    * by the time the job starts the dialog is gone, and its state with it.
    */
-  const fetchAllRows = async (
+  const readPages = async (
     readConnId: string,
-    opts: { useView: boolean; sortBy?: string; sortDir?: 'asc' | 'desc'; filter?: string; knownTotal: number },
+    opts: ReadOpts,
     ctx: JobContext,
-  ): Promise<any[]> => {
-    const all: any[] = [];
+    onPage: (rows: any[]) => void | Promise<void>,
+  ): Promise<number> => {
+    let seen = 0;
     let total = opts.knownTotal;
     let page = 1;
     for (;;) {
       ctx.throwIfCancelled();
       ctx.report({
         label: t('exportDialog.loadingTable', { table: tableName }),
-        current: all.length,
+        current: seen,
         total: total || undefined,
         detail: total
-          ? t('exportDialog.rowsOfTotal', { rows: fmtNum(all.length), total: fmtNum(total) })
-          : t('exportDialog.rows', { rows: fmtNum(all.length) }),
+          ? t('exportDialog.rowsOfTotal', { rows: fmtNum(seen), total: fmtNum(total) })
+          : t('exportDialog.rows', { rows: fmtNum(seen) }),
       });
       const data = await dbHelper.getTableData(readConnId,
         tableName,
@@ -196,12 +212,24 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
         opts.useView ? opts.filter : undefined
       );
       const batch = data.rows || [];
-      all.push(...batch);
+      seen += batch.length;
+      // Awaited before the next page is read: when the page is going to a file, a slow disk slows
+      // the read down instead of letting unwritten pages pile up in memory.
+      await onPage(batch);
       if (!total && data.totalCount) total = data.totalCount;
       if (batch.length < FETCH_PAGE_SIZE) break;
-      if (total && all.length >= total) break;
+      if (total && seen >= total) break;
       page++;
     }
+    return seen;
+  };
+
+  /** Every row, in memory — the path for XLSX, and for a download with no folder to stream into. */
+  const fetchAllRows = async (readConnId: string, opts: ReadOpts, ctx: JobContext): Promise<any[]> => {
+    const all: any[] = [];
+    await readPages(readConnId, opts, ctx, (batch) => {
+      all.push(...batch);
+    });
     return all;
   };
 
@@ -258,22 +286,57 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
       conn: connKeyOfConn(connId),
       lockKey: `${connId}|${tableName}`,
       run: async (ctx) => {
-        // A connection of its own, like every job: a read through the user's id would go through
-        // their manual transaction and export rows they have not committed.
-        const allRows = picked
-          ?? await withJobConnection(connId, [], ({ connId: jobConnId }) => fetchAllRows(jobConnId, opts, ctx));
-        ctx.throwIfCancelled();
-        const header = cols.length ? cols : (allRows[0] ? Object.keys(allRows[0]) : []);
-        ctx.report({ label: t('exportDialog.building', { format: fmt.toUpperCase() }) });
-        const file = buildTableFile(tableName, header, allRows, fmt, dbType, name);
-        ctx.report({ label: t('exportDialog.writing') });
-        const res = await saveExportFile(targetDir, file.name, file.data, file.mime);
-        return {
-          message: t('exportDialog.exportedTable', { table: tableName, rows: allRows.length, format: fmt.toUpperCase() }),
-          path: res.path || file.name,
+        const result = (res: SaveResult, rowCount: number, fallbackName: string) => ({
+          message: t('exportDialog.exportedTable', { table: tableName, rows: rowCount, format: fmt.toUpperCase() }),
+          path: res.path || fallbackName,
           dir: res.dir,
           viaDownload: res.savedTo === 'download',
+        });
+        const buildAndSave = async (allRows: any[]) => {
+          ctx.throwIfCancelled();
+          const header = cols.length ? cols : (allRows[0] ? Object.keys(allRows[0]) : []);
+          ctx.report({ label: t('exportDialog.building', { format: fmt.toUpperCase() }) });
+          const file = buildTableFile(tableName, header, allRows, fmt, dbType, name);
+          ctx.report({ label: t('exportDialog.writing') });
+          return result(await saveExportFile(targetDir, file.name, file.data, file.mime), allRows.length, file.name);
         };
+
+        // A selection is already in memory: nothing to read, nothing gained by streaming.
+        if (picked) return buildAndSave(picked);
+
+        // A connection of its own, like every job: a read through the user's id would go through
+        // their manual transaction and export rows they have not committed.
+        return withJobConnection(connId, [], async ({ connId: jobConnId }) => {
+          // XLSX is a zip whose directory comes last, so it has to be built whole.
+          if (fmt === 'xlsx') return buildAndSave(await fetchAllRows(jobConnId, opts, ctx));
+
+          // CSV / JSON / SQL go to the file a page at a time, so a table larger than memory can be
+          // exported. The file name and type come from the same builder the in-memory path uses.
+          const target = buildTableFile(tableName, cols, [], fmt, dbType, name);
+          let rowCount = 0;
+          const res = await saveStreamedToFolder(
+            targetDir,
+            target.name,
+            { gzip: false, mime: target.mime },
+            async (emit) => {
+              const writer = createTableFileWriter(fmt, tableName, cols, dbType);
+              rowCount = await readPages(jobConnId, opts, ctx, async (batch) => {
+                const text = writer.page(batch);
+                if (text) await emit(text);
+              });
+              const tail = writer.finish();
+              if (tail) await emit(tail);
+            },
+            // No folder (or one the backend cannot write to): the old in-memory build, then a download.
+            async () => {
+              const allRows = await fetchAllRows(jobConnId, opts, ctx);
+              rowCount = allRows.length;
+              const header = cols.length ? cols : (allRows[0] ? Object.keys(allRows[0]) : []);
+              return buildTableFile(tableName, header, allRows, fmt, dbType, name).data as string;
+            },
+          );
+          return result(res, rowCount, target.name);
+        });
       },
     });
     onClose();

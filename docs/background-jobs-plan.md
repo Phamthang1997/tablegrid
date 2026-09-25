@@ -247,8 +247,12 @@ không đi qua funnel nữa.
   hoặc không tạo được tệp thì quay về đường cũ trong RAM, nên một thư mục không ghi được chỉ tốn bộ
   nhớ chứ không mất bản xuất.
 - Dùng bởi Export Database (SQL) và Backup của Connection Manager.
-- **Chưa** stream: XLSX/JSON/CSV của Export Database và Export một bảng (XLSX cần cả workbook; hai
-  định dạng kia có thể làm theo cùng khuôn nếu cần), và Copy database (restore nhận cả chuỗi dump).
+- Sau đó mở rộng sang các định dạng văn bản khác: Export một bảng (CSV/JSON/SQL,
+  `createTableFileWriter`) và Export Database (JSON nhiều bảng, CSV một bảng — `createDatabaseJsonWriter`),
+  cùng `saveStreamedToFolder`. Mỗi writer được test là ra **đúng từng byte** như hàm dựng một lần.
+- **Chưa** stream, có chủ ý: XLSX và CSV nhiều bảng (.zip) — cả hai là archive có mục lục ở cuối tệp,
+  nên phải dựng xong mới ghi được byte đầu tiên; và Copy database (`restore_backup` nhận cả chuỗi dump,
+  stream nó là viết lại restore).
 
 ### Phase 4 — lịch sử job — ✅ ĐÃ CODE
 `utils/jobHistory.ts`: `settle()` của `jobs.ts` ghi một bản ghi nhỏ (`tf_job_history`, 50 mục, text
