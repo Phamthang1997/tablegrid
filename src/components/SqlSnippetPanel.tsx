@@ -1,12 +1,15 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Search, Plus, X, Info, Check, Copy, Trash2, ChevronDown, Sparkles, BookOpen, ExternalLink
+  Search, Plus, X, Info, Check, Copy, Trash2, ChevronDown, Sparkles, BookOpen, ExternalLink, Download, Upload
 } from 'lucide-react';
 import { searchDocs, getDocSummary, getDocDescription, getParamDesc, normalizeEngine } from '../utils/docsService';
 import type { DocEntry } from '../docsData/types';
 import { ABBR_RE, BUILTIN_TEMPLATES, CUSTOM_SNIPPETS_KEY, customBodyToSnippet, snippetPreview } from '../sql/liveTemplates';
+import { SHARE_ERROR_KEY, buildShareFile, newSnippets, parseShareFile, shareFileName } from '../utils/queryShare';
+import { pickSaveFilePath, saveExportFileAtPath } from '../utils/fileSave';
+import { fileStamp } from '../utils/exportHelper';
 
 export interface SqlSnippet {
   id: string;
@@ -144,6 +147,9 @@ const DEFAULT_SNIPPETS: SqlSnippet[] = [
   },
 ];
 
+/** The categories a custom snippet may have — the Add dialog's list, and what an import falls back to. */
+const CUSTOM_CATEGORIES = ['DML', 'DDL', 'Flow Control', 'Aggregate', 'Comment', 'Custom'] as const;
+
 // Shared with the editor's completion, which reads the abbreviations from the same list.
 const LOCAL_STORAGE_CUSTOM_KEY = CUSTOM_SNIPPETS_KEY;
 
@@ -269,6 +275,66 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
     setNewAbbr('');
   };
 
+  // ---- Export / import of the user's own snippets (queryShare.ts holds the format and the rules) ----
+  //
+  // Only custom snippets travel: the built-in ones, the live templates and the engine docs are in
+  // every copy of the app already.
+  const snippetFileInputRef = useRef<HTMLInputElement>(null);
+  const [transferMsg, setTransferMsg] = useState<{ text: string; error: boolean } | null>(null);
+  const flash = (text: string, error = false) => {
+    setTransferMsg({ text, error });
+    setTimeout(() => setTransferMsg(null), 4000);
+  };
+
+  const handleExportSnippets = async () => {
+    if (customSnippets.length === 0) {
+      flash(t('liveTemplates.errNoCustomSnippets'), true);
+      return;
+    }
+    const path = await pickSaveFilePath(shareFileName(fileStamp(), 'snippets'), 'json', t('fileDialog.jsonFilter'));
+    if (!path) return;
+    const text = buildShareFile({ snippets: customSnippets }, new Date().toISOString());
+    const written = await saveExportFileAtPath(path, text, 'application/json');
+    flash(written ? t('liveTemplates.snippetsExported', { n: customSnippets.length, path }) : t('sqlEditor.sqlFileDownloaded'));
+  };
+
+  const onSnippetFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const parsed = parseShareFile(await file.text());
+      if (!parsed.ok) {
+        flash(t(SHARE_ERROR_KEY[parsed.error]), true);
+        return;
+      }
+      const { added, skipped, abbrDropped } = newSnippets(customSnippets, parsed.data.snippets);
+      const base = Date.now();
+      const imported: SqlSnippet[] = added.map((s, i) => ({
+        id: `custom_${base}_${i}`,
+        name: s.name,
+        // Only the categories a custom snippet can have; anything else (a newer build's category,
+        // a hand-edited file) lands under Custom rather than in a filter nobody can select.
+        category: (CUSTOM_CATEGORIES as readonly string[]).includes(s.category)
+          ? (s.category as SqlSnippet['category'])
+          : 'Custom',
+        description: s.description || 'Custom user SQL snippet',
+        template: s.template,
+        isCustom: true,
+        abbr: s.abbr,
+        isSnippetSyntax: s.isSnippetSyntax,
+      }));
+      if (imported.length > 0) saveCustomSnippets([...customSnippets, ...imported]);
+      flash(t('liveTemplates.snippetsImported', {
+        added: imported.length,
+        skipped: skipped + parsed.dropped,
+        abbr: abbrDropped,
+      }));
+    } catch (err: any) {
+      flash(t('sqlEditor.errSqlFileRead', { message: String(err?.message ?? err) }), true);
+    }
+  };
+
   const handleDeleteCustomSnippet = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     const updated = customSnippets.filter(s => s.id !== id);
@@ -328,7 +394,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
                 setSelectedDoc(engineDocs[0].docEntry || null);
               }
             }}
-            title="Xem tài liệu hướng dẫn SQL (DocsViewer)"
+            title={t('liveTemplates.openDocs')}
             style={{
               background: 'transparent',
               border: 'none',
@@ -344,7 +410,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
 
           {/* Icon Parentheses / Snippet (Active Accent) */}
           <div
-            title="SQL Snippets Library"
+            title={t('liveTemplates.snippetLibrary')}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -359,9 +425,35 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
           </div>
         </div>
 
+        <div className="snippet-header-actions">
+          <button
+            type="button"
+            className="snippet-header-btn"
+            onClick={() => snippetFileInputRef.current?.click()}
+            title={t('liveTemplates.importSnippets')}
+            aria-label={t('liveTemplates.importSnippets')}
+          >
+            <Upload size={14} />
+          </button>
+          <button
+            type="button"
+            className="snippet-header-btn"
+            onClick={() => void handleExportSnippets()}
+            title={t('liveTemplates.exportSnippets')}
+            aria-label={t('liveTemplates.exportSnippets')}
+          >
+            <Download size={14} />
+          </button>
+          <input
+            ref={snippetFileInputRef}
+            type="file"
+            accept=".json,application/json"
+            className="sql-hidden-file-input"
+            onChange={onSnippetFilePicked}
+          />
         <button
           onClick={onClose}
-          title="Đóng panel Snippet"
+          title={t('liveTemplates.closePanel')}
           style={{
             background: 'transparent',
             border: 'none',
@@ -375,7 +467,12 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
         >
           <X size={15} />
         </button>
+        </div>
       </div>
+
+      {transferMsg && (
+        <div className={`snippet-transfer-msg${transferMsg.error ? ' is-error' : ''}`}>{transferMsg.text}</div>
+      )}
 
       {/* Category Dropdown & Add Button */}
       <div
