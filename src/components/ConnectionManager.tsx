@@ -7,16 +7,12 @@ import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './DbIcons';
 import { encryptConnectionExport, decryptConnectionExport, CONNECTION_FILE_EXT, CONNECTION_FILE_ACCEPT } from '../utils/cryptoHelper';
 import { CONN_ENVS, envLabelKey, legacyEnvOfColor, normalizeEnv, type ConnEnv } from '../utils/connEnv';
 import {
-  parseDumpObjects,
-  parseDumpTableNames,
   buildDropStatements,
   addExistsHint,
-  dumpStatementObject,
-  stripLeadingSqlComments,
-  isSkippedDumpBody,
-  commentOnlyFromBody,
+  fileBaseName,
+  plannedFromScan,
+  type DumpScan,
 } from '../utils/dumpPreview';
-import { splitStatements } from '../sql/statements';
 import { buildDump, dumpReaderFor, writeDump, type DumpSpec } from '../utils/dumpBuilder';
 import { getLastExportDir, saveDumpToFolder, saveExportFileAtPath, pickOpenFile, pickSaveFilePath, pickSqliteDatabaseFile } from '../utils/fileSave';
 import { fileBaseFromPath, fileStamp, safeFileBase } from '../utils/exportHelper';
@@ -337,7 +333,14 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   const [brDropTable, setBrDropTable] = useState(true);
   const [brIncludeStructure, setBrIncludeStructure] = useState(true);
   const [brIncludeContent, setBrIncludeContent] = useState(true);
-  const [brFile, setBrFile] = useState<File | null>(null);
+  // The dump to restore, as a PATH: Rust reads it itself (`scan_dump_file`, then `restore_backup`),
+  // so the file never enters the webview. It used to be a `File` read with `readAsText` — which
+  // froze the window on a large dump and did not gunzip a `.gz` at all.
+  const [brDumpPath, setBrDumpPath] = useState<string | null>(null);
+  const [brScan, setBrScan] = useState<DumpScan | null>(null);
+  const [brScanPct, setBrScanPct] = useState<number | null>(null);
+  // A newer pick supersedes a scan still running; its answer must not land on the newer file.
+  const brScanSeq = useRef(0);
   // Drop same-named objects before running the dump (otherwise it fails with "already exists")
   const [brOverwrite, setBrOverwrite] = useState(false);
   // Skip a failing statement instead of rolling everything back — the same meaning as the checkbox in the Import dialog.
@@ -348,7 +351,6 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   const [brSelectedTables, setBrSelectedTables] = useState<string[]>([]);
   const [brParsing, setBrParsing] = useState(false);
 
-  const [brSqlText, setBrSqlText] = useState<string>('');
   const [availableDatabases, setAvailableDatabases] = useState<string[]>([]);
   const [loadingDbs, setLoadingDbs] = useState(false);
 
@@ -507,42 +509,43 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     }
   }, [brType, brPgHost, brPgPort, brPgUser, brPgPassword, brMyHost, brMyPort, brMyUser, brMyPassword, activeType]);
 
-  useEffect(() => {
-    const parseTables = async () => {
-      if (!brFile) {
-        setBrParsedTables([]);
-        setBrSelectedTables([]);
-        setBrSqlText('');
-        return;
-      }
-      setBrParsing(true);
-      setErrorMsg(null);
-      try {
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-          try {
-            const text = event.target?.result as string;
-            setBrSqlText(text);
-
-            // The same detector the Import dialog uses: it also recognises VIEWs (a dump writes them
-            // with CREATE VIEW / DROP VIEW, not DROP TABLE) and rejects temp tables inside routines.
-            const tables = parseDumpTableNames(text);
-            setBrParsedTables(tables);
-            setBrSelectedTables(tables);
-          } catch (e) {
-            console.error(e);
-          } finally {
-            setBrParsing(false);
-          }
-        };
-        reader.readAsText(brFile);
-      } catch (err: any) {
-        console.error('Lỗi đọc bảng từ file:', err);
+  const pickBrDump = async () => {
+    const path = await pickOpenFile({
+      title: t('connection.brPickFile'),
+      filters: [{ name: 'SQL dump', extensions: ['sql', 'gz', 'dump'] }],
+    });
+    if (!path) return;
+    const seq = ++brScanSeq.current;
+    setBrDumpPath(path);
+    setBrScan(null);
+    setBrParsedTables([]);
+    setBrSelectedTables([]);
+    setBrScanPct(0);
+    setBrParsing(true);
+    setErrorMsg(null);
+    try {
+      const scan = await dbHelper.scanDumpFile(path, (prog) => {
+        if (seq === brScanSeq.current && prog.bytesTotal) {
+          setBrScanPct(Math.floor((prog.bytesDone / prog.bytesTotal) * 100));
+        }
+      });
+      if (seq !== brScanSeq.current || !scan) return;
+      setBrScan(scan);
+      // The same detector the Import dialog uses: it also recognises VIEWs (a dump writes them
+      // with CREATE VIEW / DROP VIEW, not DROP TABLE) and rejects temp tables inside routines.
+      setBrParsedTables(scan.tables);
+      setBrSelectedTables(scan.tables);
+    } catch (err: any) {
+      if (seq !== brScanSeq.current) return;
+      setBrDumpPath(null);
+      setErrorMsg(t('importDialog.errReadFile', { message: err?.message || String(err) }));
+    } finally {
+      if (seq === brScanSeq.current) {
         setBrParsing(false);
+        setBrScanPct(null);
       }
-    };
-    parseTables();
-  }, [brFile]);
+    }
+  };
 
   // Connection Profiles States
   const [profiles, setProfiles] = useState<SavedProfile[]>([]);
@@ -1484,7 +1487,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     }
 
     const isBackup = brAction === 'backup';
-    if (!isBackup && (!brFile || !brSqlText)) {
+    if (!isBackup && (!brDumpPath || !brScan)) {
       setErrorMsg(t('connection.errNoBackupFile'));
       return;
     }
@@ -1500,7 +1503,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       includeStructure: brIncludeStructure,
       includeContent: brIncludeContent,
     };
-    const dumpText = brSqlText;
+    const dumpPath = brDumpPath ?? '';
+    const dumpScan = brScan;
     const overwrite = brOverwrite;
     const dropStatements = brOverwrite ? [...brDropStatements] : [];
     const selectedTables = [...brSelectedTables];
@@ -1602,8 +1606,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
 
           // Overwrite: prepend DROP ... IF EXISTS, and let those names through the backend's
           // per-table filter (it only runs statements mentioning a name from the list it was given).
-          const objs = overwrite ? parseDumpObjects(dumpText) : null;
-          const sqlToRun = dropStatements.length ? `${dropStatements.join('\n')}\n${dumpText}` : dumpText;
+          const objs = overwrite && dumpScan ? dumpScan.objects : null;
           const tablesToRun = objs
             ? [...new Set([...selectedTables, ...objs.views, ...objs.triggers, ...objs.procedures, ...objs.functions])]
             : selectedTables;
@@ -1611,11 +1614,13 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
           const toProgress = makeRestoreReporter(t);
           ctx.report({ label: t('connection.restorePreparing') });
           const resData = await dbHelper.restoreBackup(
-            sqlToRun,
+            { path: dumpPath, mysqlScript: dumpScan?.mysqlScript },
             tablesToRun,
             (msg) => ctx.report(toProgress(msg)),
             continueOnError,
             jobConnId,
+            false,
+            dropStatements,
           );
           if (resData.cancelled) return restoreCancelledResult(t, resData);
           if (!resData.success) {
@@ -2390,46 +2395,20 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     </div>
   );
 
-  // The dump is split ONCE per file, with everything the filter needs recorded up front. The count
-  // used to re-split the whole file every time the table selection changed, so on a large dump every
-  // tick froze the UI.
-  const brStatements = React.useMemo(() => {
-    if (!brSqlText) return [];
-    return splitStatements(brSqlText).map(({ text }) => {
-      const body = stripLeadingSqlComments(text);
-      const { commentOnly, willRun } = commentOnlyFromBody(text, body);
-      return {
-        table: dumpStatementObject(body),
-        skipped: isSkippedDumpBody(body),
-        commentOnly,
-        commentRuns: willRun,
-      };
-    });
-  }, [brSqlText]);
 
   // Does not depend on `brOverwrite`: toggling the overwrite checkbox is no reason to rescan the file.
   const brDropStatements = React.useMemo(
-    () => (brSqlText ? buildDropStatements(parseDumpObjects(brSqlText), brType) : []),
-    [brSqlText, brType]
+    () => (brScan ? buildDropStatements(brScan.objects, brType) : []),
+    [brScan, brType]
   );
 
   // How many statements a restore will run (the same per-table filter the backend uses), for the time estimate.
-  const brPlannedStatements = React.useMemo(() => {
-    // Do not name the parameter `t` — that is the translation function.
-    const selectedLower = new Set(brSelectedTables.map((name) => name.toLowerCase()));
-    let n = brOverwrite ? brDropStatements.length : 0;
-    for (const s of brStatements) {
-      // The same rule as the backend: skip LOCK/UNLOCK TABLES and the dump's transaction statements…
-      if (s.skipped) continue;
-      if (s.commentOnly) {
-        if (s.commentRuns) n++;
-        continue;
-      }
-      // …statements naming no table (SET/USE…) still run; the rest must belong to a selected table.
-      if (brParsedTables.length === 0 || !s.table || selectedLower.has(s.table.toLowerCase())) n++;
-    }
-    return n;
-  }, [brStatements, brDropStatements, brOverwrite, brParsedTables.length, brSelectedTables]);
+  const brPlannedStatements = React.useMemo(
+    () => (brScan
+      ? plannedFromScan(brScan.plan, brParsedTables, brSelectedTables, brOverwrite ? brDropStatements.length : 0)
+      : 0),
+    [brScan, brDropStatements, brOverwrite, brParsedTables, brSelectedTables]
+  );
 
   const brTargetDb = brType === 'postgres' ? brPgDatabase : brType === 'mysql' ? brMyDatabase : brSqlitePath;
 
@@ -2472,7 +2451,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
               <span style={{ color: 'var(--win-text-secondary)' }}>{t('connection.brRowStatements')}</span>
               <b>{brPlannedStatements.toLocaleString()}</b>
               <span style={{ color: 'var(--win-text-secondary)' }}>{t('connection.brRowFile')}</span>
-              <b>{brFile ? `${brFile.name} (${(brFile.size / 1024 / 1024).toFixed(2)} MB)` : ''}</b>
+              <b>{brDumpPath && brScan ? `${fileBaseName(brDumpPath)} (${(brScan.fileBytes / 1024 / 1024).toFixed(2)} MB)` : ''}</b>
               <span style={{ color: 'var(--win-text-secondary)' }}>{t('connection.brRowEta')}</span>
               <b>~{formatRestoreEta(t, brPlannedStatements / 800)}</b>
             </div>
@@ -2670,23 +2649,18 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
           <>
             <div className="cm-section-title">{t('connection.brFileSection')}</div>
             <div className="cm-fields">
-              <label className="cm-dropzone">
-                <input
-                  type="file"
-                  accept=".sql,.dump,.gz"
-                  onChange={(e) => setBrFile(e.target.files?.[0] || null)}
-                  style={{ display: 'none' }}
-                />
+              <button type="button" className="cm-dropzone" onClick={pickBrDump}>
                 <Upload size={18} />
                 <div>
-                  <div className="cm-dropzone-title">{brFile ? brFile.name : t('connection.brPickFile')}</div>
-                  <div className="cm-hint">{brFile ? t('connection.brFileSize', { size: (brFile.size / 1024 / 1024).toFixed(2) }) : t('connection.brPickHint')}</div>
+                  <div className="cm-dropzone-title">{brDumpPath ? fileBaseName(brDumpPath) : t('connection.brPickFile')}</div>
+                  <div className="cm-hint">{brScan ? t('connection.brFileSize', { size: (brScan.fileBytes / 1024 / 1024).toFixed(2) }) : t('connection.brPickHint')}</div>
                 </div>
-              </label>
+              </button>
 
               {brParsing && (
                 <div className="cm-hint" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <LoadingSpinner size={11} /> {t('connection.brParsingTables')}
+                  {brScanPct !== null && brScanPct > 0 && <span>{brScanPct}%</span>}
                 </div>
               )}
 
@@ -2726,7 +2700,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
               {/* Replaying a dump onto a database that already has same-named tables makes MySQL
                   report 1050 "Table already exists" and abandon the whole restore. This option drops
                   them first. */}
-              {brFile && (
+              {brScan && (
                 <label className="cm-check" style={{ alignItems: 'flex-start' }}>
                   <input
                     type="checkbox"
@@ -2744,7 +2718,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
 
               {/* The same option as in the Import dialog — they share a translation key so the two
                   places cannot describe one behaviour in two different ways. */}
-              {brFile && (
+              {brScan && (
                 <label className="cm-check" style={{ alignItems: 'flex-start' }}>
                   <input
                     type="checkbox"
@@ -3183,14 +3157,14 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                       their progress lives in the JobsTray on the title bar. See
                       docs/background-jobs-plan.md. */}
                   <span className="cm-foot-msg cm-hint">
-                    {brAction === 'restore' && brFile && brParsedTables.length > 0
+                    {brAction === 'restore' && brScan && brParsedTables.length > 0
                       ? t('connection.brFootSelected', { selected: brSelectedTables.length, total: brParsedTables.length })
                       : ''}
                   </span>
                   <button
                     className="cm-btn primary"
                     onClick={handleBrClick}
-                    disabled={brAction === 'restore' && (!brFile || (brParsedTables.length > 0 && brSelectedTables.length === 0))}
+                    disabled={brAction === 'restore' && (!brScan || brParsing || (brParsedTables.length > 0 && brSelectedTables.length === 0))}
                   >
                     {brAction === 'backup'
                       ? <><Download size={14} /> {t('connection.brStartBackup')}</>

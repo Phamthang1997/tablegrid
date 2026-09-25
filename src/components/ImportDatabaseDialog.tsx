@@ -5,27 +5,21 @@ import { ChevronDown } from 'lucide-react';
 import {
   parseCreateTable,
   parseInsert,
-  parseDumpDatabase,
-  parseDumpObjects,
-  parseDumpTableNames,
-  dumpStatementObject,
   buildDropStatements,
   stripLeadingSqlComments,
-  isSkippedDumpBody,
-  commentOnlyFromBody,
+  plannedFromScan,
+  fileBaseName,
+  type DumpScan,
   type DumpTable,
   type DumpRows,
 } from '../utils/dumpPreview';
-import { splitStatements } from '../sql/statements';
+import { dbHelper } from '../utils/dbHelper';
+import { pickOpenFile } from '../utils/fileSave';
 import { ProgressBar, type ProgressState } from './ProgressBar';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Modal, ModalFooter } from './Modal';
 
-const ACCEPT = '.sql,.gz,.dump';
 
-// The caps below exist only so a huge dump cannot freeze the UI; an ordinary dump shows in full.
-/** The most statements parsed into the visual form (tables/columns/rows). */
-const MAX_STATEMENTS = 50000;
 /** The most statements shown in the SQL view. */
 const PREVIEW_LIMIT = 2000;
 /** How many rows are shown per table on the Data tab (the visual form). */
@@ -36,23 +30,6 @@ interface TablePreviewRows extends DumpRows {
   total: number;
 }
 
-/**
- * One statement from the dump plus everything derivable from it — computed once per file, so counting
- * and filtering by the selected tables never has to rescan the file's contents.
- */
-interface PreviewStmt {
-  /** The raw text, leading comment intact (the SQL view shows exactly this). */
-  text: string;
-  /** The table detected in the statement; null = it names no table (SET/USE…). */
-  table: string | null;
-  kind: 'structure' | 'data' | 'other';
-  /** The backend skips this one: LOCK/UNLOCK TABLES and the dump's transaction statements. */
-  skipped: boolean;
-  /** Statement contains only comments after leading comment removal. */
-  commentOnly: boolean;
-  /** MySQL conditional comments (`/*!40101 ... * /`) remain executable statements. */
-  commentRuns: boolean;
-}
 
 const labelStyle: React.CSSProperties = {
   fontSize: '11px',
@@ -72,13 +49,6 @@ function clip(stmt: string, max = 600): string {
   return stmt.length > max ? stmt.slice(0, max) + ' …' : stmt;
 }
 
-/** Decompresses .sql.gz with the WebView's DecompressionStream (Chromium) -> SQL text. */
-async function gunzipToText(t: TFunction, file: File): Promise<string> {
-  const DS = (globalThis as any).DecompressionStream;
-  if (!DS) throw new Error(t('importDialog.errNoGzip'));
-  const stream = file.stream().pipeThrough(new DS('gzip'));
-  return await new Response(stream).text();
-}
 
 /**
  * Seconds -> "12 seconds" / "2 min 5 sec" / "1 h 3 min" for the estimate and ETA.
@@ -122,10 +92,13 @@ interface ImportDatabaseDialogProps {
    * utils/restoreProgress.ts.
    */
   onSubmit: (
-    sqlText: string,
+    /** The dump FILE — the backend reads it itself, so it never enters the webview. */
+    source: { path: string; mysqlScript: boolean },
     tables: string[],
     targetDb: string,
-    continueOnError: boolean
+    continueOnError: boolean,
+    /** The overwrite option's `DROP … IF EXISTS` list, run before the dump. */
+    prepend: string[]
   ) => Promise<boolean>;
   asTab?: boolean;
 }
@@ -146,9 +119,14 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
   const { t, i18n } = useTranslation();
   const fmtNum = (n: number) => n.toLocaleString(i18n.language);
 
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [sqlText, setSqlText] = useState('');
+  // The dump as a PATH plus what `scan_dump_file` read from it. The file used to be read into a JS
+  // string (gunzipped by the webview) and split on the main thread, which froze the dialog on a large
+  // dump and could not hold one past ~512M characters at all.
+  const [path, setPath] = useState<string | null>(null);
+  const [scan, setScan] = useState<DumpScan | null>(null);
+  // A newer pick supersedes a scan still running; its answer must not land on the newer file.
+  const scanSeq = useRef(0);
+  const file = path ? { name: fileBaseName(path), size: scan?.fileBytes ?? 0 } : null;
   const [tables, setTables] = useState<string[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [search, setSearch] = useState('');
@@ -176,8 +154,9 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
   useEffect(() => {
     if (!open) return;
     queueMicrotask(() => {
-      setFile(null);
-      setSqlText('');
+      scanSeq.current++;
+      setPath(null);
+      setScan(null);
       setTables([]);
       setSelected([]);
       setPreviewTables([]);
@@ -200,76 +179,43 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose, submitting]);
 
-  // The dump is split ONCE per file, with everything derivable from each statement recorded up front.
-  //
-  // The statement count used to re-split the whole file every time `selected` changed, i.e. every
-  // checkbox tick rescanned 10 million characters -> the UI froze for seconds per tick. Here only
-  // `sqlText` is a dependency; whatever depends on the user's selection now merely reads this array.
+  // The preview is built from the SAMPLE `scan_dump_file` returns — every structure statement and the
+  // first INSERTs of each table — never from the file itself, so a dump of any size previews in the
+  // same time. `scan.preview.complete` says whether the sample is the whole file.
   const parsed = React.useMemo(() => {
-    const stmts: PreviewStmt[] = [];
     const createdTables: DumpTable[] = [];
-    // Every table's rows are counted, but only the first PREVIEW_ROWS are kept for rendering.
     const byTable = new Map<string, TablePreviewRows>();
-    if (!sqlText) return { stmts, createdTables, insertedRows: [] as TablePreviewRows[] };
-
-    // Shares `splitStatements` with the SQL editor — it understands MySQL's `DELIMITER` and Postgres'
-    // dollar-quoted blocks, like the Rust splitter that runs the real thing, so the preview shows
-    // exactly the statements that will execute (a trigger or procedure body is not chopped up).
-    let visualParsed = 0;
-    for (const { text } of splitStatements(sqlText)) {
-      // Classified on what comes AFTER the leading comment — as `strip_leading_comments()` does in the
-      // backend. A dump puts `-- Structure for table x` immediately BEFORE the statement, so matching
-      // `^\s*CREATE` against the raw text misses the first CREATE/INSERT of every table.
-      const body = stripLeadingSqlComments(text);
-      const kind: PreviewStmt['kind'] = /^(CREATE|ALTER|DROP)\b/i.test(body)
-        ? 'structure'
-        : /^INSERT\b/i.test(body)
-          ? 'data'
-          : 'other';
-      const { commentOnly, willRun } = commentOnlyFromBody(text, body);
-      stmts.push({
-        text,
-        table: dumpStatementObject(body),
-        kind,
-        skipped: isSkippedDumpBody(body),
-        commentOnly,
-        commentRuns: willRun,
-      });
-
-      // The visual form: CREATE TABLE -> a column list; INSERT -> rows, grouped per table.
-      // Only this part is capped by MAX_STATEMENTS: these two parsers are the loop's expensive half.
-      if (visualParsed >= MAX_STATEMENTS) continue;
-      if (kind === 'structure') {
-        const ct = parseCreateTable(body);
-        if (ct) createdTables.push(ct);
-        visualParsed++;
-      } else if (kind === 'data') {
-        const ins = parseInsert(body);
-        visualParsed++;
-        if (!ins) continue;
-        const cur = byTable.get(ins.table);
-        if (cur) {
-          if (!cur.columns && ins.columns) cur.columns = ins.columns;
-          cur.total += ins.rows.length;
-          if (cur.rows.length < PREVIEW_ROWS) {
-            cur.rows.push(...ins.rows.slice(0, PREVIEW_ROWS - cur.rows.length));
-          }
-        } else {
-          byTable.set(ins.table, {
-            ...ins,
-            rows: ins.rows.slice(0, PREVIEW_ROWS),
-            total: ins.rows.length,
-          });
+    if (!scan) return { structure: [], data: [], createdTables, insertedRows: [] as TablePreviewRows[] };
+    for (const st of scan.preview.structure) {
+      const ct = parseCreateTable(stripLeadingSqlComments(st.text));
+      if (ct) createdTables.push(ct);
+    }
+    for (const st of scan.preview.data) {
+      const ins = parseInsert(stripLeadingSqlComments(st.text));
+      if (!ins) continue;
+      const cur = byTable.get(ins.table);
+      if (cur) {
+        if (!cur.columns && ins.columns) cur.columns = ins.columns;
+        cur.total += ins.rows.length;
+        if (cur.rows.length < PREVIEW_ROWS) {
+          cur.rows.push(...ins.rows.slice(0, PREVIEW_ROWS - cur.rows.length));
         }
+      } else {
+        byTable.set(ins.table, { ...ins, rows: ins.rows.slice(0, PREVIEW_ROWS), total: ins.rows.length });
       }
     }
+    return {
+      structure: scan.preview.structure,
+      data: scan.preview.data,
+      createdTables,
+      insertedRows: [...byTable.values()],
+    };
+  }, [scan]);
+  const previewComplete = scan?.preview.complete ?? true;
 
-    return { stmts, createdTables, insertedRows: [...byTable.values()] };
-  }, [sqlText]);
-
-  // The objects in the dump and their DROP statements: also a function of the file alone and NOT of
-  // `overwrite`, so toggling that checkbox does not rescan the file. `runImport` reuses it directly.
-  const dumpObjects = React.useMemo(() => (sqlText ? parseDumpObjects(sqlText) : null), [sqlText]);
+  // The objects in the dump and their DROP statements: a function of the file alone and NOT of
+  // `overwrite`, so toggling that checkbox does not rescan anything. `runImport` reuses it directly.
+  const dumpObjects = scan?.objects ?? null;
   const dropStatements = React.useMemo(
     () => (dumpObjects ? buildDropStatements(dumpObjects, dbType) : []),
     [dumpObjects, dbType]
@@ -279,76 +225,69 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
   const selectedSet = React.useMemo(() => new Set(selected), [selected]);
   // Statements naming no table (SET/USE…) still run; the rest must belong to a selected table.
   const keepStatement = React.useCallback(
-    (s: PreviewStmt) => tables.length === 0 || !s.table || selectedSet.has(s.table),
+    (s: { table: string | null }) => tables.length === 0 || !s.table || selectedSet.has(s.table),
     [tables.length, selectedSet]
   );
 
-  // How many statements will run (the exact filter the backend uses), for the time estimate.
+  // How many statements will run (the rule the backend's filter follows), for the time estimate.
   // It has to come BEFORE the `if (!open)` below: a hook may not be called after an early return.
-  const plannedStatements = React.useMemo(() => {
-    let n = overwrite ? dropStatements.length : 0;
-    for (const s of parsed.stmts) {
-      // The same rule as the backend: skip LOCK/UNLOCK TABLES and the dump's transaction statements…
-      if (s.skipped) continue;
-      if (s.commentOnly) {
-        if (s.commentRuns) n++;
-        continue;
-      }
-      if (keepStatement(s)) n++;
-    }
-    return n;
-  }, [parsed, overwrite, dropStatements, keepStatement]);
+  const plannedStatements = React.useMemo(
+    () => (scan ? plannedFromScan(scan.plan, tables, selectedSet, overwrite ? dropStatements.length : 0) : 0),
+    [scan, tables, selectedSet, overwrite, dropStatements]
+  );
 
   // The preview shows only the selected tables' statements (with no table detected -> it shows everything).
   const structureShown = React.useMemo(
-    () => parsed.stmts.filter((s) => s.kind === 'structure' && keepStatement(s)),
+    () => parsed.structure.filter(keepStatement),
     [parsed, keepStatement]
   );
   const dataShown = React.useMemo(
-    () => parsed.stmts.filter((s) => s.kind === 'data' && keepStatement(s)),
+    () => parsed.data.filter(keepStatement),
     [parsed, keepStatement]
   );
 
   if (!open) return null;
 
-  const handlePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const picked = e.target.files?.[0] || null;
-    e.target.value = '';
+  const browse = async () => {
+    const picked = await pickOpenFile({
+      title: t('importDialog.pickFileTitle'),
+      filters: [{ name: 'SQL dump', extensions: ['sql', 'gz', 'dump'] }],
+    });
     if (!picked) return;
 
-    const lower = picked.name.toLowerCase();
-    if (!['.sql', '.gz', '.dump'].some((ext) => lower.endsWith(ext))) {
-      setError(t('importDialog.errFileType'));
-      return;
-    }
-
+    const seq = ++scanSeq.current;
     setError(null);
-    setFile(picked);
-    setSqlText('');
+    setPath(picked);
+    setScan(null);
     setTables([]);
     setSelected([]);
     setParsing(true);
+    setProgress({ label: t('importDialog.parsing') });
 
     try {
-      // restore_backup only accepts SQL as text -> a .gz has to be decompressed right here.
-      setProgress({ label: lower.endsWith('.gz') ? t('importDialog.decompressing') : t('importDialog.reading') });
-      const text = lower.endsWith('.gz') ? await gunzipToText(t, picked) : await picked.text();
-      setSqlText(text);
-      setProgress({ label: t('importDialog.parsing') });
-      const found = parseDumpTableNames(text);
-      setTables(found);
-      setSelected(found);
-      setPreviewTables(found);
+      // Rust reads, gunzips (when the file starts with the gzip magic bytes, whatever its name) and
+      // splits the file, and hands back only what this dialog shows.
+      const res = await dbHelper.scanDumpFile(picked, (prog) => {
+        if (seq !== scanSeq.current || !prog.bytesTotal) return;
+        setProgress({ label: t('importDialog.parsing'), current: prog.bytesDone, total: prog.bytesTotal });
+      });
+      if (seq !== scanSeq.current || !res) return;
+      setScan(res);
+      setTables(res.tables);
+      setSelected(res.tables);
+      setPreviewTables(res.tables);
       // When the file names a target database it is used; otherwise the field is left for the user.
-      const dbInFile = parseDumpDatabase(text);
-      setDbFromFile(dbInFile);
-      setTargetDb(dbInFile || '');
+      setDbFromFile(res.database);
+      setTargetDb(res.database || '');
     } catch (err: any) {
-      setSqlText('');
-      setError(t('importDialog.errReadFile', { message: err?.message || err }));
+      if (seq !== scanSeq.current) return;
+      setPath(null);
+      setError(t('importDialog.errReadFile', { message: err?.message || String(err) }));
     } finally {
-      setProgress(null);
-      setParsing(false);
+      if (seq === scanSeq.current) {
+        setProgress(null);
+        setParsing(false);
+      }
     }
   };
 
@@ -358,7 +297,7 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
   const allShownSelected = shown.length > 0 && shown.every((tbl) => selected.includes(tbl));
 
   const previewClipped =
-    (tab === 'structure' ? structureShown.length : dataShown.length) > PREVIEW_LIMIT;
+    !previewComplete || (tab === 'structure' ? structureShown.length : dataShown.length) > PREVIEW_LIMIT;
 
   // The visual pane filters on its own multi-select (previewTables), not on the import ticks.
   const keepTable = (name: string) => tables.length === 0 || previewTables.includes(name);
@@ -373,11 +312,11 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
     else setSelected([...new Set([...selected, ...shown])]);
   };
 
-  const canSubmit = !!file && !parsing && !submitting && !!sqlText && (tables.length === 0 || selected.length > 0);
+  const canSubmit = !!path && !parsing && !submitting && !!scan && (tables.length === 0 || selected.length > 0);
 
   // Pressing "Start import" shows the summary for confirmation; the real run is in runImport().
   const askConfirm = () => {
-    if (!file || !sqlText) return;
+    if (!path || !scan) return;
     // No database name (the file names none and the user typed none) -> prompt for one.
     if (canManageDatabases && !targetDb.trim() && !currentDb) {
       setError(t('importDialog.errNoTargetDb'));
@@ -388,23 +327,21 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
   };
 
   const runImport = async () => {
-    if (!file || !sqlText) return;
+    if (!path || !scan) return;
     setConfirming(false);
     setError(null);
     setSubmitting(true);
     setProgress({ label: t('importDialog.preparing') });
     try {
       // Overwrite: prepend DROP ... IF EXISTS and let those names through the per-table filter (the
-      // backend only runs statements mentioning a name from that list). It reuses the result already
-      // memoised on `sqlText` — nothing re-parses 10MB here any more.
+      // backend only runs statements mentioning a name from that list).
       const objs = overwrite ? dumpObjects : null;
       const drops = overwrite ? dropStatements : [];
-      const finalSql = drops.length ? `${drops.join('\n')}\n${sqlText}` : sqlText;
       const finalTables = objs
         ? [...new Set([...selected, ...objs.views, ...objs.triggers, ...objs.procedures, ...objs.functions])]
         : selected;
 
-      const ok = await onSubmit(finalSql, finalTables, targetDb.trim(), continueOnError);
+      const ok = await onSubmit({ path, mysqlScript: scan.mysqlScript }, finalTables, targetDb.trim(), continueOnError, drops);
       if (ok) onClose();
     } finally {
       setProgress(null);
@@ -412,7 +349,6 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
     }
   };
 
-  const browse = () => inputRef.current?.click();
 
   // A ROUGH estimate before the run (~800 statements/second against a local server). Once it is
   // really running, the ETA is recomputed from the measured rate.
@@ -491,17 +427,10 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
               >
                 {t('importDialog.pickFile')}
               </button>
-              <input
-                type="file"
-                ref={inputRef}
-                onChange={handlePicked}
-                accept={ACCEPT}
-                style={{ display: 'none' }}
-              />
             </div>
 
             {/* The target database: taken from the file's `USE`/`CREATE DATABASE`, or typed in */}
-            {canManageDatabases && !!file && !parsing && !!sqlText && (
+            {canManageDatabases && !!scan && !parsing && (
               <div className="form-group">
                 <label style={labelStyle}>{t('importDialog.targetDb')}</label>
                 <input
@@ -546,10 +475,12 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
 
             {file && (
               <div style={{ fontSize: '11px', color: 'var(--win-text-secondary)', lineHeight: 1.6 }}>
-                {t('importDialog.fileSize')} <b style={{ color: 'var(--win-text-primary)' }}>{formatSize(file.size)}</b>
                 {parsing && <div>{t('importDialog.readingTables')}</div>}
-                {!parsing && sqlText && (
-                  <div><Trans i18nKey="importDialog.contentChars" values={{ n: fmtNum(sqlText.length) }} components={{ strong: <b style={{ color: 'var(--win-text-primary)' }} /> }} /></div>
+                {!parsing && scan && (
+                  <>
+                    {t('importDialog.fileSize')} <b style={{ color: 'var(--win-text-primary)' }}>{formatSize(scan.fileBytes)}</b>
+                    <div><Trans i18nKey="importDialog.contentStatements" values={{ n: fmtNum(scan.statements) }} components={{ strong: <b style={{ color: 'var(--win-text-primary)' }} /> }} /></div>
+                  </>
                 )}
               </div>
             )}
@@ -717,7 +648,7 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <div style={{ fontSize: '11px', color: 'var(--win-text-secondary)', flex: 1, minWidth: 0 }}>
                     {tab === 'structure' ? t('importDialog.previewStructure') : t('importDialog.previewData')}
-                    {viewMode === 'sql' && previewClipped && t('importDialog.previewClipped', { n: PREVIEW_LIMIT })}
+                    {viewMode === 'sql' && previewClipped && (previewComplete ? t('importDialog.previewClipped', { n: PREVIEW_LIMIT }) : t('importDialog.previewSample'))}
                     {viewMode === 'visual' && tab === 'data' && t('importDialog.previewRowsNote', { n: PREVIEW_ROWS })}:
                   </div>
 
@@ -931,7 +862,9 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
                           <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--win-text-primary)', marginBottom: '4px', fontFamily: 'monospace' }}>
                             {r.table}{' '}
                             <span style={{ fontWeight: 400, color: 'var(--win-text-secondary)', fontFamily: 'inherit' }}>
-                              {t('importDialog.showingRows', { shown: r.rows.length, total: r.total })}
+                              {previewComplete
+                                ? t('importDialog.showingRows', { shown: r.rows.length, total: r.total })
+                                : t('importDialog.showingRowsSample', { shown: r.rows.length })}
                             </span>
                           </div>
                           <div style={{ overflowX: 'auto', minWidth: 0 }}>

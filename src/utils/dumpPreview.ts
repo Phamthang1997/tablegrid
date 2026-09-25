@@ -170,29 +170,6 @@ export function parseCreateTable(stmt: string): DumpTable | null {
 }
 
 /**
- * Detects the database a dump targets: `USE <db>` first, then `CREATE DATABASE/SCHEMA <db>`.
- * Returns null when the file names none.
- */
-export function parseDumpDatabase(sql: string): string | null {
-  // A database name may contain '-' (valid when quoted), unlike the IDENT used for table and column names.
-  const DB_IDENT = '([`"\'\\[]?[A-Za-z0-9_$-]+[`"\'\\]]?)';
-  const use = new RegExp(`\\bUSE\\s+${DB_IDENT}\\s*;`, 'i').exec(sql);
-  if (use) {
-    const name = unquoteIdent(use[1]);
-    if (name) return name;
-  }
-  const create = new RegExp(
-    `\\bCREATE\\s+(?:DATABASE|SCHEMA)\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${DB_IDENT}`,
-    'i'
-  ).exec(sql);
-  if (create) {
-    const name = unquoteIdent(create[1]);
-    if (name) return name;
-  }
-  return null;
-}
-
-/**
  * Strips leading whitespace and comments from a statement. The twin of `strip_leading_comments()` in
  * database.rs: the splitter keeps comments inside a statement's text, so a mysqldump file has
  * `-- Dumping data for table x` sitting immediately before its LOCK TABLES / INSERT.
@@ -201,121 +178,13 @@ export function stripLeadingSqlComments(stmt: string): string {
   return stmt.replace(/^(?:\s+|--[^\n]*(?:\n|$)|#[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)+/, '');
 }
 
-const SKIPPED_HEAD_RE = /^(?:LOCK\s+TABLES|UNLOCK\s+TABLES|START\s+TRANSACTION|BEGIN\b|COMMIT|ROLLBACK)/i;
-
-/**
- * The dump statements a restore does NOT replay (see `is_skipped_stmt()` in database.rs):
- * LOCK/UNLOCK TABLES and the transaction statements. Used so the statement count matches the backend.
- */
-export function isSkippedDumpStatement(stmt: string): boolean {
-  return isSkippedDumpBody(stripLeadingSqlComments(stmt));
-}
-
-/**
- * Like `isSkippedDumpStatement` but takes the already-stripped text — so a caller that stripped the
- * leading comment does not strip it a second time (a dump holds tens of thousands of statements).
- */
-export function isSkippedDumpBody(body: string): boolean {
-  return SKIPPED_HEAD_RE.test(body);
-}
-
-/**
- * Statement containing only comments after stripping leading comments: MySQL conditional comments (`/*!40101 SET ... * /`)
- * remain executable statements, whereas standard comments do not.
- */
-export function isCommentOnlyStatement(stmt: string): { commentOnly: boolean; willRun: boolean } {
-  return commentOnlyFromBody(stmt, stripLeadingSqlComments(stmt));
-}
-
-/** Like `isCommentOnlyStatement` but takes the already-stripped text, to avoid stripping twice. */
-export function commentOnlyFromBody(stmt: string, body: string): { commentOnly: boolean; willRun: boolean } {
-  if (body.length > 0) return { commentOnly: false, willRun: true };
-  return { commentOnly: true, willRun: stmt.includes('/*!') };
-}
-
-/**
- * The statement head that introduces one of the dump's objects, immediately before its name.
- *
- * VIEWs are included: a dump writes them with `CREATE ... VIEW` / `DROP VIEW IF EXISTS` and not with
- * `DROP TABLE`, so detecting tables alone leaves views out of the selection list — and the backend only
- * runs statements mentioning a name from that list (`stmt_mentions_table`), which drops the view's
- * `DROP VIEW` and makes the re-import fail with "view already exists".
- */
-const OBJECT_HEAD =
-  '(?:CREATE\\s+TABLE|INSERT\\s+INTO|DROP\\s+(?:TABLE|VIEW|TRIGGER|PROCEDURE|FUNCTION)\\s+IF\\s+EXISTS' +
-  '|CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:ALGORITHM\\s*=\\s*\\S+\\s+)?(?:DEFINER\\s*=\\s*\\S+\\s+)?' +
-  '(?:SQL\\s+SECURITY\\s+\\w+\\s+)?(?:VIEW|TRIGGER|PROCEDURE|FUNCTION))';
-
-const OBJECT_NAME_SRC = `${OBJECT_HEAD}\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?[\`"']?([a-zA-Z0-9_]+)[\`"']?`;
-
-// TEMPORARY tables declared inside a procedure or function body — not tables of the database.
-const TEMP_TABLE_SRC = 'CREATE\\s+TEMPORARY\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?[`"\']?([a-zA-Z0-9_]+)[`"\']?';
-
-/**
- * The table and view names a dump mentions, in the order they appear.
- *
- * This is the list the user picks from for a partial import, and it is also the filter passed down to
- * `restore_backup`. Temporary tables inside a procedure or function body are excluded: they slip in
- * through `INSERT INTO <temp>` but are not objects of the database.
- */
-export function parseDumpTableNames(sql: string): string[] {
-  const temps = new Set<string>();
-  const tempRe = new RegExp(TEMP_TABLE_SRC, 'gi');
-  let t: RegExpExecArray | null;
-  while ((t = tempRe.exec(sql)) !== null) temps.add(t[1].toLowerCase());
-
-  const found: string[] = [];
-  const seen = new Set<string>();
-  const re = new RegExp(OBJECT_NAME_SRC, 'gi');
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(sql)) !== null) {
-    const name = m[1];
-    if (temps.has(name.toLowerCase())) continue;
-    if (seen.has(name)) continue;
-    seen.add(name);
-    found.push(name);
-  }
-  return found;
-}
-
-/** The table or view name of ONE statement (for filtering the preview by selection); null when undetectable. */
-export function dumpStatementObject(stmt: string): string | null {
-  const m = new RegExp(OBJECT_NAME_SRC, 'i').exec(stmt);
-  return m ? m[1] : null;
-}
-
-/** The objects a dump will create — used to drop same-named ones before replaying it. */
+/** The objects a dump will create — used to drop same-named ones before replaying it (`scan_dump_file` reads them). */
 export interface DumpObjects {
   tables: string[];
   views: string[];
   triggers: string[];
   procedures: string[];
   functions: string[];
-}
-
-function collectNames(sql: string, re: RegExp): string[] {
-  const out: string[] = [];
-  re.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(sql)) !== null) {
-    const name = unquoteIdent(m[1]);
-    if (name && !out.includes(name)) out.push(name);
-  }
-  return out;
-}
-
-/** Lists the objects created in a dump (tables, views, triggers, procedures, functions). */
-export function parseDumpObjects(sql: string): DumpObjects {
-  const tables = collectNames(sql, new RegExp(`CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?${IDENT}`, 'gi'));
-  // CREATE [OR REPLACE] [ALGORITHM=..] [DEFINER=..] [SQL SECURITY ..] VIEW <name>
-  const views = collectNames(
-    sql,
-    new RegExp(`CREATE\\s+(?:OR\\s+REPLACE\\s+)?(?:ALGORITHM\\s*=\\s*\\S+\\s+)?(?:DEFINER\\s*=\\s*\\S+\\s+)?(?:SQL\\s+SECURITY\\s+\\w+\\s+)?VIEW\\s+${IDENT}`, 'gi')
-  );
-  const triggers = collectNames(sql, new RegExp(`CREATE\\s+(?:DEFINER\\s*=\\s*\\S+\\s+)?TRIGGER\\s+${IDENT}`, 'gi'));
-  const procedures = collectNames(sql, new RegExp(`CREATE\\s+(?:DEFINER\\s*=\\s*\\S+\\s+)?PROCEDURE\\s+${IDENT}`, 'gi'));
-  const functions = collectNames(sql, new RegExp(`CREATE\\s+(?:DEFINER\\s*=\\s*\\S+\\s+)?FUNCTION\\s+${IDENT}`, 'gi'));
-  return { tables, views, triggers, procedures, functions };
 }
 
 /**
@@ -403,4 +272,67 @@ export function parseInsert(stmt: string): DumpRows | null {
   }
 
   return { table, columns, rows };
+}
+
+/** One statement of the preview `scan_dump_file` returns — the fields of `PreviewStmt`, computed in Rust. */
+export interface ScannedStatement {
+  /** Clipped when `clipped` — the preview shows it, it does not run it. */
+  text: string;
+  table: string | null;
+  kind: 'structure' | 'data';
+  skipped: boolean;
+  commentOnly: boolean;
+  commentRuns: boolean;
+  clipped: boolean;
+}
+
+/**
+ * What `scan_dump_file` learned about a dump file, streamed from disk so the file never enters the
+ * webview (see `database/commands/dump_scan.rs`).
+ */
+export interface DumpScan {
+  fileBytes: number;
+  gzip: boolean;
+  /** Passed back to `restore_backup` so it does not have to read the file once more to find out. */
+  mysqlScript: boolean;
+  statements: number;
+  /** The same list `parseDumpTableNames` gave: the choices for a partial import, in file order. */
+  tables: string[];
+  objects: DumpObjects;
+  /** `parseDumpDatabase`'s answer: a `USE`, else a `CREATE DATABASE/SCHEMA`. */
+  database: string | null;
+  plan: {
+    /** Statements that run whatever is selected. */
+    always: number;
+    /** Statements that run only when their table is selected. */
+    byTable: Record<string, number>;
+  };
+  preview: {
+    structure: ScannedStatement[];
+    data: ScannedStatement[];
+    /** False when the preview left statements out or clipped one: it is a sample, not the file. */
+    complete: boolean;
+  };
+}
+
+/**
+ * How many statements a restore of `scan` will run — the rule the dialogs used to apply over every
+ * split statement, applied to the per-table counts instead. With no table detected in the file,
+ * everything runs.
+ */
+export function plannedFromScan(
+  plan: DumpScan['plan'],
+  tables: string[],
+  selected: Iterable<string>,
+  prepended = 0,
+): number {
+  let n = prepended + plan.always;
+  const keys = tables.length === 0 ? Object.keys(plan.byTable) : selected;
+  for (const name of keys) n += plan.byTable[name] ?? 0;
+  return n;
+}
+
+/** The file name at the end of a path, for either separator. */
+export function fileBaseName(path: string): string {
+  return path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
 }

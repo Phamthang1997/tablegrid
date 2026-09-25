@@ -8711,6 +8711,11 @@ input.rename-input {
   color: var(--win-text-secondary);
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;
+  /* It is a <button> now (the native picker returns a path, which a file input cannot), so the
+     button's own font, alignment and width are reset to what the <label> had. */
+  font: inherit;
+  text-align: left;
+  width: 100%;
 }
 
 .cm-dropzone:hover {

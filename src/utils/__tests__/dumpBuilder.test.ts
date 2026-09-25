@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { EXPORT_PAGE_SIZE, buildDump, writeDump, type DumpReader, type DumpSpec } from '../dumpBuilder';
-import { parseDumpObjects, parseDumpTableNames } from '../dumpPreview';
 import { splitStatements } from '../../sql/statements';
 
 // A fake reader: enough to build a dump without a backend. This is exactly why buildDump takes its
@@ -456,32 +455,6 @@ describe('buildDump — event và materialized view', () => {
     expect(dump).not.toContain('DROP VIEW IF EXISTS');
     // A matview comes after the tables, so CREATE … WITH DATA (the default) already has data to read.
     expect(dump).toContain('CREATE MATERIALIZED VIEW "mv_stats"');
-  });
-});
-
-describe('buildDump — đọc lại được bằng chính bộ dò của popup Nhập', () => {
-  it('parseDumpObjects nhận ra đủ bảng/view/routine/trigger', async () => {
-    const dump = await buildDump(spec(), fakeReader());
-    const objs = parseDumpObjects(dump);
-    // The fake reader returns `CREATE TABLE` for views too, so a view sits in `tables` here — what is
-    // being checked is that every object can be detected again, not how the reader classifies them.
-    expect(objs.tables).toEqual(['film', 'actor_info']);
-    expect(objs.views).toEqual([]);
-    expect(objs.functions).toEqual(['get_balance']);
-    expect(objs.procedures).toEqual(['film_in_stock']);
-    expect(objs.triggers).toEqual(['ins_film']);
-  });
-
-  it('header schema không bị nhận nhầm thành một bảng để chọn', async () => {
-    // `parseDumpTableNames` both builds the list the user ticks and is the filter sent down to
-    // `restore_backup`. A ghost "sales" entry in it is both confusing and causes the real table's
-    // statements to be dropped when only it is selected.
-    const dump = await buildDump(
-      { ...spec({ dbType: 'postgres', tables: ['film'], views: [], routines: [], triggers: [] }), schema: 'sales' },
-      fakeReader()
-    );
-    expect(dump).toContain('SET search_path TO "sales";');
-    expect(parseDumpTableNames(dump)).toEqual(['film']);
   });
 });
 

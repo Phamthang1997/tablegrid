@@ -57,6 +57,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         crate::app::notify::notify_os,
         crate::database::restore_backup,
         crate::database::cancel_restore,
+        crate::database::scan_dump_file,
         crate::export_sink::export_open,
         crate::export_sink::export_append,
         crate::export_sink::export_close,

@@ -2,32 +2,24 @@ import { describe, it, expect } from 'vitest';
 import {
   parseCreateTable,
   parseInsert,
-  parseDumpDatabase,
-  parseDumpObjects,
-  parseDumpTableNames,
-  dumpStatementObject,
+  plannedFromScan,
+  fileBaseName,
   buildDropStatements,
   stripLeadingSqlComments,
-  isSkippedDumpStatement,
-  isCommentOnlyStatement,
+  type DumpObjects,
 } from '../dumpPreview';
 
-const SAKILA_LIKE = `
-USE sakila;
-CREATE TABLE actor (actor_id SMALLINT NOT NULL);
-CREATE TABLE film_text (film_id SMALLINT NOT NULL);
-DELIMITER ;;
-CREATE TRIGGER \`ins_film\` AFTER INSERT ON \`film\` FOR EACH ROW BEGIN
-  INSERT INTO film_text (film_id) VALUES (new.film_id);
-END;;
-DELIMITER ;
-CREATE VIEW customer_list AS SELECT 1;
-CREATE DEFINER=CURRENT_USER SQL SECURITY INVOKER VIEW actor_info AS SELECT 1;
-CREATE PROCEDURE rewards_report (IN x INT) BEGIN SELECT 1; END;
-CREATE FUNCTION get_customer_balance(p INT) RETURNS DECIMAL(5,2) BEGIN RETURN 0; END;
-`;
+// What `scan_dump_file` reads from a sakila-like dump — pinned by
+// `a_sakila_like_dump_lists_every_object_kind` in dump_scan.rs.
+const SAKILA_OBJECTS: DumpObjects = {
+  tables: ['actor', 'film_text'],
+  views: ['customer_list', 'actor_info'],
+  triggers: ['ins_film'],
+  procedures: ['rewards_report'],
+  functions: ['get_customer_balance'],
+};
 
-describe('stripLeadingSqlComments / isSkippedDumpStatement', () => {
+describe('stripLeadingSqlComments', () => {
   // A mysqldump file glues a comment directly in front of a statement and the splitter keeps that
   // comment in the statement text -> classification has to strip comments first, or LOCK TABLES slips
   // through and causes MySQL 1100 on the next table.
@@ -39,39 +31,11 @@ describe('stripLeadingSqlComments / isSkippedDumpStatement', () => {
     expect(stripLeadingSqlComments('-- ghi chú tiếng Việt\nSELECT 1')).toBe('SELECT 1');
   });
 
-  it('nhận đúng câu bị bỏ qua dù có comment che phía trước', () => {
-    expect(isSkippedDumpStatement(lockStmt)).toBe(true);
-    expect(isSkippedDumpStatement('-- x\nUNLOCK TABLES')).toBe(true);
-    expect(isSkippedDumpStatement('COMMIT')).toBe(true);
-    expect(isSkippedDumpStatement('START TRANSACTION')).toBe(true);
-    // INSERT/CREATE still run
-    expect(isSkippedDumpStatement('-- x\nINSERT INTO store VALUES (1)')).toBe(false);
-    // A routine body starts with CREATE, so the BEGIN inside it is not mistaken for one
-    expect(isSkippedDumpStatement('CREATE TRIGGER t AFTER INSERT ON f FOR EACH ROW BEGIN\nSELECT 1;\nEND')).toBe(false);
-  });
-
-  it('câu chỉ có comment: comment điều kiện MySQL vẫn chạy, comment thường thì không', () => {
-    expect(isCommentOnlyStatement('/*!40101 SET NAMES utf8mb4 */')).toEqual({ commentOnly: true, willRun: true });
-    expect(isCommentOnlyStatement('--\n-- Table structure\n--')).toEqual({ commentOnly: true, willRun: false });
-    expect(isCommentOnlyStatement('-- x\nSELECT 1')).toEqual({ commentOnly: false, willRun: true });
-  });
-});
-
-describe('parseDumpObjects', () => {
-  it('liệt kê đủ bảng, view, trigger, procedure, function', () => {
-    const o = parseDumpObjects(SAKILA_LIKE);
-    expect(o.tables).toEqual(['actor', 'film_text']);
-    // A view carrying DEFINER / SQL SECURITY is still named correctly
-    expect(o.views).toEqual(['customer_list', 'actor_info']);
-    expect(o.triggers).toEqual(['ins_film']);
-    expect(o.procedures).toEqual(['rewards_report']);
-    expect(o.functions).toEqual(['get_customer_balance']);
-  });
 });
 
 describe('buildDropStatements', () => {
   it('MySQL: xoá theo thứ tự trigger -> view -> routine -> table, quote bằng backtick', () => {
-    const stmts = buildDropStatements(parseDumpObjects(SAKILA_LIKE), 'mysql');
+    const stmts = buildDropStatements(SAKILA_OBJECTS, 'mysql');
     expect(stmts).toEqual([
       'DROP TRIGGER IF EXISTS `ins_film`;',
       'DROP VIEW IF EXISTS `customer_list`;',
@@ -84,7 +48,7 @@ describe('buildDropStatements', () => {
   });
 
   it('Postgres: chỉ view/table kèm CASCADE (trigger cần ON table, function cần chữ ký)', () => {
-    const stmts = buildDropStatements(parseDumpObjects(SAKILA_LIKE), 'postgres');
+    const stmts = buildDropStatements(SAKILA_OBJECTS, 'postgres');
     expect(stmts).toEqual([
       'DROP VIEW IF EXISTS "customer_list" CASCADE;',
       'DROP VIEW IF EXISTS "actor_info" CASCADE;',
@@ -94,29 +58,9 @@ describe('buildDropStatements', () => {
   });
 
   it('SQLite: không có procedure/function', () => {
-    const stmts = buildDropStatements(parseDumpObjects(SAKILA_LIKE), 'sqlite');
+    const stmts = buildDropStatements(SAKILA_OBJECTS, 'sqlite');
     expect(stmts.some(s => s.includes('PROCEDURE') || s.includes('FUNCTION'))).toBe(false);
     expect(stmts).toContain('DROP TRIGGER IF EXISTS "ins_film";');
-  });
-});
-
-describe('parseDumpDatabase', () => {
-  it('lấy tên từ USE (ưu tiên) kể cả khi có CREATE SCHEMA trước đó', () => {
-    const sql = 'DROP SCHEMA IF EXISTS sakila;\nCREATE SCHEMA sakila;\nUSE sakila;\nCREATE TABLE a (id INT);';
-    expect(parseDumpDatabase(sql)).toBe('sakila');
-  });
-
-  it('lấy tên từ CREATE DATABASE khi tệp không có USE', () => {
-    expect(parseDumpDatabase('CREATE DATABASE IF NOT EXISTS `shop_v2`;\nCREATE TABLE a (id INT);')).toBe('shop_v2');
-  });
-
-  it('bỏ dấu bao quanh tên', () => {
-    expect(parseDumpDatabase('USE `my-db`;')).toBe('my-db');
-    expect(parseDumpDatabase('USE "My_DB";')).toBe('My_DB');
-  });
-
-  it('trả null khi dump không nhắc database nào', () => {
-    expect(parseDumpDatabase('CREATE TABLE a (id INT);\nINSERT INTO a VALUES (1);')).toBeNull();
   });
 });
 
@@ -219,83 +163,27 @@ describe('parseInsert', () => {
   });
 });
 
-describe('parseDumpTableNames', () => {
-  it('dò bảng từ CREATE TABLE / INSERT INTO / DROP TABLE IF EXISTS', () => {
-    const sql = [
-      'DROP TABLE IF EXISTS `actor`;',
-      'CREATE TABLE `actor` (id int);',
-      "INSERT INTO `payment` VALUES (1);",
-    ].join('\n');
-    expect(parseDumpTableNames(sql)).toEqual(['actor', 'payment']);
+describe('plannedFromScan', () => {
+  const plan = { always: 3, byTable: { actor: 10, film: 5, tmp: 2 } };
+
+  it('counts the always-run statements plus those of the selected tables', () => {
+    expect(plannedFromScan(plan, ['actor', 'film'], ['film'])).toBe(8);
+    expect(plannedFromScan(plan, ['actor', 'film'], [])).toBe(3);
   });
 
-  // Why this function exists: a view is written with CREATE VIEW / DROP VIEW, not DROP TABLE.
-  // Undetected, the view never reaches the selection list and the backend drops its statements.
-  it('dò cả view, kể cả dạng có ALGORITHM/DEFINER/SQL SECURITY', () => {
-    const sql = [
-      'DROP VIEW IF EXISTS `actor_info`;',
-      'CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY INVOKER VIEW `actor_info` AS select 1;',
-      'CREATE VIEW `film_list` AS select * from film;',
-      'CREATE OR REPLACE VIEW "staff_list" AS select 1;',
-    ].join('\n');
-    // Only the name of the object being CREATED, not a table read inside the view body (`from film`).
-    expect(parseDumpTableNames(sql)).toEqual(['actor_info', 'film_list', 'staff_list']);
+  it('adds the prepended DROP statements', () => {
+    expect(plannedFromScan(plan, ['actor', 'film'], ['actor'], 4)).toBe(17);
   });
 
-  // The routine's own name must be listed: the backend only runs statements mentioning a name
-  // from this list (`stmt_mentions_table`), so a CREATE PROCEDURE touching no selected table
-  // used to be dropped from the restore. The TEMPORARY table inside its body stays excluded —
-  // that one is not an object of the database.
-  it('lấy tên routine nhưng bỏ bảng tạm khai báo trong thân', () => {
-    const sql = [
-      'CREATE TABLE `real_table` (id int);',
-      'CREATE PROCEDURE p() BEGIN CREATE TEMPORARY TABLE tmp_x (id int); INSERT INTO tmp_x VALUES (1); END',
-    ].join('\n');
-    expect(parseDumpTableNames(sql)).toEqual(['real_table', 'p']);
-  });
-
-  it('dò trigger / procedure / function, kể cả dạng có DEFINER', () => {
-    const sql = [
-      'DROP TRIGGER IF EXISTS `ins_film`;',
-      'CREATE DEFINER=`root`@`localhost` TRIGGER `ins_film` AFTER INSERT ON `film` FOR EACH ROW BEGIN END;',
-      'CREATE DEFINER=`root`@`localhost` PROCEDURE `film_in_stock`(IN p_film_id INT) BEGIN END;',
-      'CREATE OR REPLACE FUNCTION "held_by_customer"(p_id int) RETURNS int AS $$ BEGIN RETURN 1; END $$;',
-    ].join('\n');
-    expect(parseDumpTableNames(sql)).toEqual(['ins_film', 'film_in_stock', 'held_by_customer']);
-  });
-
-  it('không lặp tên và giữ thứ tự xuất hiện', () => {
-    const sql = 'INSERT INTO b VALUES (1); INSERT INTO a VALUES (1); INSERT INTO b VALUES (2);';
-    expect(parseDumpTableNames(sql)).toEqual(['b', 'a']);
+  it('with no table detected, everything runs', () => {
+    expect(plannedFromScan(plan, [], [])).toBe(20);
   });
 });
 
-describe('dumpStatementObject', () => {
-  it('lấy tên của đối tượng đầu tiên trong câu lệnh', () => {
-    expect(dumpStatementObject('INSERT INTO `film` VALUES (1)')).toBe('film');
-    expect(dumpStatementObject('DROP TABLE IF EXISTS "city"')).toBe('city');
-    expect(dumpStatementObject('CREATE TABLE IF NOT EXISTS x (id int)')).toBe('x');
-  });
-
-  it('với CREATE VIEW thì lấy tên view, không phải bảng trong thân', () => {
-    expect(
-      dumpStatementObject(
-        'CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY INVOKER VIEW `actor_info` AS select * from `film`'
-      )
-    ).toBe('actor_info');
-    expect(dumpStatementObject('DROP VIEW IF EXISTS `actor_info`')).toBe('actor_info');
-  });
-
-  it('với routine/trigger thì lấy tên của chính nó', () => {
-    expect(
-      dumpStatementObject('CREATE DEFINER=`root`@`localhost` PROCEDURE `film_in_stock`(IN id INT) BEGIN SELECT 1; END')
-    ).toBe('film_in_stock');
-    expect(dumpStatementObject('CREATE TRIGGER `ins_film` AFTER INSERT ON `film` FOR EACH ROW BEGIN END')).toBe('ins_film');
-    expect(dumpStatementObject('DROP FUNCTION IF EXISTS `get_customer_balance`')).toBe('get_customer_balance');
-  });
-
-  it('câu không nhắc bảng nào thì trả null', () => {
-    expect(dumpStatementObject('SET NAMES utf8mb4')).toBeNull();
-    expect(dumpStatementObject('USE `sakila`')).toBeNull();
+describe('fileBaseName', () => {
+  it('takes the last segment for either separator', () => {
+    expect(fileBaseName('C:\\dumps\\a.sql.gz')).toBe('a.sql.gz');
+    expect(fileBaseName('/home/u/b.sql')).toBe('b.sql');
+    expect(fileBaseName('c.sql')).toBe('c.sql');
   });
 });

@@ -8,8 +8,9 @@ use sqlx::{MySqlPool, PgPool};
 use tauri::ipc::Channel;
 
 use crate::database::{
-    DbConnection, DbKind, build_mysql_url, build_pg_url, reject_conn_read_only,
-    split_sql_statements, sqlite_raw, strip_leading_comments,
+    DbConnection, DbKind, DumpStatements, build_mysql_url, build_pg_url, open_dump,
+    probe_mysql_script, reject_conn_read_only, split_sql_statements, sqlite_raw,
+    strip_leading_comments,
 };
 
 /// Key of a running restore's cancel flag in `AppState::cancel_flags`.
@@ -82,7 +83,7 @@ pub async fn cancel_restore(conn_id: String) -> Result<Value, String> {
 /// Only the first 4-5 words decide a statement's kind, so `to_uppercase()` over the WHOLE statement is useless and expensive:
 /// it allocates a copy of every INSERT, i.e. copies the entire dump one more time.
 /// The longest keyword to match is `START TRANSACTION` (17 characters), so 32 bytes is wide enough.
-fn upper_head(body: &str) -> String {
+pub(super) fn upper_head(body: &str) -> String {
     let mut end = body.len().min(32);
     // Slicing by byte means backing up to a UTF-8 character boundary (a statement may start with a multi-byte character).
     while end > 0 && !body.is_char_boundary(end) {
@@ -121,7 +122,7 @@ fn stmt_for_error(stmt: &str) -> String {
     format!("{}…", &stmt[..end])
 }
 
-fn is_skipped_stmt(stmt_upper: &str) -> bool {
+pub(super) fn is_skipped_stmt(stmt_upper: &str) -> bool {
     stmt_upper.starts_with("LOCK TABLES")
         || stmt_upper.starts_with("UNLOCK TABLES")
         || stmt_upper.starts_with("START TRANSACTION")
@@ -190,7 +191,7 @@ impl TableMatcher {
 }
 
 // The database name in a `USE <db>` statement (for reconnecting once the restore is done).
-fn use_db_name(stmt: &str) -> Option<String> {
+pub(super) fn use_db_name(stmt: &str) -> Option<String> {
     let parts: Vec<&str> = stmt.split_whitespace().collect();
     if parts.len() < 2 {
         return None;
@@ -201,10 +202,167 @@ fn use_db_name(stmt: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
+// Is this statement a CREATE VIEW? Those are moved to the end of the restore.
+//
+// Dumps interleave views with tables alphabetically — sakila's `actor_info` view sits right
+// after the `actor` table, long before the `film` table it reads — while `CREATE VIEW` is
+// validated AS IT RUNS: MySQL returns 1146 "Table doesn't exist" and the whole import is rolled back.
+// The export side has been fixed to write views after the tables, but dumps that already exist (and other
+// tools' dumps) cannot be fixed retroactively, so the runner has to tolerate the wrong order too.
+//
+// Only CREATE VIEW moves, and their relative order is preserved (a view may read another view;
+// the app's export already orders them by dependency — see `orderViewsByDependency`).
+// `DROP VIEW` staying put is harmless. Moving any other kind of statement could change what the dump
+// means — a dump that INSERTs through an updatable view, for example, would break.
+fn is_create_view(stmt: &str) -> bool {
+    static RE: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:ALGORITHM\s*=\s*\w+\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?:SQL\s+SECURITY\s+\w+\s+)?VIEW\b",
+        )
+        .ok()
+    });
+    RE.as_ref()
+        .is_some_and(|re| re.is_match(strip_leading_comments(stmt)))
+}
+
+/// Decides, statement by statement, what a restore runs — the same decision for a dump in memory
+/// and one streamed from a file.
+struct Classifier {
+    matcher: TableMatcher,
+    run_all: bool,
+    /// The last `USE <db>` seen, for reconnecting once the restore is done.
+    last_use_db: Option<String>,
+}
+
+impl Classifier {
+    /// The statement to run and whether it is session-level (its failure does not abort the
+    /// restore), or None when it is not to be run at all.
+    fn classify(&mut self, q: String) -> Option<(String, bool)> {
+        // Classify by the part AFTER the leading comment: a mysqldump dump always has
+        // `-- Dumping data for table x` glued right in front of LOCK TABLES / INSERT.
+        let body = strip_leading_comments(&q);
+        let head = upper_head(body);
+        if is_skipped_stmt(&head) {
+            return None;
+        }
+        if body.is_empty() {
+            // A statement that is nothing but a comment. MySQL's CONDITIONAL comments (`/*!40101 SET NAMES utf8mb4 */`)
+            // are real statements and affect the charset/timezone of the imported data -> they still have to run
+            // (classified as session-level so their failure does not abort the restore). Ordinary comments are dropped.
+            return q.contains("/*!").then_some((q, true));
+        }
+        let session_level = is_session_level_stmt(&head);
+        if session_level {
+            if head.starts_with("USE ")
+                && let Some(db) = use_db_name(body)
+            {
+                self.last_use_db = Some(db);
+            }
+        } else if !self.run_all && !self.matcher.matches(&q) {
+            return None;
+        }
+        Some((q, session_level))
+    }
+}
+
+/// Where a restore's statements come from.
+enum Feed {
+    /// Already split, filtered and reordered, so the total is known up front.
+    Mem {
+        total: usize,
+        items: std::vec::IntoIter<(String, bool)>,
+    },
+    /// Split by a reader thread while the file is read. The total is not known until the end, so
+    /// progress is the share of the FILE read — which is also what a user watching a 1GB dump wants.
+    File {
+        rx: tokio::sync::mpsc::Receiver<Result<String, String>>,
+        /// CREATE VIEW statements, held back until the rest of the file has run.
+        views: Vec<(String, bool)>,
+        /// The held-back views, once the file is exhausted.
+        tail: Option<std::vec::IntoIter<(String, bool)>>,
+        bytes_read: Arc<std::sync::atomic::AtomicU64>,
+        bytes_total: u64,
+    },
+}
+
+impl Feed {
+    fn total(&self) -> Option<usize> {
+        match self {
+            Feed::Mem { total, .. } => Some(*total),
+            Feed::File { .. } => None,
+        }
+    }
+
+    fn start_message(&self) -> Value {
+        match self {
+            Feed::Mem { total, .. } => json!({ "type": "start", "total": total }),
+            Feed::File { bytes_total, .. } => json!({ "type": "start", "bytesTotal": bytes_total }),
+        }
+    }
+
+    fn progress_message(&self, done: usize) -> Value {
+        match self {
+            Feed::Mem { total, .. } => json!({ "type": "progress", "done": done, "total": total }),
+            Feed::File {
+                bytes_read,
+                bytes_total,
+                ..
+            } => json!({
+                "type": "progress",
+                "done": done,
+                "bytesDone": bytes_read.load(Ordering::Relaxed),
+                "bytesTotal": bytes_total,
+            }),
+        }
+    }
+
+    /// The next statement to run, None when there is none left, or the error that stopped the
+    /// reader (an unreadable or truncated file).
+    async fn next(
+        &mut self,
+        classifier: &mut Classifier,
+    ) -> Result<Option<(String, bool)>, String> {
+        match self {
+            Feed::Mem { items, .. } => Ok(items.next()),
+            Feed::File {
+                rx, views, tail, ..
+            } => {
+                if let Some(rest) = tail {
+                    return Ok(rest.next());
+                }
+                while let Some(item) = rx.recv().await {
+                    let Some((q, session_level)) = classifier.classify(item?) else {
+                        continue;
+                    };
+                    if is_create_view(&q) {
+                        views.push((q, session_level));
+                        continue;
+                    }
+                    return Ok(Some((q, session_level)));
+                }
+                let mut rest = std::mem::take(views).into_iter();
+                let first = rest.next();
+                *tail = Some(rest);
+                Ok(first)
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn restore_backup(
     conn_id: String,
-    sql_content: String,
+    // Exactly one of `sql_content` / `file_path`. The text is for a dump built in memory (the
+    // copy-database path); a dump the user picked is read from disk (`dump_file.rs`), so a file of
+    // any size never has to exist as one string anywhere.
+    sql_content: Option<String>,
+    file_path: Option<String>,
+    // Statements run before the dump's own — the overwrite option's `DROP … IF EXISTS` list. They
+    // go through the same filter and classification as the dump's statements.
+    prepend: Option<Vec<String>>,
+    // Only with `file_path`: whether the file issues `DELIMITER`, as `scan_dump_file` reported it.
+    // It decides what `$$` means for the whole file; without it the file is read once more to find out.
+    mysql_script: Option<bool>,
     tables: Vec<String>,
     // The progress channel back to the UI: {type:'start'|'progress'|'done', done, total}. A restore is one
     // long call, so without a channel the UI could only draw an indeterminate bar.
@@ -260,76 +418,80 @@ pub async fn restore_backup(
     let mut cancelled = false;
 
     let mut statements_count = 0;
-    let mut last_use_db: Option<String> = None;
 
-    // The SAME splitter as the SQL editor: it understands MySQL's DELIMITER command and Postgres' $$ blocks,
-    // so a trigger/procedure/function body is not cut at a ';' inside it.
-    let statements = split_sql_statements(&sql_content);
+    let mut classifier = Classifier {
+        matcher: TableMatcher::new(&tables),
+        run_all,
+        last_use_db: None,
+    };
+    let prepend = prepend.unwrap_or_default();
 
-    // Filter FIRST so the total number of statements to run is known -> a real percentage instead of an indeterminate bar.
-    // The accompanying bool = a session-/schema-level statement (whose failure does not abort the restore).
-    let mut to_run: Vec<(String, bool)> = Vec::new();
-    let matcher = TableMatcher::new(&tables);
-    for q in statements {
-        // Classify by the part AFTER the leading comment: a mysqldump dump always has
-        // `-- Dumping data for table x` glued right in front of LOCK TABLES / INSERT.
-        let body = strip_leading_comments(&q);
-        let head = upper_head(body);
-        if is_skipped_stmt(&head) {
-            continue;
-        }
-        if body.is_empty() {
-            // A statement that is nothing but a comment. MySQL's CONDITIONAL comments (`/*!40101 SET NAMES utf8mb4 */`)
-            // are real statements and affect the charset/timezone of the imported data -> they still have to run
-            // (classified as session-level so their failure does not abort the restore). Ordinary comments are dropped.
-            if q.contains("/*!") {
-                to_run.push((q, true));
+    let mut feed = match (sql_content, file_path) {
+        (Some(sql), None) => {
+            // The SAME splitter as the SQL editor: it understands MySQL's DELIMITER command and Postgres' $$ blocks,
+            // so a trigger/procedure/function body is not cut at a ';' inside it.
+            //
+            // Filter FIRST so the total number of statements to run is known -> a real percentage instead of an
+            // indeterminate bar. The accompanying bool = a session-/schema-level statement (whose failure does
+            // not abort the restore).
+            let mut to_run: Vec<(String, bool)> = Vec::new();
+            for q in prepend.into_iter().chain(split_sql_statements(&sql)) {
+                to_run.extend(classifier.classify(q));
             }
-            continue;
+            drop(sql);
+            // Move every CREATE VIEW statement to the end — see `is_create_view`. partition keeps the
+            // order within each group.
+            let (rest, views): (Vec<_>, Vec<_>) =
+                to_run.into_iter().partition(|(q, _)| !is_create_view(q));
+            let mut to_run = rest;
+            to_run.extend(views);
+            Feed::Mem { total: to_run.len(), items: to_run.into_iter() }
         }
-        let session_level = is_session_level_stmt(&head);
-        if session_level {
-            if head.starts_with("USE ")
-                && let Some(db) = use_db_name(body) {
-                    last_use_db = Some(db);
+        (None, Some(path)) => {
+            // Opened here rather than in the reader thread so a missing file is a plain error
+            // before anything has started, and so the byte counter is in hand for progress.
+            let p = path.clone();
+            let dump = tokio::task::spawn_blocking(move || open_dump(&p))
+                .await
+                .map_err(|e| e.to_string())??;
+            let bytes_read = dump.bytes_read.clone();
+            let bytes_total = dump.bytes_total;
+            // Bounded: the reader runs at most this many statements ahead of the server, so the
+            // dump in memory is a handful of statements whatever the file's size. Dropping the
+            // receiver (the restore returning, cancelled or failed) ends the thread at its next send.
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, String>>(16);
+            std::thread::spawn(move || {
+                let mysql_script = match mysql_script {
+                    Some(b) => b,
+                    None => match probe_mysql_script(&path) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            let _ = tx.blocking_send(Err(e));
+                            return;
+                        }
+                    },
+                };
+                for q in prepend.into_iter().map(Ok).chain(DumpStatements::new(dump.reader, mysql_script)) {
+                    let failed = q.is_err();
+                    if tx.blocking_send(q).is_err() || failed {
+                        return;
+                    }
                 }
-        } else if !run_all && !matcher.matches(&q) {
-            continue;
+            });
+            Feed::File { rx, views: Vec::new(), tail: None, bytes_read, bytes_total }
         }
-        to_run.push((q, session_level));
-    }
-
-    // Move every CREATE VIEW statement to the end.
-    //
-    // Dumps interleave views with tables alphabetically — sakila's `actor_info` view sits right
-    // after the `actor` table, long before the `film` table it reads — while `CREATE VIEW` is
-    // validated AS IT RUNS: MySQL returns 1146 "Table doesn't exist" and the whole import is rolled back.
-    // The export side has been fixed to write views after the tables, but dumps that already exist (and other
-    // tools' dumps) cannot be fixed retroactively, so the runner has to tolerate the wrong order too.
-    //
-    // Only CREATE VIEW moves, and their relative order is preserved (a view may read another view;
-    // the app's export already orders them by dependency — see `orderViewsByDependency`).
-    // `DROP VIEW` staying put is harmless. Moving any other kind of statement could change what the dump
-    // means — a dump that INSERTs through an updatable view, for example, would break.
-    if let Ok(create_view_re) = regex::Regex::new(
-        r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:ALGORITHM\s*=\s*\w+\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?:SQL\s+SECURITY\s+\w+\s+)?VIEW\b",
-    ) {
-        // partition keeps the order within each group.
-        let (rest, views): (Vec<_>, Vec<_>) = to_run
-            .into_iter()
-            .partition(|(q, _)| !create_view_re.is_match(strip_leading_comments(q)));
-        to_run = rest;
-        to_run.extend(views);
-    }
-
-    let total = to_run.len();
-    let _ = on_progress.send(json!({ "type": "start", "total": total }));
-    // Send one event every PROGRESS_EVERY statements so a dump of tens of thousands of statements does not flood the IPC.
-    const PROGRESS_EVERY: usize = 20;
-    let send_progress = |done: usize| {
-        let _ = on_progress.send(json!({ "type": "progress", "done": done, "total": total }));
+        _ => return Err("Cần đúng một nguồn dump: nội dung SQL hoặc đường dẫn tệp.".to_string()),
     };
 
+    let _ = on_progress.send(feed.start_message());
+    // Send one event every PROGRESS_EVERY statements so a dump of tens of thousands of statements does not flood the IPC.
+    const PROGRESS_EVERY: usize = 20;
+    let mut done: usize = 0;
+    let tick = |done: usize, feed: &Feed| {
+        if done % PROGRESS_EVERY == 1 || feed.total() == Some(done) {
+            let _ = on_progress.send(feed.progress_message(done));
+        }
+    };
 
     match &conn_type.kind {
         DbKind::Mysql(pool) => {
@@ -348,14 +510,23 @@ pub async fn restore_backup(
             let _ = sqlx::query("START TRANSACTION;").execute(&mut *conn).await;
 
             // 3. Run the statements
-            for (idx, (q, session_level)) in to_run.iter().enumerate() {
+            loop {
                 // Checked between statements, never inside one: a statement is the unit the
                 // server can roll back, so stopping here leaves nothing half-applied.
                 if cancel.load(Ordering::Relaxed) {
                     cancelled = true;
                     break;
                 }
-                let session_level = *session_level;
+                let (q, session_level) = match feed.next(&mut classifier).await {
+                    Ok(Some(item)) => item,
+                    Ok(None) => break,
+                    Err(e) => {
+                        let _ = sqlx::query("ROLLBACK;").execute(&mut *conn).await;
+                        let _ = sqlx::raw_sql("UNLOCK TABLES;").execute(&mut *conn).await;
+                        let _ = sqlx::query("SET FOREIGN_KEY_CHECKS = 1;").execute(&mut *conn).await;
+                        return Err(e);
+                    }
+                };
 
                 // raw_sql = the text protocol: MySQL does NOT allow CREATE/DROP TRIGGER|PROCEDURE|FUNCTION|
                 // EVENT through a prepared statement (error 1295), and a dump usually contains all of those.
@@ -368,23 +539,23 @@ pub async fn restore_backup(
                             // is still there and the run can continue right away.
                             failed_count += 1;
                             if failed_samples.len() < FAILED_SAMPLES_MAX {
-                                failed_samples.push(json!({ "sql": stmt_for_error(q), "error": e.to_string() }));
+                                failed_samples.push(json!({ "sql": stmt_for_error(&q), "error": e.to_string() }));
                             }
+                            done += 1;
                             continue;
                         }
                         let _ = sqlx::query("ROLLBACK;").execute(&mut *conn).await;
                         // Hand the connection back to the pool clean, leaving no lock/FK-check behind.
                         let _ = sqlx::raw_sql("UNLOCK TABLES;").execute(&mut *conn).await;
                         let _ = sqlx::query("SET FOREIGN_KEY_CHECKS = 1;").execute(&mut *conn).await;
-                        return Err(format!("Lỗi khi chạy lệnh SQL: {}. Chi tiết: {}", stmt_for_error(q), e));
+                        return Err(format!("Lỗi khi chạy lệnh SQL: {}. Chi tiết: {}", stmt_for_error(&q), e));
                     }
+                    done += 1;
                     continue;
                 }
                 statements_count += 1;
-                if idx % PROGRESS_EVERY == 0 || idx + 1 == total {
-                    send_progress(idx + 1);
-                }
-
+                done += 1;
+                tick(done, &feed);
             }
 
             // A cancelled run is rolled back like a failed one. MySQL commits implicitly on DDL, so
@@ -411,24 +582,37 @@ pub async fn restore_backup(
             // Nothing here goes through a funnel any more, so no session is ever opened. `raw_sql`
             // (the simple query protocol) because a restore runs statements and never reads a row back.
             let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
-            async fn run(conn: &mut sqlx::PgConnection, sql: &str) -> Result<(), String> {
-                sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_string()))
+            async fn run(conn: &mut sqlx::PgConnection, sql: String) -> Result<(), String> {
+                sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
                     .execute(&mut *conn)
                     .await
                     .map(|_| ())
                     .map_err(|e| e.to_string())
             }
-            let _ = run(&mut conn, "BEGIN;").await;
+            async fn run_str(conn: &mut sqlx::PgConnection, sql: &'static str) -> Result<(), String> {
+                run(conn, sql.to_string()).await
+            }
+            let _ = run_str(&mut conn, "BEGIN;").await;
             // Only valid inside a transaction, hence after BEGIN; only affects DEFERRABLE constraints.
-            let _ = run(&mut conn, "SET CONSTRAINTS ALL DEFERRED;").await;
+            let _ = run_str(&mut conn, "SET CONSTRAINTS ALL DEFERRED;").await;
 
-            for (idx, (q, session_level)) in to_run.iter().enumerate() {
+            loop {
                 if cancel.load(Ordering::Relaxed) {
                     cancelled = true;
                     break;
                 }
-                let session_level = *session_level;
-                let exec_sql = q.replace("`", "\"");
+                let (q, session_level) = match feed.next(&mut classifier).await {
+                    Ok(Some(item)) => item,
+                    Ok(None) => break,
+                    Err(e) => {
+                        let _ = run_str(&mut conn, "ROLLBACK;").await;
+                        return Err(e);
+                    }
+                };
+                // A MySQL dump's backtick-quoted identifiers, turned into Postgres' double quotes.
+                // Copied only when there is one to turn: a multi-row INSERT is hundreds of KB, and
+                // this used to be one more full copy of every statement of the dump.
+                let exec_sql = if q.contains('`') { q.replace('`', "\"") } else { q.clone() };
                 // One error puts a Postgres transaction into the aborted state (25P02), after which
                 // every later statement fails with "current transaction is aborted". Carrying on needs
                 // a rollback point per statement. Paid when the user asked to carry on, and for every
@@ -437,37 +621,37 @@ pub async fn restore_backup(
                 // the whole transaction and fail everything after it.
                 let savepoint = continue_on_error || session_level;
                 if savepoint {
-                    let _ = run(&mut conn, "SAVEPOINT tn_restore_sp;").await;
+                    let _ = run_str(&mut conn, "SAVEPOINT tn_restore_sp;").await;
                 }
-                if let Err(e) = run(&mut conn, &exec_sql).await {
+                if let Err(e) = run(&mut conn, exec_sql).await {
                     if savepoint {
-                        let _ = run(&mut conn, "ROLLBACK TO SAVEPOINT tn_restore_sp;").await;
+                        let _ = run_str(&mut conn, "ROLLBACK TO SAVEPOINT tn_restore_sp;").await;
                     }
+                    done += 1;
                     if session_level {
                         continue;
                     }
                     if continue_on_error {
                         failed_count += 1;
                         if failed_samples.len() < FAILED_SAMPLES_MAX {
-                            failed_samples.push(json!({ "sql": stmt_for_error(q), "error": e.to_string() }));
+                            failed_samples.push(json!({ "sql": stmt_for_error(&q), "error": e.to_string() }));
                         }
                         continue;
                     }
-                    let _ = run(&mut conn, "ROLLBACK;").await;
-                    return Err(format!("Lỗi khi chạy lệnh SQL: {}. Chi tiết: {}", stmt_for_error(q), e));
+                    let _ = run_str(&mut conn, "ROLLBACK;").await;
+                    return Err(format!("Lỗi khi chạy lệnh SQL: {}. Chi tiết: {}", stmt_for_error(&q), e));
                 }
                 // Release the rollback point as soon as the statement is through, so savepoints do not pile up.
                 if savepoint {
-                    let _ = run(&mut conn, "RELEASE SAVEPOINT tn_restore_sp;").await;
+                    let _ = run_str(&mut conn, "RELEASE SAVEPOINT tn_restore_sp;").await;
                 }
                 statements_count += 1;
-                if idx % PROGRESS_EVERY == 0 || idx + 1 == total {
-                    send_progress(idx + 1);
-                }
+                done += 1;
+                tick(done, &feed);
             }
 
             let end = if cancelled { "ROLLBACK;" } else { "COMMIT;" };
-            let _ = run(&mut conn, end).await;
+            let _ = run_str(&mut conn, end).await;
         }
         DbKind::Sqlite(conn_arc) => {
             // Statements go straight to the handle rather than through `execute_raw_sql_generic`, for
@@ -477,34 +661,44 @@ pub async fn restore_backup(
                 let _ = conn.execute("PRAGMA foreign_keys = OFF;", []);
                 let _ = conn.execute("BEGIN TRANSACTION;", []);
             }
+            let abort = || {
+                if let Ok(conn) = conn_arc.lock() {
+                    let _ = conn.execute("ROLLBACK;", []);
+                    let _ = conn.execute("PRAGMA foreign_keys = ON;", []);
+                }
+            };
 
-            for (idx, (q, session_level)) in to_run.iter().enumerate() {
+            loop {
                 if cancel.load(Ordering::Relaxed) {
                     cancelled = true;
                     break;
                 }
-                let session_level = *session_level;
-                if let Err(e) = sqlite_raw(conn_arc, q) {
+                let (q, session_level) = match feed.next(&mut classifier).await {
+                    Ok(Some(item)) => item,
+                    Ok(None) => break,
+                    Err(e) => {
+                        abort();
+                        return Err(e);
+                    }
+                };
+                if let Err(e) = sqlite_raw(conn_arc, &q) {
+                    done += 1;
                     if !session_level && continue_on_error {
                         failed_count += 1;
                         if failed_samples.len() < FAILED_SAMPLES_MAX {
-                            failed_samples.push(json!({ "sql": stmt_for_error(q), "error": e.to_string() }));
+                            failed_samples.push(json!({ "sql": stmt_for_error(&q), "error": e.to_string() }));
                         }
                         continue;
                     }
                     if !session_level {
-                        if let Ok(conn) = conn_arc.lock() {
-                            let _ = conn.execute("ROLLBACK;", []);
-                            let _ = conn.execute("PRAGMA foreign_keys = ON;", []);
-                        }
-                        return Err(format!("Lỗi khi chạy lệnh SQL: {}. Chi tiết: {}", stmt_for_error(q), e));
+                        abort();
+                        return Err(format!("Lỗi khi chạy lệnh SQL: {}. Chi tiết: {}", stmt_for_error(&q), e));
                     }
                     continue;
                 }
                 statements_count += 1;
-                if idx % PROGRESS_EVERY == 0 || idx + 1 == total {
-                    send_progress(idx + 1);
-                }
+                done += 1;
+                tick(done, &feed);
             }
 
             if let Ok(conn) = conn_arc.lock() {
@@ -513,6 +707,8 @@ pub async fn restore_backup(
             }
         }
     }
+    let last_use_db = classifier.last_use_db;
+
 
     if cancelled {
         // Not an `Err`: nothing failed, and an error string would be translated and shown as one.
@@ -571,7 +767,7 @@ pub async fn restore_backup(
         }
     }
 
-    let _ = on_progress.send(json!({ "type": "done", "done": total, "total": total, "statementsCount": statements_count }));
+    let _ = on_progress.send(json!({ "type": "done", "done": done, "total": feed.total().unwrap_or(done), "statementsCount": statements_count }));
 
     Ok(json!({
         "success": true,

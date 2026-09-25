@@ -777,10 +777,11 @@ export const App: React.FC = () => {
   // Returns true when the import finished -> ImportDatabaseDialog closes itself.
   // targetDb: the destination database, taken from the file or typed by the user; created if absent.
   const handleImportDatabase = async (
-    sqlText: string,
+    source: { path: string; mysqlScript: boolean },
     tables: string[],
     targetDb: string,
-    continueOnError = false
+    continueOnError: boolean,
+    prepend: string[],
   ): Promise<boolean> => {
     try {
       const wantDb = targetDb.trim();
@@ -856,11 +857,13 @@ export const App: React.FC = () => {
         run: (ctx) => withJobConnection(restoreConnId, [approval], async ({ connId }) => {
           const toProgress = makeRestoreReporter(t);
           const resData = await dbHelper.restoreBackup(
-            sqlText,
+            source,
             tables,
             (msg) => ctx.report(toProgress(msg)),
             continueOnError,
             connId,
+            false,
+            prepend,
           );
           if (resData.cancelled) return restoreCancelledResult(t, resData);
           if (!resData.success) throw new Error(addExistsHint(resData.error || '', false));

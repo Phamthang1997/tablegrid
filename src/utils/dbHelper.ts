@@ -22,6 +22,7 @@ import type {
   GenTargets,
 } from './dataGenHelper';
 import type { ProcessListSummary, KillResult } from './processMonitorTypes';
+import type { DumpScan } from './dumpPreview';
 
 /**
  * Which backend connection commands act on. Set from `connect()`'s response, cleared by
@@ -1908,7 +1909,12 @@ export const dbHelper = {
   // the Channel every ~20 statements, so the UI can draw a real progress bar instead of an
   // indeterminate one.
   async restoreBackup(
-    sqlContent: string,
+    /**
+     * The dump: its text (a dump built in memory — copy database), or a file on disk, which Rust
+     * reads and splits itself so a file of any size never becomes one string (`dump_file.rs`).
+     * `mysqlScript` is `scanDumpFile`'s answer, passed back so the file is not read twice.
+     */
+    source: string | { path: string; mysqlScript?: boolean },
     tables: string[],
     onProgress?: (msg: { type: string; done?: number; total?: number; statementsCount?: number }) => void,
     /** Skip a failing statement and carry on instead of rolling everything back (see `restore_backup`). */
@@ -1923,6 +1929,8 @@ export const dbHelper = {
      * "replay the whole file".
      */
     runAll?: boolean,
+    /** Statements run before the dump's own: the overwrite option's `DROP … IF EXISTS` list. */
+    prepend?: string[],
   ): Promise<{
     success: boolean;
     /** Stopped by `cancelRestore` and rolled back. `success` is false, `error` empty. */
@@ -1941,8 +1949,12 @@ export const dbHelper = {
       // messages are simply dropped.
       const channel = new Channel<any>();
       if (onProgress) channel.onmessage = onProgress;
+      const file = typeof source === 'string' ? null : source;
       const res: any = await invoke('restore_backup', withConnId({
-        sqlContent,
+        sqlContent: file ? null : source,
+        filePath: file ? file.path : null,
+        mysqlScript: file?.mysqlScript ?? null,
+        prepend: prepend?.length ? prepend : null,
         tables,
         onProgress: channel,
         continueOnError: !!continueOnError,
@@ -1961,6 +1973,21 @@ export const dbHelper = {
     } catch (err: any) {
       return { success: false, error: err.toString() };
     }
+  },
+
+  /**
+   * Reads a dump file from disk and reports what the restore screens show — tables, objects, the
+   * target database, planned counts and a preview — without the file entering the webview.
+   * Resolves to `null` when a newer scan started before this one finished. Throws on failure.
+   */
+  async scanDumpFile(
+    path: string,
+    onProgress?: (p: { bytesDone: number; bytesTotal: number }) => void,
+  ): Promise<DumpScan | null> {
+    const channel = new Channel<any>();
+    if (onProgress) channel.onmessage = onProgress;
+    const res: any = await invoke('scan_dump_file', { path, onProgress: channel });
+    return res?.superseded ? null : (res as DumpScan);
   },
 
   /**

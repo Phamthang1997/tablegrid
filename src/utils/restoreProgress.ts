@@ -33,6 +33,9 @@ export interface RestoreProgressMsg {
   done?: number;
   total?: number;
   statementsCount?: number;
+  /** A restore read from a FILE: its total is unknown until the end, so progress is bytes read. */
+  bytesDone?: number;
+  bytesTotal?: number;
 }
 
 /**
@@ -64,11 +67,30 @@ export function makeRestoreReporter(t: TFunction): (msg: RestoreProgressMsg) => 
     const done = msg.done ?? 0;
     const total = msg.total ?? 0;
 
+    const elapsed = (Date.now() - startedAt) / 1000;
+
+    // Streamed from a file: the bar is the share of the file read. Bytes are also the better rate
+    // for the ETA — a statement count mixes a few DDL with thousands of INSERTs, bytes do not.
+    if (msg.bytesTotal) {
+      const bytes = msg.bytesDone ?? 0;
+      const pct = Math.min(100, Math.floor((bytes / msg.bytesTotal) * 100));
+      const rate = bytes > 0 ? bytes / elapsed : 0;
+      const remain = rate > 0 && msg.bytesTotal > bytes ? Math.round((msg.bytesTotal - bytes) / rate) : 0;
+      const vals = { done: done.toLocaleString(), pct };
+      return {
+        label: t('connection.restoreInProgress'),
+        current: bytes,
+        total: msg.bytesTotal,
+        detail: remain > 0
+          ? t('connection.restoreDetailFileEta', { ...vals, eta: formatRestoreEta(t, remain) })
+          : t('connection.restoreDetailFile', vals),
+      };
+    }
+
     if (msg.type === 'start') {
       return { label: t('connection.restoreRunning', { n: total.toLocaleString() }), current: 0, total };
     }
 
-    const elapsed = (Date.now() - startedAt) / 1000;
     const rate = done > 0 ? done / elapsed : 0;
     const remain = rate > 0 && total > done ? Math.round((total - done) / rate) : 0;
     const counts = { done: done.toLocaleString(), total: total.toLocaleString() };
