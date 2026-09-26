@@ -22,6 +22,7 @@
 #![allow(clippy::manual_async_fn)]
 
 pub mod app;
+pub mod backup_prune;
 pub mod compare;
 pub mod credentials;
 pub mod database;

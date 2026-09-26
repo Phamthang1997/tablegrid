@@ -8,6 +8,7 @@ import {
   registerConnection,
 } from './safeMode';
 import { getStmtTimeoutForConfig } from './stmtTimeout';
+import { withHostKeyTrust, type HostKeyChallenge } from './sshHostKeys';
 import type {
   CompareSide,
   DataCompareResult,
@@ -151,6 +152,25 @@ async function invoke<T = any>(cmd: string, args?: Record<string, unknown>): Pro
     // Error, so the message does not gain an "Error: " prefix.
     throw typeof err === 'string' ? translateBackendError(err) : err;
   }
+}
+
+/** The key an SSH server presented the last time it was refused — see `utils/sshHostKeys.ts`. */
+function readHostKeyChallenge(host: string, port: number): Promise<HostKeyChallenge | null> {
+  return invoke<HostKeyChallenge | null>('ssh_host_key_challenge', { host, port });
+}
+
+/**
+ * Every connect that can open an SSH session goes through this, so an untrusted host key becomes a
+ * question to the user and a retry rather than an error. `failed` reads a resolved result, for the
+ * methods that answer `{ success: false }` instead of throwing.
+ */
+function withSshTrust<T>(
+  config: Pick<DbConnectionConfig, 'sshEnabled' | 'sshHost' | 'sshPort'>,
+  attempt: () => Promise<T>,
+  failed?: (result: T) => boolean,
+): Promise<T> {
+  if (!config.sshEnabled) return attempt();
+  return withHostKeyTrust(readHostKeyChallenge, config.sshHost, config.sshPort, attempt, failed);
 }
 
 /**
@@ -625,17 +645,22 @@ function sqlConnectConfig(config: DbConnectionConfig): Record<string, unknown> {
   };
 }
 
+export interface ConnectResult {
+  success: boolean;
+  message: string;
+  database?: string;
+  schema?: string | null;
+  /** The connection id just minted. Redis returns one too, since it shares the registry (§2.3). */
+  connId?: string;
+}
+
 export const dbHelper = {
-  async connect(
-    config: DbConnectionConfig,
-  ): Promise<{
-    success: boolean;
-    message: string;
-    database?: string;
-    schema?: string | null;
-    /** The connection id just minted. Redis returns one too, since it shares the registry (§2.3). */
-    connId?: string;
-  }> {
+  async connect(config: DbConnectionConfig): Promise<ConnectResult> {
+    return withSshTrust(config, () => dbHelper.connectOnce(config), (r) => !r.success);
+  },
+
+  /** `connect` without the host key prompt; call `connect`. */
+  async connectOnce(config: DbConnectionConfig): Promise<ConnectResult> {
     // Redis goes through its own redis_* commands, not SQL's connect_db.
     if (config.type === 'redis') {
       try {
@@ -747,6 +772,16 @@ export const dbHelper = {
    * `closeJobConnection`.
    */
   async connectJob(config: DbConnectionConfig): Promise<{
+    success: boolean;
+    message: string;
+    schema?: string | null;
+    connId?: string;
+  }> {
+    return withSshTrust(config, () => dbHelper.connectJobOnce(config), (r) => !r.success);
+  },
+
+  /** `connectJob` without the host key prompt; call `connectJob`. */
+  async connectJobOnce(config: DbConnectionConfig): Promise<{
     success: boolean;
     message: string;
     schema?: string | null;
@@ -1413,6 +1448,23 @@ export const dbHelper = {
     return await invoke('vault_reset');
   },
 
+  /** Trust the key an SSH server was refused with. `fingerprint` is the one the user was shown. */
+  async sshTrustHostKey(host: string, port: number, fingerprint: string): Promise<void> {
+    await invoke('ssh_trust_host_key', { host, port, fingerprint });
+  },
+
+  /**
+   * Deletes a scheduled backup's oldest files in `dir` beyond the newest `keep` — only names the
+   * scheduler itself writes (`<prefix>-YYYYMMDD-HHMMSS.sql[.gz]`); see `backup_prune.rs`.
+   */
+  async pruneBackups(
+    dir: string,
+    prefix: string,
+    keep: number,
+  ): Promise<{ deleted: string[]; failed: { name: string; error: string }[] }> {
+    return await invoke('prune_backups', { dir, prefix, keep });
+  },
+
   // ---- SSH Terminal ----
   // Opens an SSH session plus a PTY/shell. The server pushes its output back over a Channel
   // (onMessage).
@@ -1423,9 +1475,11 @@ export const dbHelper = {
     rows: number,
     onMessage: (msg: SshTerminalMessage) => void
   ): Promise<void> {
-    const channel = new Channel<SshTerminalMessage>();
-    channel.onmessage = onMessage;
-    await invoke('open_ssh_terminal', {
+    // A fresh Channel per attempt: a retry after trusting the host key is a new session.
+    const open = async () => {
+      const channel = new Channel<SshTerminalMessage>();
+      channel.onmessage = onMessage;
+      await invoke('open_ssh_terminal', {
       profileConfig: {
         sshHost: profileConfig.sshHost,
         sshPort: profileConfig.sshPort,
@@ -1441,6 +1495,8 @@ export const dbHelper = {
       rows,
       channel,
     });
+    };
+    await withSshTrust({ ...profileConfig, sshEnabled: true }, open);
   },
 
   async sendSshInput(sessionId: string, data: string): Promise<void> {
@@ -2047,6 +2103,11 @@ export const dbHelper = {
 
 
   async getDatabasesList(config: DbConnectionConfig): Promise<{ success: boolean; databases: string[]; error?: string }> {
+    return withSshTrust(config, () => dbHelper.getDatabasesListOnce(config), (r) => !r.success);
+  },
+
+  /** `getDatabasesList` without the host key prompt; call `getDatabasesList`. */
+  async getDatabasesListOnce(config: DbConnectionConfig): Promise<{ success: boolean; databases: string[]; error?: string }> {
     try {
       const mappedConfig = {
         dbType: config.type,

@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use flate2::read::MultiGzDecoder;
 
-use super::pg_archive::{PgRestoreReader, detect_pg_archive, find_pg_restore};
+use super::pg_archive::{ArchiveInput, PgRestoreReader, detect_pg_archive, find_pg_restore};
 use super::splitter::{
     StmtSplitter, decode_dump_text, is_copy_from_stdin, line_is_delimiter_command,
 };
@@ -76,7 +76,7 @@ pub(crate) fn open_dump(path: &str) -> Result<DumpFile, String> {
     if detect_pg_archive(head).is_some() {
         drop(buffered);
         let tool = find_pg_restore().ok_or_else(|| PG_RESTORE_MISSING.to_string())?;
-        let reader = PgRestoreReader::spawn(&tool, path)?;
+        let reader = PgRestoreReader::spawn(&tool, ArchiveInput::Path(path.to_string()))?;
         let out_read = Arc::new(AtomicU64::new(0));
         return Ok(DumpFile {
             reader: Box::new(Counting {
@@ -96,11 +96,22 @@ pub(crate) fn open_dump(path: &str) -> Result<DumpFile, String> {
     // decoder would silently stop after the first.
     let reader: Box<dyn Read + Send> = if gzip {
         let mut inner = BufReader::with_capacity(READ_CHUNK, MultiGzDecoder::new(buffered));
-        // A gzipped ARCHIVE cannot be streamed into pg_restore by path; say so rather than
-        // reading compressed binary as SQL and failing on its first "statement".
+        // A gzipped ARCHIVE (`pg_dump -Fc | gzip`, a `.dump.gz`): decompressed here and fed to
+        // pg_restore's stdin, since pg_restore itself reads no gzip. Progress stays the share of
+        // the FILE read — `bytes_read` counts the compressed bytes the decoder pulls, which is
+        // exactly what a plain `.sql.gz` reports — so this path keeps a real progress bar.
         let inner_head = inner.fill_buf().map_err(read_error)?;
         if detect_pg_archive(inner_head).is_some() {
-            return Err(PG_ARCHIVE_GZIPPED.to_string());
+            let tool = find_pg_restore().ok_or_else(|| PG_RESTORE_MISSING.to_string())?;
+            let reader = PgRestoreReader::spawn(&tool, ArchiveInput::Stream(Box::new(inner)))?;
+            return Ok(DumpFile {
+                reader: Box::new(reader),
+                bytes_read,
+                bytes_total: file_bytes,
+                file_bytes,
+                gzip: true,
+                via: Some(tool.label),
+            });
         }
         Box::new(inner)
     } else {
@@ -118,8 +129,6 @@ pub(crate) fn open_dump(path: &str) -> Result<DumpFile, String> {
 
 /// No `pg_restore` anywhere the app looks (see `pg_archive::candidates`).
 const PG_RESTORE_MISSING: &str = "Tệp là bản dump định dạng custom/tar của pg_dump, cần pg_restore để đọc nhưng không tìm thấy pg_restore trên máy — cài PostgreSQL client tools hoặc thêm thư mục bin của nó vào PATH";
-const PG_ARCHIVE_GZIPPED: &str =
-    "Tệp nén chứa bản dump định dạng custom/tar của pg_dump — hãy giải nén trước khi phục hồi";
 
 fn read_error(e: std::io::Error) -> String {
     let m = e.to_string();
@@ -439,16 +448,30 @@ mod tests {
         let _ = std::fs::remove_file(p);
     }
 
-    /// A gzipped pg_dump archive cannot go to pg_restore by path: it is refused in words, instead of
-    /// its compressed bytes being read as SQL.
+    /// A gzipped pg_dump archive is recognised INSIDE the gzip and fed to pg_restore, instead of its
+    /// compressed bytes being read as SQL.
     #[test]
-    fn a_gzipped_pg_archive_is_refused_in_words() {
+    fn a_gzipped_pg_archive_goes_through_pg_restore() {
         let p = temp_file(
             "archive.dump.gz",
-            &gz(b"PGDMP\x01\x10\x00rest of the archive"),
+            &gz(b"PGDMP\x01\x10\x00not really an archive"),
         );
-        let err = open_dump(&p).err().expect("refused");
-        assert!(err.contains("giải nén"), "{err}");
+        match open_dump(&p) {
+            // With a pg_restore on the machine the archive is decompressed into its stdin. These
+            // bytes are not a real archive, so what must come back is pg_restore's OWN complaint —
+            // not an empty script that restores nothing, and not the bytes read as SQL.
+            Ok(mut dump) => {
+                assert!(dump.gzip);
+                assert!(dump.via.as_deref().unwrap_or("").starts_with("pg_restore"));
+                let mut out = String::new();
+                let err = dump
+                    .reader
+                    .read_to_string(&mut out)
+                    .expect_err("pg_restore fails");
+                assert!(err.to_string().starts_with("pg_restore báo lỗi:"), "{err}");
+            }
+            Err(e) => assert!(e.contains("không tìm thấy pg_restore"), "{e}"),
+        }
         let _ = std::fs::remove_file(p);
     }
 

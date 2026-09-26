@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { dbHelper } from '../utils/dbHelper';
 import { Plus, Trash2 } from 'lucide-react';
+import { nextRowId, withoutRowIds, type WithRowId } from '../utils/rowIds';
 
 interface ColumnInfo {
   name: string;
@@ -44,15 +45,17 @@ export const CreateTableModal: React.FC<CreateTableModalProps> = ({
   const [activeTab, setActiveTab] = useState<'columns' | 'indexes' | 'foreignKeys'>('columns');
 
   // Columns state - default to first id column
-  const [cols, setCols] = useState<ColumnInfo[]>([
-    { name: 'id', type: dbType === 'postgres' ? 'INTEGER' : 'INTEGER', isPrimaryKey: true, autoIncrement: true, nullable: false }
+  // Every row carries a `rowId` for its React key (see `utils/rowIds.ts`): keyed by position,
+  // deleting a middle row gave its inputs to the row below it.
+  const [cols, setCols] = useState<WithRowId<ColumnInfo>[]>(() => [
+    { rowId: nextRowId(), name: 'id', type: dbType === 'postgres' ? 'INTEGER' : 'INTEGER', isPrimaryKey: true, autoIncrement: true, nullable: false }
   ]);
 
   // Indexes state
-  const [idxs, setIdxs] = useState<IndexInfo[]>([]);
+  const [idxs, setIdxs] = useState<WithRowId<IndexInfo>[]>([]);
 
   // FKs state
-  const [fks, setFks] = useState<FkInfo[]>([]);
+  const [fks, setFks] = useState<WithRowId<FkInfo>[]>([]);
 
   if (!isOpen) return null;
 
@@ -81,7 +84,7 @@ export const CreateTableModal: React.FC<CreateTableModalProps> = ({
   const handleAddColumn = () => {
     setCols([
       ...cols,
-      { name: `col_${cols.length + 1}`, type: dbTypes[0], isPrimaryKey: false, autoIncrement: false, nullable: true }
+      { rowId: nextRowId(), name: `col_${cols.length + 1}`, type: dbTypes[0], isPrimaryKey: false, autoIncrement: false, nullable: true }
     ]);
   };
 
@@ -101,7 +104,7 @@ export const CreateTableModal: React.FC<CreateTableModalProps> = ({
   const handleAddIndex = () => {
     setIdxs([
       ...idxs,
-      { name: `idx_${tableName || 'table'}_col_${idxs.length + 1}`, columns: '', unique: false }
+      { rowId: nextRowId(), name: `idx_${tableName || 'table'}_col_${idxs.length + 1}`, columns: '', unique: false }
     ]);
   };
 
@@ -121,7 +124,7 @@ export const CreateTableModal: React.FC<CreateTableModalProps> = ({
   const handleAddFk = () => {
     setFks([
       ...fks,
-      { name: `fk_${tableName || 'table'}_col_${fks.length + 1}`, column: '', refTable: '', refColumn: '' }
+      { rowId: nextRowId(), name: `fk_${tableName || 'table'}_col_${fks.length + 1}`, column: '', refTable: '', refColumn: '' }
     ]);
   };
 
@@ -153,7 +156,7 @@ export const CreateTableModal: React.FC<CreateTableModalProps> = ({
       // Send only the indexes and foreign keys that are fully filled in, so no broken SQL is generated
       const validIdxs = idxs.filter(i => i.name.trim() && i.columns.trim());
       const validFks = fks.filter(f => f.column.trim() && f.refTable.trim() && f.refColumn.trim());
-      const res = await dbHelper.createTable(name, cols, validIdxs, validFks);
+      const res = await dbHelper.createTable(name, withoutRowIds(cols), withoutRowIds(validIdxs), withoutRowIds(validFks));
       if (res.success) {
         alert(t('createTable.created'));
         onTableCreated(name);
@@ -244,7 +247,7 @@ export const CreateTableModal: React.FC<CreateTableModalProps> = ({
                   </thead>
                   <tbody>
                     {cols.map((col, idx) => (
-                      <tr key={idx} style={{ borderBottom: '1px solid var(--win-border)' }}>
+                      <tr key={col.rowId} style={{ borderBottom: '1px solid var(--win-border)' }}>
                         <td style={{ padding: '4px' }}>
                           <input 
                             type="text" 
@@ -345,7 +348,7 @@ export const CreateTableModal: React.FC<CreateTableModalProps> = ({
                   </thead>
                   <tbody>
                     {idxs.map((idxInfo, idx) => (
-                      <tr key={idx} style={{ borderBottom: '1px solid var(--win-border)' }}>
+                      <tr key={idxInfo.rowId} style={{ borderBottom: '1px solid var(--win-border)' }}>
                         <td style={{ padding: '4px' }}>
                           <input 
                             type="text" 
@@ -410,7 +413,7 @@ export const CreateTableModal: React.FC<CreateTableModalProps> = ({
                   </thead>
                   <tbody>
                     {fks.map((fk, idx) => (
-                      <tr key={idx} style={{ borderBottom: '1px solid var(--win-border)' }}>
+                      <tr key={fk.rowId} style={{ borderBottom: '1px solid var(--win-border)' }}>
                         <td style={{ padding: '4px' }}>
                           <input 
                             type="text" 
