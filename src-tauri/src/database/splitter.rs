@@ -507,13 +507,42 @@ fn scan_step(b: &[u8], st: &mut ScanState, eof: bool) -> Scan {
     if eof { Scan::End } else { Scan::NeedMore }
 }
 
-/// The text of `b[from..to]` as a statement, or None when it is only whitespace.
+/// Windows-1252 — what MySQL calls `latin1` — for the bytes 0x80..=0x9F, where it differs from
+/// ISO-8859-1. The five bytes 1252 leaves undefined map to the same code point, as MySQL does.
+const CP1252_HIGH: [char; 32] = [
+    '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008D}', '\u{017D}', '\u{008F}',
+    '\u{0090}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{009D}', '\u{017E}', '\u{0178}',
+];
+
+/// Dump bytes as text: UTF-8 when they are valid UTF-8, otherwise latin1 (Windows-1252).
 ///
-/// Lossy on purpose: a dump with a stray invalid byte used to be read by the webview's
-/// `readAsText`, which replaced it with U+FFFD the same way. A boundary is always an ASCII byte, so
-/// no valid character is ever cut in half here.
+/// This used to be `from_utf8_lossy`, which turned every accented letter of a latin1 dump — the
+/// classic MySQL `world` sample is one, `Curaçao` is the byte 0xE7 — into U+FFFD, and the restore
+/// then wrote the replacement character into the database with no error anywhere. A single-byte
+/// file is almost never valid UTF-8 by accident, so the check is a reliable answer; it is made per
+/// statement (a boundary is always an ASCII byte, so no character is ever cut in half) because a
+/// streamed file cannot be looked at as a whole first. What is decoded here is sent to the server
+/// as UTF-8, which is why `restore_backup` pins the session charset (`pin_client_charset`).
+pub(crate) fn decode_dump_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => std::borrow::Cow::Borrowed(s),
+        Err(_) => std::borrow::Cow::Owned(
+            bytes
+                .iter()
+                .map(|&c| match c {
+                    0x80..=0x9F => CP1252_HIGH[(c - 0x80) as usize],
+                    _ => c as char,
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// The text of `b[from..to]` as a statement, or None when it is only whitespace.
 fn stmt_text(b: &[u8], from: usize, to: usize) -> Option<String> {
-    let s = String::from_utf8_lossy(&b[from..to]);
+    let s = decode_dump_text(&b[from..to]);
     let t = s.trim();
     if t.is_empty() {
         None
@@ -987,6 +1016,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A latin1 dump (MySQL's `world` sample) is decoded as latin1, not replaced with U+FFFD —
+    /// which is what used to land in the database. Windows-1252's own bytes (0x80–0x9F) included.
+    #[test]
+    fn a_latin1_dump_keeps_its_accented_letters() {
+        let mut sp = StmtSplitter::new(false).with_client_commands();
+        sp.feed(b"INSERT INTO city VALUES ('Cura\xe7ao', 'Santaf\xe9 de Bogot\xe1');\nSELECT '\x80 \x93x\x94';");
+        sp.finish();
+        assert_eq!(
+            sp.next_stmt().as_deref(),
+            Some("INSERT INTO city VALUES ('Curaçao', 'Santafé de Bogotá')")
+        );
+        assert_eq!(
+            sp.next_stmt().as_deref(),
+            Some("SELECT '€ \u{201C}x\u{201D}'")
+        );
+        // Valid UTF-8 is read as UTF-8, and borrowed rather than copied.
+        assert!(matches!(
+            decode_dump_text("Curaçao".as_bytes()),
+            std::borrow::Cow::Borrowed("Curaçao")
+        ));
     }
 
     #[test]

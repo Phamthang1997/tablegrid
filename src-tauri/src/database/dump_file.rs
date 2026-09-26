@@ -18,7 +18,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use flate2::read::MultiGzDecoder;
 
-use super::splitter::{StmtSplitter, is_copy_from_stdin, line_is_delimiter_command};
+use super::splitter::{
+    StmtSplitter, decode_dump_text, is_copy_from_stdin, line_is_delimiter_command,
+};
 
 /// How much is read from the file per step. Big enough that syscalls are not the cost, small
 /// enough that the buffered unfinished statement stays the only large allocation.
@@ -263,6 +265,14 @@ impl Iterator for DumpStatements {
                         }
                         self.end_owed = true;
                     }
+                    // Transcoded like the statements (see `decode_dump_text`): the restore pins
+                    // the session to UTF-8, so a latin1 block must reach it as UTF-8 too. Chunks
+                    // are whole lines, so no character is ever split between two of them.
+                    let data = if std::str::from_utf8(&data).is_ok() {
+                        data
+                    } else {
+                        decode_dump_text(&data).into_owned().into_bytes()
+                    };
                     return Some(Ok(DumpItem::CopyData(data)));
                 }
                 if self.finished {

@@ -138,6 +138,51 @@ pub(super) fn is_skipped_stmt(stmt_upper: &str) -> bool {
         || stmt_upper.starts_with("DROP DATABASE")
 }
 
+/// A statement setting the session's client charset, re-aimed at UTF-8 — or None for any other.
+///
+/// Everything a restore sends is UTF-8: the splitter decodes a latin1 dump into it
+/// (`decode_dump_text`). A dump's own `SET NAMES latin1` (mysqldump writes one in its header,
+/// and `SET character_set_client = utf8` around every CREATE TABLE) would then make the server
+/// read those UTF-8 bytes as latin1 and store `CuraÃ§ao`. Pinned to UTF-8, the server converts
+/// to each column's own charset itself, which is what the dump meant. Only a statement that sets
+/// nothing else is touched: `SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT` and
+/// `SET character_set_client = @saved_cs_client` keep their meaning (they save and restore).
+fn pin_client_charset(stmt: &str, postgres: bool) -> Option<String> {
+    use std::sync::LazyLock;
+    static MY_NAMES: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)^SET\s+(?:NAMES|CHARACTER\s+SET|CHARSET)\s+'?([A-Za-z0-9_]+)'?(?:\s+COLLATE\s+'?[A-Za-z0-9_]+'?)?\s*$",
+        )
+        .expect("MY_NAMES")
+    });
+    static MY_VAR: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)^SET\s+(?:@@(?:SESSION\.)?|SESSION\s+)?character_set_(client|connection|results)\s*=\s*'?([A-Za-z0-9_]+)'?\s*$",
+        )
+        .expect("MY_VAR")
+    });
+    static PG_ENC: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^SET\s+client_encoding\s*(?:=|TO)\s*'?([A-Za-z0-9_-]+)'?\s*$")
+            .expect("PG_ENC")
+    });
+    // mysqldump wraps these in version comments (`/*!40101 SET NAMES latin1 */`); MySQL runs
+    // what is inside, so that is what is read.
+    let head = crate::database::classification_head(stmt).trim();
+    let head = head.strip_suffix("*/").unwrap_or(head).trim_end();
+    if postgres {
+        let c = PG_ENC.captures(head)?;
+        let enc = c[1].to_ascii_uppercase();
+        return (!matches!(enc.as_str(), "UTF8" | "UTF-8" | "UNICODE"))
+            .then(|| "SET client_encoding = 'UTF8'".to_string());
+    }
+    if let Some(c) = MY_NAMES.captures(head) {
+        return (!c[1].eq_ignore_ascii_case("utf8mb4")).then(|| "SET NAMES utf8mb4".to_string());
+    }
+    let c = MY_VAR.captures(head)?;
+    (!c[2].eq_ignore_ascii_case("utf8mb4"))
+        .then(|| format!("SET character_set_{} = utf8mb4", c[1].to_ascii_lowercase()))
+}
+
 /// `ALTER DATABASE <the dump's db> SET …` aimed at `current` instead — or None for any other
 /// statement, and for the other forms of ALTER DATABASE (OWNER TO, RENAME, …), which stay aimed
 /// at the database they name.
@@ -170,12 +215,20 @@ fn retarget_alter_database(stmt: &str, current: &str) -> Option<String> {
     };
     let tail = &rest[name_len..];
     let verb = tail.trim_start();
-    let is_set = verb.get(..4).is_some_and(|w| w.eq_ignore_ascii_case("SET "))
-        || verb.get(..6).is_some_and(|w| w.eq_ignore_ascii_case("RESET "));
+    let is_set = verb
+        .get(..4)
+        .is_some_and(|w| w.eq_ignore_ascii_case("SET "))
+        || verb
+            .get(..6)
+            .is_some_and(|w| w.eq_ignore_ascii_case("RESET "));
     if !is_set {
         return None;
     }
-    Some(format!("ALTER DATABASE \"{}\"{}", current.replace('"', "\"\""), tail))
+    Some(format!(
+        "ALTER DATABASE \"{}\"{}",
+        current.replace('"', "\"\""),
+        tail
+    ))
 }
 
 // Session-/schema-level statements in a dump file: they always run even when the user selected only some tables
@@ -745,7 +798,9 @@ pub async fn restore_backup(
                 // raw_sql = the text protocol: MySQL does NOT allow CREATE/DROP TRIGGER|PROCEDURE|FUNCTION|
                 // EVENT through a prepared statement (error 1295), and a dump usually contains all of those.
                 // A restore only needs to run statements, never to read a row, so the text protocol is used for everything.
-                if let Err(e) = sqlx::raw_sql(sqlx::AssertSqlSafe(q.clone())).execute(&mut *conn).await {
+                // The dump's own charset statements are pinned to UTF-8 — see `pin_client_charset`.
+                let exec_sql = pin_client_charset(&q, false).unwrap_or_else(|| q.clone());
+                if let Err(e) = sqlx::raw_sql(sqlx::AssertSqlSafe(exec_sql)).execute(&mut *conn).await {
                     // A CREATE VIEW read a table the dump has not created yet: try it again at the end.
                     // A failed statement does not abort a MySQL transaction, so no savepoint is needed.
                     if !feed.retrying() && is_create_view(&q) {
@@ -883,6 +938,8 @@ pub async fn restore_backup(
                     .as_deref()
                     .and_then(|db| retarget_alter_database(&q, db))
                 {
+                    sql
+                } else if let Some(sql) = pin_client_charset(&q, true) {
                     sql
                 } else if q.contains('`') {
                     q.replace('`', "\"")
@@ -1095,8 +1152,14 @@ mod tests {
         assert_eq!(classify(&[], "-- x\ndrop database if exists demo"), None);
         // Always attempted, and a failure is not fatal.
         assert_eq!(
-            classify(&["lang"], "ALTER DATABASE demo SET \"bookings.lang\" TO 'en'"),
-            Some(("ALTER DATABASE demo SET \"bookings.lang\" TO 'en'".into(), true))
+            classify(
+                &["lang"],
+                "ALTER DATABASE demo SET \"bookings.lang\" TO 'en'"
+            ),
+            Some((
+                "ALTER DATABASE demo SET \"bookings.lang\" TO 'en'".into(),
+                true
+            ))
         );
         assert_eq!(
             classify(&["film"], "ALTER DATABASE demo OWNER TO postgres").map(|c| c.1),
@@ -1122,17 +1185,139 @@ mod tests {
     #[test]
     fn a_dumps_database_settings_follow_the_data_into_the_target() {
         assert_eq!(
-            retarget_alter_database("-- Name: demo\nALTER DATABASE demo SET \"bookings.lang\" TO 'en'", "postgres").as_deref(),
+            retarget_alter_database(
+                "-- Name: demo\nALTER DATABASE demo SET \"bookings.lang\" TO 'en'",
+                "postgres"
+            )
+            .as_deref(),
             Some("ALTER DATABASE \"postgres\" SET \"bookings.lang\" TO 'en'")
         );
         assert_eq!(
-            retarget_alter_database("alter database \"my \"\"db\"\"\" reset all", "x\"y").as_deref(),
+            retarget_alter_database("alter database \"my \"\"db\"\"\" reset all", "x\"y")
+                .as_deref(),
             Some("ALTER DATABASE \"x\"\"y\" reset all")
         );
         // Other forms stay aimed at the database they name.
-        assert_eq!(retarget_alter_database("ALTER DATABASE demo OWNER TO postgres", "p"), None);
+        assert_eq!(
+            retarget_alter_database("ALTER DATABASE demo OWNER TO postgres", "p"),
+            None
+        );
         assert_eq!(retarget_alter_database("ALTER DATABASE demo", "p"), None);
-        assert_eq!(retarget_alter_database("ALTER TABLE t SET SCHEMA s", "p"), None);
+        assert_eq!(
+            retarget_alter_database("ALTER TABLE t SET SCHEMA s", "p"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_dumps_charset_statements_are_pinned_to_utf8() {
+        let my = |q: &str| pin_client_charset(q, false);
+        assert_eq!(
+            my("/*!40101 SET NAMES latin1 */").as_deref(),
+            Some("SET NAMES utf8mb4")
+        );
+        assert_eq!(
+            my("SET NAMES 'utf8' COLLATE 'utf8_general_ci'").as_deref(),
+            Some("SET NAMES utf8mb4")
+        );
+        assert_eq!(
+            my("/*!40101 SET character_set_client = utf8 */").as_deref(),
+            Some("SET character_set_client = utf8mb4")
+        );
+        assert_eq!(
+            my("SET CHARACTER SET latin1").as_deref(),
+            Some("SET NAMES utf8mb4")
+        );
+        // Already UTF-8, or saving/restoring a variable: left alone.
+        assert_eq!(my("SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci"), None);
+        assert_eq!(
+            my("/*!40101 SET character_set_client = @saved_cs_client */"),
+            None
+        );
+        assert_eq!(
+            my("/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */"),
+            None
+        );
+        assert_eq!(
+            my("/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */"),
+            None
+        );
+        assert_eq!(my("SET NAMES latin1, time_zone = '+00:00'"), None);
+        assert_eq!(my("SET TIME_ZONE='+00:00'"), None);
+
+        let pg = |q: &str| pin_client_charset(q, true);
+        assert_eq!(
+            pg("SET client_encoding = 'LATIN1'").as_deref(),
+            Some("SET client_encoding = 'UTF8'")
+        );
+        assert_eq!(
+            pg("SET client_encoding TO win1252").as_deref(),
+            Some("SET client_encoding = 'UTF8'")
+        );
+        assert_eq!(pg("SET client_encoding = 'UTF8'"), None);
+        // Each dialect only reads its own spelling.
+        assert_eq!(pg("SET NAMES latin1"), None);
+    }
+
+    /// The MySQL twin of `replay_a_real_dump`, run the way the MySQL branch runs: the table filter
+    /// from a scan, the charset pinning, and the dump's own `USE`. Needs `DUMP_PATH` and `MYSQL_URL`,
+    /// and CREATES whatever database the dump's `CREATE SCHEMA` / `USE` names. Checks nothing by
+    /// itself beyond "no statement failed" — look at the rows afterwards.
+    #[tokio::test]
+    #[ignore]
+    async fn replay_a_real_mysql_dump() {
+        let path = std::env::var("DUMP_PATH").unwrap();
+        let url = std::env::var("MYSQL_URL").unwrap();
+        let pool = MySqlPool::connect(&url).await.unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        let dump = open_dump(&path).unwrap();
+        let mut summary = super::super::dump_scan::DumpSummary::new();
+        for item in DumpStatements::new(dump.reader, false) {
+            if let DumpItem::Stmt(q) | DumpItem::CopyStart(q) = item.unwrap() {
+                summary.add(&q);
+            }
+        }
+        let tables: Vec<String> = summary.into_json()["tables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap().to_string())
+            .collect();
+        println!("tables {tables:?}");
+        let mut feed = file_feed(path, None, Vec::new()).await.unwrap();
+        let mut classifier = Classifier {
+            matcher: TableMatcher::new(&tables),
+            run_all: false,
+            last_use_db: None,
+        };
+        let _ = sqlx::query("SET FOREIGN_KEY_CHECKS = 0;")
+            .execute(&mut *conn)
+            .await;
+        let (mut ok, mut failed) = (0, 0);
+        while let Some(step) = feed.next(&mut classifier).await.unwrap() {
+            let Step::Stmt(q, session_level) = step else {
+                panic!("COPY in a MySQL dump");
+            };
+            let exec_sql = pin_client_charset(&q, false).unwrap_or_else(|| q.clone());
+            match sqlx::raw_sql(sqlx::AssertSqlSafe(exec_sql))
+                .execute(&mut *conn)
+                .await
+            {
+                Ok(_) => ok += 1,
+                Err(e) if session_level => {
+                    println!("skipped (session-level) {}: {e}", stmt_for_error(&q))
+                }
+                Err(e) => {
+                    failed += 1;
+                    println!("FAILED {}: {e}", stmt_for_error(&q));
+                }
+            }
+        }
+        let _ = sqlx::query("SET FOREIGN_KEY_CHECKS = 1;")
+            .execute(&mut *conn)
+            .await;
+        println!("ok={ok} failed={failed} use={:?}", classifier.last_use_db);
+        assert_eq!(failed, 0);
     }
 
     /// Replays a real dump file into a scratch Postgres database through the same `Feed` and
