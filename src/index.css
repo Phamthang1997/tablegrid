@@ -12822,6 +12822,34 @@ input.rename-input {
 }
 
 /* Mock Window Container & Elements */
+/* ---- What's New previews: small mock screens built from tokens only, so both themes hold. ---- */
+.wn-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; font-size: 11.5px; color: var(--win-text-primary); overflow: hidden; }
+.wn-row { display: flex; align-items: center; gap: 8px; }
+.wn-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wn-muted { color: var(--win-text-secondary); }
+.wn-small { font-size: 10.5px; }
+.wn-mono { font-family: var(--win-font-mono); }
+.wn-accent { color: var(--win-accent); }
+.wn-ok { color: var(--st-ok); }
+.wn-bar { height: 5px; border-radius: 3px; background: var(--win-bg-active); overflow: hidden; }
+.wn-bar > span { display: block; height: 100%; background: var(--win-accent); border-radius: 3px; }
+.wn-note { margin-top: auto; color: var(--win-text-secondary); font-size: 10.5px; }
+.wn-card { border: 1px solid var(--win-border); border-radius: 6px; padding: 8px 10px; background: var(--win-bg-subtle); display: flex; flex-direction: column; gap: 4px; }
+.wn-center { align-items: center; text-align: center; flex: 1; }
+.wn-tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--win-bg-hover); color: var(--win-text-secondary); }
+.wn-checks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.wn-check { display: flex; align-items: center; gap: 4px; }
+.wn-grid { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--win-border); }
+.wn-grid-head { color: var(--win-text-secondary); font-size: 10.5px; font-weight: 600; }
+.wn-mapped { display: flex; align-items: center; gap: 4px; color: var(--win-accent); }
+.wn-warn-row { margin-top: 4px; color: var(--st-warn); }
+.wn-copy { display: flex; align-items: center; gap: 12px; flex: 1; }
+.wn-lock { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+.wn-lock-field { width: 220px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--win-border-strong); background: var(--win-bg-input); letter-spacing: 2px; }
+.wn-lock-btn { width: 220px; text-align: center; padding: 6px 10px; border-radius: 6px; background: var(--win-accent); color: #fff; font-weight: 600; }
+.wn-del { background: var(--win-status-deleted); color: var(--win-text-primary); }
+.wn-add { background: var(--win-status-added); color: var(--win-text-primary); }
+
 .whats-new-window-container {
   background: var(--win-bg-card, #ffffff);
   border-radius: 6px;

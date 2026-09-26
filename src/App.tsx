@@ -62,7 +62,7 @@ import { ImportDatabaseDialog } from './components/ImportDatabaseDialog';
 import { CopyDatabaseDialog } from './components/CopyDatabaseDialog';
 import type { CopyDatabaseOptions } from './components/CopyDatabaseDialog';
 import { DocViewerModal } from './components/DocViewerModal';
-import { WhatsNewModal, WHATS_NEW_STORAGE_KEY, WHATS_NEW_AUTO_SHOW_KEY } from './components/WhatsNewModal';
+import { WhatsNewModal, WHATS_NEW_RELEASE, WHATS_NEW_STORAGE_KEY, WHATS_NEW_AUTO_SHOW_KEY } from './components/WhatsNewModal';
 import { X } from 'lucide-react';
 import { getVersion } from '@tauri-apps/api/app';
 import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './components/DbIcons';
@@ -397,7 +397,7 @@ export const App: React.FC = () => {
     const autoShow = localStorage.getItem(WHATS_NEW_AUTO_SHOW_KEY);
     if (autoShow === 'false') return false;
     const seen = localStorage.getItem(WHATS_NEW_STORAGE_KEY);
-    return !seen;
+    return seen !== WHATS_NEW_RELEASE;
   });
 
   React.useEffect(() => {

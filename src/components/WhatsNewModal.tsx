@@ -1,18 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  AlertTriangle,
+  ArrowRight,
+  Bell,
+  Check,
   ChevronLeft,
   ChevronRight,
-  Sparkles,
-  GitBranch,
-  Wand2,
-  Play,
   Copy,
-  Cpu,
-  Layers,
-  FileText,
-  Plus,
+  DatabaseBackup,
+  FileClock,
+  FileCode,
+  FileSpreadsheet,
+  KeyRound,
+  Lock,
   Minus,
+  Share2,
+  Sparkles,
   Square,
   X,
 } from 'lucide-react';
@@ -23,8 +27,44 @@ interface WhatsNewModalProps {
   onClose: () => void;
 }
 
-export const WHATS_NEW_STORAGE_KEY = 'tablegrid_whats_new_seen_v1';
+/**
+ * The release these slides describe. The dialog shows itself once per release — it compares what
+ * was last seen with this — so bump it whenever the slides change, or returning users never see
+ * them. (The old key, `tablegrid_whats_new_seen_v1`, was a plain flag: once set, no later release
+ * could show anything.)
+ */
+export const WHATS_NEW_RELEASE = '2026-09';
+export const WHATS_NEW_STORAGE_KEY = 'tablegrid_whats_new_seen';
 export const WHATS_NEW_AUTO_SHOW_KEY = 'tablegrid_whats_new_auto_show';
+
+/** A mock window around a slide's preview. */
+const PreviewWindow: React.FC<{ icon: React.ReactNode; title: string; children: React.ReactNode }> = ({
+  icon,
+  title,
+  children,
+}) => (
+  <div className="whats-new-window-container">
+    <div className="whats-new-window-titlebar">
+      <div className="whats-new-window-title">
+        {icon}
+        <span>{title}</span>
+      </div>
+      <div className="whats-new-window-controls">
+        <Minus size={11} />
+        <Square size={10} />
+        <X size={11} />
+      </div>
+    </div>
+    <div className="wn-body">{children}</div>
+  </div>
+);
+
+/** A progress bar at `pct` percent. */
+const Bar: React.FC<{ pct: number }> = ({ pct }) => (
+  <div className="wn-bar">
+    <span style={{ width: `${pct}%` }} />
+  </div>
+);
 
 export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose }) => {
   const { t } = useTranslation();
@@ -34,7 +74,189 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
     return saved !== null ? saved === 'true' : true;
   });
 
-  const totalSlides = 5;
+  const slidesData = [
+    {
+      id: 'jobs',
+      title: t('whatsNew.jobsTitle'),
+      description: t('whatsNew.jobsDesc'),
+      renderPreview: () => (
+        <PreviewWindow icon={<Bell size={13} className="wn-accent" />} title={t('whatsNew.jobsPreviewTitle')}>
+          <div className="wn-row">
+            <DatabaseBackup size={13} className="wn-accent" />
+            <span className="wn-grow">{t('whatsNew.jobsRowRestore')}</span>
+            <span className="wn-muted">64%</span>
+          </div>
+          <Bar pct={64} />
+          <div className="wn-row">
+            <FileSpreadsheet size={13} className="wn-accent" />
+            <span className="wn-grow">{t('whatsNew.jobsRowImport')}</span>
+            <span className="wn-muted">12,480 / 40,000</span>
+          </div>
+          <Bar pct={31} />
+          <div className="wn-row">
+            <Check size={13} className="wn-ok" />
+            <span className="wn-grow">{t('whatsNew.jobsRowExport')}</span>
+            <span className="wn-muted">{t('whatsNew.jobsDone')}</span>
+          </div>
+          <div className="wn-row wn-note">
+            <Bell size={12} />
+            <span>{t('whatsNew.jobsNotify')}</span>
+          </div>
+        </PreviewWindow>
+      ),
+    },
+    {
+      id: 'restore',
+      title: t('whatsNew.restoreTitle'),
+      description: t('whatsNew.restoreDesc'),
+      renderPreview: () => (
+        <PreviewWindow icon={<DatabaseBackup size={13} className="wn-accent" />} title={t('whatsNew.restorePreviewTitle')}>
+          <div className="wn-card">
+            <div className="wn-row">
+              <FileCode size={14} className="wn-accent" />
+              <span className="wn-grow wn-mono">demo-20250901.dump</span>
+              <span className="wn-tag">133 MB</span>
+            </div>
+            <div className="wn-muted wn-small">{t('whatsNew.restoreVia')}</div>
+          </div>
+          <div className="wn-checks">
+            {['bookings', 'flights', 'tickets', 'boarding_passes', 'airports', 'seats'].map((name) => (
+              <label key={name} className="wn-check">
+                <Check size={11} className="wn-ok" /> <span className="wn-mono">{name}</span>
+              </label>
+            ))}
+          </div>
+          <div className="wn-row">
+            <span className="wn-grow">{t('whatsNew.restoreProgress')}</span>
+            <span className="wn-muted">42%</span>
+          </div>
+          <Bar pct={42} />
+        </PreviewWindow>
+      ),
+    },
+    {
+      id: 'import',
+      title: t('whatsNew.importTitle'),
+      description: t('whatsNew.importDesc'),
+      renderPreview: () => (
+        <PreviewWindow icon={<FileSpreadsheet size={13} className="wn-accent" />} title={t('whatsNew.importPreviewTitle')}>
+          <div className="wn-grid wn-grid-head">
+            <span>{t('whatsNew.importColTable')}</span>
+            <span>{t('whatsNew.importColFile')}</span>
+            <span>{t('whatsNew.importColSample')}</span>
+          </div>
+          {[
+            ['customer_id · int', 'ID', '1042'],
+            ['email · varchar(50)', 'E-mail', 'an@example.com'],
+            ['created_at · date', 'Signup date', '2026-09-05'],
+          ].map(([col, src, sample]) => (
+            <div key={col} className="wn-grid">
+              <span className="wn-mono">{col}</span>
+              <span className="wn-mapped">
+                <ArrowRight size={10} /> {src}
+              </span>
+              <span className="wn-muted wn-mono">{sample}</span>
+            </div>
+          ))}
+          <div className="wn-row wn-warn-row">
+            <AlertTriangle size={12} />
+            <span>{t('whatsNew.importIssue')}</span>
+          </div>
+        </PreviewWindow>
+      ),
+    },
+    {
+      id: 'copy',
+      title: t('whatsNew.copyTitle'),
+      description: t('whatsNew.copyDesc'),
+      renderPreview: () => (
+        <PreviewWindow icon={<Copy size={13} className="wn-accent" />} title={t('whatsNew.copyPreviewTitle')}>
+          <div className="wn-copy">
+            <div className="wn-card wn-center">
+              <div className="wn-muted wn-small">{t('whatsNew.copySource')}</div>
+              <div className="wn-mono">sakila</div>
+              <div className="wn-tag">MySQL · 23 {t('whatsNew.copyTables')}</div>
+            </div>
+            <ArrowRight size={18} className="wn-accent" />
+            <div className="wn-card wn-center">
+              <div className="wn-muted wn-small">{t('whatsNew.copyTarget')}</div>
+              <div className="wn-mono">sakila_backup</div>
+              <div className="wn-tag">MySQL</div>
+            </div>
+          </div>
+          <Bar pct={78} />
+        </PreviewWindow>
+      ),
+    },
+    {
+      id: 'vault',
+      title: t('whatsNew.vaultTitle'),
+      description: t('whatsNew.vaultDesc'),
+      renderPreview: () => (
+        <PreviewWindow icon={<Lock size={13} className="wn-accent" />} title={t('whatsNew.vaultPreviewTitle')}>
+          <div className="wn-lock">
+            <KeyRound size={28} className="wn-accent" />
+            <div className="wn-lock-field">••••••••••••</div>
+            <div className="wn-lock-btn">{t('whatsNew.vaultUnlock')}</div>
+            <div className="wn-muted wn-small">{t('whatsNew.vaultNote')}</div>
+          </div>
+        </PreviewWindow>
+      ),
+    },
+    {
+      id: 'mermaid',
+      title: t('whatsNew.mermaidTitle'),
+      description: t('whatsNew.mermaidDesc'),
+      renderPreview: () => (
+        <PreviewWindow icon={<Share2 size={13} className="wn-accent" />} title="sakila_schema.md">
+          <div className="whats-new-code-body">
+            {[
+              '```mermaid',
+              'erDiagram',
+              '    customer {',
+              '        int customer_id PK',
+              '        int store_id FK',
+              '        varchar(50) email "may be empty"',
+              '    }',
+              '    store ||..o{ customer : "fk_customer_store"',
+              '    customer ||..o{ payment : "fk_payment_customer"',
+              '```',
+            ].map((line, i) => (
+              <div key={line} className="whats-new-code-line">
+                <span className="whats-new-line-num">{i + 1}</span>
+                <span className={line.includes('||') ? 'wn-accent' : undefined}>{line}</span>
+              </div>
+            ))}
+          </div>
+        </PreviewWindow>
+      ),
+    },
+    {
+      id: 'history',
+      title: t('whatsNew.historyTitle'),
+      description: t('whatsNew.historyDesc'),
+      renderPreview: () => (
+        <PreviewWindow icon={<FileClock size={13} className="wn-accent" />} title={t('whatsNew.historyPreviewTitle')}>
+          {[
+            [t('whatsNew.historyRun'), '14:32'],
+            [t('whatsNew.historyBeforePaste'), '14:10'],
+            [t('whatsNew.historyClosed'), '11:58'],
+          ].map(([what, when]) => (
+            <div key={what} className="wn-row">
+              <FileClock size={12} className="wn-muted" />
+              <span className="wn-grow">{what}</span>
+              <span className="wn-muted wn-mono">{when}</span>
+            </div>
+          ))}
+          <div className="whats-new-code-body">
+            <div className="whats-new-code-line wn-del">- SELECT * FROM orders</div>
+            <div className="whats-new-code-line wn-add">+ SELECT id, total FROM orders WHERE paid</div>
+          </div>
+        </PreviewWindow>
+      ),
+    },
+  ];
+  const totalSlides = slidesData.length;
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -60,7 +282,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
   if (!isOpen) return null;
 
   const handleClose = () => {
-    localStorage.setItem(WHATS_NEW_STORAGE_KEY, 'true');
+    localStorage.setItem(WHATS_NEW_STORAGE_KEY, WHATS_NEW_RELEASE);
     localStorage.setItem(WHATS_NEW_AUTO_SHOW_KEY, showOnStartup ? 'true' : 'false');
     onClose();
   };
@@ -71,389 +293,11 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
     localStorage.setItem(WHATS_NEW_AUTO_SHOW_KEY, val ? 'true' : 'false');
   };
 
-  const slidesData = [
-    {
-      id: 'ai-assistant',
-      title: t('whatsNew.slide1Title', { defaultValue: 'Meet "Ask AI": Your new SQL assistant' }),
-      description: t('whatsNew.slide1Desc', {
-        defaultValue: 'Build and adjust queries faster with customizable AI actions. Analyze errors, explain complex queries, and suggest performance fixes in seconds.',
-      }),
-      renderPreview: () => (
-        <div className="whats-new-window-container">
-          <div className="whats-new-window-titlebar">
-            <div className="whats-new-window-title">
-              <Sparkles size={13} style={{ color: 'var(--win-accent)' }} />
-              <span>SQL_Workspace - AI Assistant</span>
-            </div>
-            <div className="whats-new-window-controls">
-              <Minus size={11} />
-              <Square size={10} />
-              <X size={11} />
-            </div>
-          </div>
-
-          <div className="whats-new-menu-bar">
-            <span>File</span>
-            <span>Edit</span>
-            <span>View</span>
-            <span>Tools</span>
-            <span>Window</span>
-            <span>Help</span>
-          </div>
-
-          <div className="whats-new-toolbar">
-            <div className="whats-new-toolbar-left">
-              <button className="whats-new-small-btn"><Copy size={10} /> Save</button>
-              <button className="whats-new-small-btn"><Wand2 size={10} /> Query Builder</button>
-              <button className="whats-new-small-btn whats-new-ask-ai-btn">
-                <Sparkles size={10} /> Ask AI
-              </button>
-              <button className="whats-new-run-btn"><Play size={10} /> Run</button>
-            </div>
-          </div>
-
-          <div className="whats-new-editor-grid">
-            <div className="whats-new-editor-box">
-              <div className="whats-new-editor-header">
-                <span>Original SQL</span>
-                <span style={{ fontSize: '9px', opacity: 0.7 }}>MySQL Dialect</span>
-              </div>
-              <div className="whats-new-code-body">
-                <div className="whats-new-code-line"><span className="whats-new-line-num">1</span><span style={{ color: 'var(--win-accent)' }}>CREATE FUNCTION</span> get_cust_name(</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">2</span>  p_id <span style={{ color: 'var(--win-accent)' }}>INT</span>) <span style={{ color: 'var(--win-accent)' }}>RETURNS VARCHAR</span>(100)</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">3</span><span style={{ color: 'var(--win-accent)' }}>READS SQL DATA</span></div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">4</span><span style={{ color: 'var(--win-accent)' }}>BEGIN</span></div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">5</span>  <span style={{ color: 'var(--win-accent)' }}>DECLARE</span> full_name <span style={{ color: 'var(--win-accent)' }}>VARCHAR</span>(100);</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">6</span>  <span style={{ color: 'var(--win-accent)' }}>SELECT CONCAT</span>(first_name, <span style={{ color: 'var(--st-warn)' }}>' '</span>, last_name)</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">7</span>  <span style={{ color: 'var(--win-accent)' }}>INTO</span> full_name <span style={{ color: 'var(--win-accent)' }}>FROM</span> customer</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">8</span>  <span style={{ color: 'var(--win-accent)' }}>WHERE</span> customer_id = p_id;</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">9</span>  <span style={{ color: 'var(--win-accent)' }}>RETURN</span> full_name;</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">10</span><span style={{ color: 'var(--win-accent)' }}>END</span>;</div>
-              </div>
-            </div>
-
-            <div className="whats-new-editor-box highlight">
-              <div className="whats-new-editor-header ai">
-                <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}>
-                  <Sparkles size={11} /> AI Suggested Text
-                </span>
-                <span className="whats-new-ai-badge">ChatGPT 4o</span>
-              </div>
-              <div className="whats-new-code-body">
-                <div className="whats-new-code-line bg-blue"><span className="whats-new-line-num">1</span><span style={{ color: 'var(--win-accent)' }}>CREATE FUNCTION</span> get_cust_name(</div>
-                <div className="whats-new-code-line bg-blue"><span className="whats-new-line-num">2</span>  p_id <span style={{ color: 'var(--win-accent)' }}>INT</span>) <span style={{ color: 'var(--win-accent)' }}>RETURNS VARCHAR</span>(100) <span style={{ color: 'var(--win-accent)' }}>AS $$</span></div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">3</span><span style={{ color: 'var(--win-accent)' }}>DECLARE</span> v_name <span style={{ color: 'var(--win-accent)' }}>VARCHAR</span>(100);</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">4</span><span style={{ color: 'var(--win-accent)' }}>BEGIN</span></div>
-                <div className="whats-new-code-line bg-green"><span className="whats-new-line-num">5</span>  <span style={{ color: 'var(--win-accent)' }}>SELECT</span> first_name || <span style={{ color: 'var(--st-warn)' }}>' '</span> || last_name</div>
-                <div className="whats-new-code-line bg-green"><span className="whats-new-line-num">6</span>  <span style={{ color: 'var(--win-accent)' }}>INTO</span> v_name <span style={{ color: 'var(--win-accent)' }}>FROM</span> customer <span style={{ color: 'var(--win-accent)' }}>WHERE</span> id = p_id;</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">7</span>  <span style={{ color: 'var(--win-accent)' }}>RETURN</span> v_name;</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">8</span><span style={{ color: 'var(--win-accent)' }}>END</span>;</div>
-                <div className="whats-new-code-line bg-blue"><span className="whats-new-line-num">9</span><span style={{ color: 'var(--win-accent)' }}>$$ LANGUAGE</span> plpgsql;</div>
-              </div>
-              <div className="whats-new-editor-actions">
-                <button className="whats-new-action-btn-outline">New Query</button>
-                <button className="whats-new-action-btn-primary">Apply Suggestion</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ),
-    },
-    {
-      id: 'all-new-model',
-      title: t('whatsNew.slide3TitleModel', { defaultValue: 'All-New Model Workspace' }),
-      description: t('whatsNew.slide3DescModel', {
-        defaultValue: 'Incorporate different types of databases to build multiple models within a unified workspace.',
-      }),
-      renderPreview: () => (
-        <div className="whats-new-window-container">
-          <div className="whats-new-window-titlebar">
-            <div className="whats-new-window-title">
-              <Layers size={13} style={{ color: 'var(--st-warn)' }} />
-              <span>SQL_3schemas - Model Workspace</span>
-            </div>
-            <div className="whats-new-window-controls">
-              <Minus size={11} />
-              <Square size={10} />
-              <X size={11} />
-            </div>
-          </div>
-
-          <div className="whats-new-menu-bar">
-            <span>File</span>
-            <span>Edit</span>
-            <span>View</span>
-            <span>Tools</span>
-            <span>Window</span>
-            <span>Help</span>
-          </div>
-
-          <div className="whats-new-toolbar">
-            <div className="whats-new-toolbar-left">
-              <button className="whats-new-small-btn"><Copy size={10} style={{ color: 'var(--win-accent)' }} /> Save</button>
-              <button className="whats-new-small-btn"><Plus size={10} style={{ color: 'var(--st-ok)' }} /> New Model</button>
-              <button className="whats-new-small-btn"><GitBranch size={10} style={{ color: 'var(--win-accent)' }} /> New Diagram</button>
-              <button className="whats-new-small-btn"><FileText size={10} style={{ color: 'var(--st-warn)' }} /> New Data Dictionary</button>
-            </div>
-          </div>
-
-          <div style={{ background: 'var(--win-bg-subtle, #f0f2f5)', padding: '4px 10px 0 10px', borderBottom: '1px solid var(--win-border)' }}>
-            <div style={{ display: 'flex', gap: '4px', fontSize: '11px' }}>
-              <span className="whats-new-tab-active" style={{ borderBottomLeftRadius: 0, borderBottomRightRadius: 0, borderBottom: 'none' }}>Workspace</span>
-              <span className="whats-new-tab-inactive">Diagram_1</span>
-              <span className="whats-new-tab-inactive">Model_2</span>
-              <span className="whats-new-tab-inactive">Model_3</span>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: 'var(--win-bg-card)', borderBottom: '1px solid var(--win-border)', fontSize: '11px' }}>
-            <span style={{ padding: '2px 8px', borderRadius: '4px', background: 'var(--win-accent)', color: '#fff', fontWeight: 600 }}>All</span>
-            <span style={{ padding: '2px 8px', color: 'var(--win-text-secondary)' }}>Model</span>
-            <span style={{ padding: '2px 8px', color: 'var(--win-text-secondary)' }}>Diagram</span>
-            <span style={{ padding: '2px 8px', color: 'var(--win-text-secondary)' }}>Data Dictionary</span>
-          </div>
-
-          <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', background: 'var(--win-bg-card)' }}>
-            <table className="whats-new-table">
-              <thead>
-                <tr style={{ background: 'var(--win-bg-subtle, #f8f9fa)', borderBottom: '1px solid var(--win-border)', color: 'var(--win-text-secondary)' }}>
-                  <th>Name</th>
-                  <th>Category</th>
-                  <th>Connection Type</th>
-                  <th>Server Version</th>
-                  <th>Using</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr style={{ borderBottom: '1px solid var(--win-border)' }}>
-                  <td style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                    <Layers size={12} style={{ color: 'var(--st-ok)' }} /> Model_1
-                  </td>
-                  <td>Model</td>
-                  <td>MySQL</td>
-                  <td>v5.7 - v9+</td>
-                  <td style={{ opacity: 0.7 }}>-</td>
-                </tr>
-                <tr style={{ borderBottom: '1px solid var(--win-border)', background: 'var(--win-bg-subtle)' }}>
-                  <td style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                    <Layers size={12} style={{ color: 'var(--st-ok)' }} /> Model_2
-                  </td>
-                  <td>Model</td>
-                  <td>PostgreSQL</td>
-                  <td>v12 - v18+</td>
-                  <td style={{ opacity: 0.7 }}>-</td>
-                </tr>
-                <tr style={{ borderBottom: '1px solid var(--win-border)' }}>
-                  <td style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                    <Layers size={12} style={{ color: 'var(--st-ok)' }} /> Model_3
-                  </td>
-                  <td>Model</td>
-                  <td>SQLite</td>
-                  <td>v3.46+</td>
-                  <td style={{ opacity: 0.7 }}>-</td>
-                </tr>
-                <tr style={{ borderBottom: '1px solid var(--win-border)', background: 'var(--win-bg-subtle)' }}>
-                  <td style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                    <GitBranch size={12} style={{ color: 'var(--win-accent)' }} /> Diagram_1
-                  </td>
-                  <td>Diagram</td>
-                  <td>Redis</td>
-                  <td>v7.x+</td>
-                  <td style={{ opacity: 0.8 }}>Model_2</td>
-                </tr>
-                <tr style={{ borderBottom: '1px solid var(--win-border)' }}>
-                  <td style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                    <GitBranch size={12} style={{ color: 'var(--win-accent)' }} /> Diagram_2
-                  </td>
-                  <td>Diagram</td>
-                  <td>SQL Server</td>
-                  <td>2022</td>
-                  <td style={{ opacity: 0.8 }}>Model_1</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ),
-    },
-    {
-      id: 'visual-explain',
-      title: t('whatsNew.slide2Title', { defaultValue: 'Visual EXPLAIN Plan Diagram' }),
-      description: t('whatsNew.slide2Desc', {
-        defaultValue: 'Analyze complex query execution plans with graphic tree nodes, cost distribution percentages, and bottleneck highlighting.',
-      }),
-      renderPreview: () => (
-        <div className="whats-new-window-container">
-          <div className="whats-new-window-titlebar">
-            <div className="whats-new-window-title">
-              <GitBranch size={13} style={{ color: '#8b5cf6' }} />
-              <span>Query Execution Plan Analyzer</span>
-            </div>
-            <div className="whats-new-window-controls">
-              <Minus size={11} />
-              <Square size={10} />
-              <X size={11} />
-            </div>
-          </div>
-
-          <div className="whats-new-toolbar">
-            <div className="whats-new-toolbar-left">
-              <span style={{ fontWeight: 600, fontSize: '11px', color: '#8b5cf6', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <GitBranch size={12} /> EXPLAIN Graph (Cost Total: 142.50)
-              </span>
-            </div>
-            <span style={{ fontSize: '9.5px', background: 'rgba(139, 92, 246, 0.15)', color: '#8b5cf6', padding: '1px 6px', borderRadius: '4px' }}>
-              PostgreSQL 18 Engine
-            </span>
-          </div>
-
-          <div style={{ flex: 1, padding: '14px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--win-bg-subtle, #f5f6f8)', gap: '10px' }}>
-            <div className="whats-new-explain-node" style={{ border: '1.5px solid #8b5cf6' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-                <span style={{ fontWeight: 600, fontSize: '11px' }}>Nested Loop Left Join</span>
-                <span style={{ fontSize: '9px', background: '#8b5cf6', color: '#fff', padding: '1px 5px', borderRadius: '4px' }}>Cost: 52%</span>
-              </div>
-              <span style={{ fontSize: '9.5px', opacity: 0.8 }}>Rows: 1,420 • Time: 0.84ms</span>
-            </div>
-
-            <div style={{ width: '2px', height: '12px', background: 'var(--win-border-strong, #8b5cf6)' }} />
-
-            <div style={{ display: 'flex', gap: '16px' }}>
-              <div className="whats-new-explain-node" style={{ border: '1.5px solid var(--win-accent)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 600, fontSize: '10.5px' }}>Index Scan (idx_orders_cust)</span>
-                  <span style={{ fontSize: '9px', background: 'var(--win-accent)', color: '#fff', padding: '1px 5px', borderRadius: '4px' }}>12%</span>
-                </div>
-                <span style={{ fontSize: '9.5px', opacity: 0.8 }}>Index Cond: customer_id = 42</span>
-              </div>
-
-              <div className="whats-new-explain-node" style={{ border: '1.5px solid var(--st-danger)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 600, fontSize: '10.5px' }}>Seq Scan (payments)</span>
-                  <span style={{ fontSize: '9px', background: 'var(--st-danger)', color: '#fff', padding: '1px 5px', borderRadius: '4px' }}>36% (Bottleneck)</span>
-                </div>
-                <span style={{ fontSize: '9.5px', color: 'var(--st-danger)' }}>Filter: (amount &gt; 500) • 45k rows</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      ),
-    },
-    {
-      id: 'data-generator',
-      title: t('whatsNew.slide3Title', { defaultValue: 'Smart Test Data Generator' }),
-      description: t('whatsNew.slide3Desc', {
-        defaultValue: 'Generate realistic dummy data in seconds with customizable generation rules, foreign key mapping, and high-performance batch insertion.',
-      }),
-      renderPreview: () => (
-        <div className="whats-new-window-container">
-          <div className="whats-new-window-titlebar">
-            <div className="whats-new-window-title">
-              <Wand2 size={13} style={{ color: 'var(--st-ok)' }} />
-              <span>Data Generator Tool</span>
-            </div>
-            <div className="whats-new-window-controls">
-              <Minus size={11} />
-              <Square size={10} />
-              <X size={11} />
-            </div>
-          </div>
-
-          <div className="whats-new-toolbar">
-            <span style={{ fontWeight: 600, fontSize: '11px', color: 'var(--st-ok)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <Wand2 size={12} /> Target Table: public.users
-            </span>
-            <span style={{ fontSize: '9.5px', opacity: 0.7 }}>Target Rows: 50,000</span>
-          </div>
-
-          <div style={{ flex: 1, padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px', background: 'var(--win-bg-subtle, #f5f6f8)' }}>
-            <div className="whats-new-data-row-item">
-              <span style={{ fontWeight: 600, width: '120px' }}>user_id (PK)</span>
-              <span style={{ fontSize: '9.5px', background: 'rgba(16, 185, 129, 0.15)', color: 'var(--st-ok)', padding: '1px 6px', borderRadius: '4px', fontWeight: 500 }}>Auto Increment</span>
-              <span style={{ fontSize: '9.5px', opacity: 0.7 }}>Start: 10001, Step: 1</span>
-            </div>
-            <div className="whats-new-data-row-item">
-              <span style={{ fontWeight: 600, width: '120px' }}>full_name</span>
-              <span style={{ fontSize: '9.5px', background: 'var(--win-accent-subtle)', color: 'var(--win-accent)', padding: '1px 6px', borderRadius: '4px', fontWeight: 500 }}>Faker: Person.fullName</span>
-              <span style={{ fontSize: '9.5px', opacity: 0.7 }}>Locale: vi_VN</span>
-            </div>
-            <div className="whats-new-data-row-item">
-              <span style={{ fontWeight: 600, width: '120px' }}>email</span>
-              <span style={{ fontSize: '9.5px', background: 'var(--win-accent-subtle)', color: 'var(--win-accent)', padding: '1px 6px', borderRadius: '4px', fontWeight: 500 }}>Faker: Internet.email</span>
-              <span style={{ fontSize: '9.5px', opacity: 0.7 }}>Domain: @company.com</span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto', background: 'var(--win-bg-card)', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--win-border)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Cpu size={13} style={{ color: 'var(--st-ok)' }} />
-                <span style={{ fontSize: '10.5px', fontWeight: 500 }}>Batch Speed: ~12,500 rows/sec</span>
-              </div>
-              <button className="whats-new-action-btn-primary">Start Generating Data</button>
-            </div>
-          </div>
-        </div>
-      ),
-    },
-    {
-      id: 'schema-compare',
-      title: t('whatsNew.slide4Title', { defaultValue: 'Schema Comparison & Migration' }),
-      description: t('whatsNew.slide4Desc', {
-        defaultValue: 'Compare schemas between environments, review structural differences side by side, and export clean DDL migration scripts.',
-      }),
-      renderPreview: () => (
-        <div className="whats-new-window-container">
-          <div className="whats-new-window-titlebar">
-            <div className="whats-new-window-title">
-              <Layers size={13} style={{ color: 'var(--st-warn)' }} />
-              <span>Schema Compare & Synchronization</span>
-            </div>
-            <div className="whats-new-window-controls">
-              <Minus size={11} />
-              <Square size={10} />
-              <X size={11} />
-            </div>
-          </div>
-
-          <div className="whats-new-toolbar">
-            <span style={{ fontWeight: 600, fontSize: '11px', color: 'var(--st-warn)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <Layers size={12} /> Staging_DB vs Production_DB
-            </span>
-            <span style={{ fontSize: '9.5px', color: 'var(--st-warn)', background: 'rgba(217, 119, 6, 0.15)', padding: '1px 6px', borderRadius: '4px' }}>
-              3 Differences Found
-            </span>
-          </div>
-
-          <div style={{ flex: 1, padding: '8px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', background: 'var(--win-bg-subtle, #f5f6f8)' }}>
-            <div className="whats-new-compare-col">
-              <div className="whats-new-compare-header">Source Differences</div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 5px', fontSize: '9.5px', background: 'rgba(34, 197, 94, 0.12)', borderLeft: '3px solid var(--st-ok)', borderRadius: '2px' }}>
-                <span>+ TABLE: user_sessions</span>
-                <span style={{ fontSize: '8.5px', background: 'var(--st-ok)', color: '#fff', padding: '1px 4px', borderRadius: '3px' }}>NEW</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 5px', fontSize: '9.5px', background: 'rgba(217, 119, 6, 0.12)', borderLeft: '3px solid var(--st-warn)', borderRadius: '2px' }}>
-                <span>~ COLUMN: orders.status</span>
-                <span style={{ fontSize: '8.5px', background: 'var(--st-warn)', color: '#fff', padding: '1px 4px', borderRadius: '3px' }}>MODIFIED</span>
-              </div>
-            </div>
-            <div className="whats-new-compare-col">
-              <div className="whats-new-compare-header">Generated Migration DDL</div>
-              <div className="whats-new-code-body">
-                <div style={{ color: 'var(--st-ok)' }}>-- Add new table user_sessions</div>
-                <div>CREATE TABLE user_sessions (...);</div>
-                <div style={{ color: 'var(--st-warn)', marginTop: '4px' }}>-- Modify status column</div>
-                <div>ALTER TABLE orders ALTER COLUMN status TYPE VARCHAR(50);</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      ),
-    },
-  ];
-
   const currentSlide = slidesData[activeSlide];
 
   return (
     <Modal
-      title={t('whatsNew.modalHeader', { defaultValue: "What's New in TableGrid 17" })}
+      title={t('whatsNew.modalHeader')}
       icon={<Sparkles size={16} style={{ color: 'var(--win-accent)' }} />}
       onClose={handleClose}
       width="780px"
@@ -492,7 +336,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
                 onChange={handleToggleStartup}
                 className="whats-new-checkbox"
               />
-              {t('whatsNew.showOnStartup', { defaultValue: 'Show on startup' })}
+              {t('whatsNew.showOnStartup')}
             </label>
 
             {/* Center: Navigation Arrows & Dots Indicator */}
@@ -500,16 +344,16 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
               <button
                 onClick={() => setActiveSlide((prev) => (prev > 0 ? prev - 1 : totalSlides - 1))}
                 className="whats-new-nav-btn"
-                title={t('whatsNew.prevSlide', { defaultValue: 'Previous slide' })}
+                title={t('whatsNew.prevSlide')}
               >
                 <ChevronLeft size={15} />
               </button>
 
               {/* Dots Indicator */}
               <div className="whats-new-dots-container">
-                {slidesData.map((_, idx) => (
+                {slidesData.map((slide, idx) => (
                   <button
-                    key={idx}
+                    key={slide.id}
                     onClick={() => setActiveSlide(idx)}
                     className={`whats-new-dot-btn ${idx === activeSlide ? 'active' : ''}`}
                   />
@@ -519,7 +363,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
               <button
                 onClick={() => setActiveSlide((prev) => (prev < totalSlides - 1 ? prev + 1 : 0))}
                 className="whats-new-nav-btn"
-                title={t('whatsNew.nextSlide', { defaultValue: 'Next slide' })}
+                title={t('whatsNew.nextSlide')}
               >
                 <ChevronRight size={15} />
               </button>
@@ -528,7 +372,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
             {/* Right: Close Button */}
             <div className="whats-new-close-wrapper">
               <button onClick={handleClose} className="whats-new-close-btn">
-                {t('common.close', { defaultValue: 'Close' })}
+                {t('common.close')}
               </button>
             </div>
           </div>
