@@ -255,6 +255,9 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
 
   ai_chat: 'internal',
   open_url: 'internal',
+  // A scheduled backup's retention: deletes only that schedule's own old dump files, never database
+  // content, and the schedule was set up in its own dialog.
+  prune_backups: 'internal',
 };
 
 export function commandKind(cmd: string): CommandKind {

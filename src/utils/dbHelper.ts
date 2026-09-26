@@ -1453,6 +1453,18 @@ export const dbHelper = {
     await invoke('ssh_trust_host_key', { host, port, fingerprint });
   },
 
+  /**
+   * Deletes a scheduled backup's oldest files in `dir` beyond the newest `keep` — only names the
+   * scheduler itself writes (`<prefix>-YYYYMMDD-HHMMSS.sql[.gz]`); see `backup_prune.rs`.
+   */
+  async pruneBackups(
+    dir: string,
+    prefix: string,
+    keep: number,
+  ): Promise<{ deleted: string[]; failed: { name: string; error: string }[] }> {
+    return await invoke('prune_backups', { dir, prefix, keep });
+  },
+
   // ---- SSH Terminal ----
   // Opens an SSH session plus a PTY/shell. The server pushes its output back over a Channel
   // (onMessage).

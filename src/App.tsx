@@ -4,6 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { TitleBar } from './components/TitleBar';
 import { SafeModeGate } from './components/SafeModeGate';
 import { SshHostKeyGate } from './components/SshHostKeyGate';
+import { BackupSchedulesDialog } from './components/BackupSchedulesDialog';
+import { startBackupScheduler } from './utils/backupScheduler';
 import { McpApprovalGate } from './components/McpApprovalGate';
 import { LockScreen } from './components/LockScreen';
 import {
@@ -392,6 +394,10 @@ export const App: React.FC = () => {
     });
   }, []);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showBackupSchedules, setShowBackupSchedules] = useState(false);
+  // The scheduled backups' clock. Here and only here: the standalone terminal window has its own
+  // root, and starting it there too would run every backup once per open window.
+  React.useEffect(() => startBackupScheduler(), []);
   const [showDocModal, setShowDocModal] = useState(false);
   const [docQuery] = useState('');
   const [showWhatsNew, setShowWhatsNew] = useState<boolean>(() => {
@@ -2370,6 +2376,7 @@ export const App: React.FC = () => {
       onShowShortcuts={() => setShowShortcuts(true)}
       onShowAbout={() => setShowAbout(true)}
       onShowWhatsNew={() => setShowWhatsNew(true)}
+      onScheduledBackups={() => setShowBackupSchedules(true)}
       onOpenCompare={handleOpenDbCompare}
       onToggleTerminal={handleOpenTerminal}
       aiOpen={showAi}
@@ -3201,6 +3208,8 @@ export const App: React.FC = () => {
         isOpen={showWhatsNew}
         onClose={() => setShowWhatsNew(false)}
       />
+
+      {showBackupSchedules && <BackupSchedulesDialog onClose={() => setShowBackupSchedules(false)} />}
     </>
   );
 };

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { dbHelper } from '../utils/dbHelper';
 import type { DbConnectionConfig } from '../utils/dbHelper';
-import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, ArrowRight, Check, Cloud, DatabaseBackup, LogIn, KeyRound } from 'lucide-react';
+import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, ArrowRight, Check, Cloud, DatabaseBackup, LogIn, KeyRound, CalendarClock } from 'lucide-react';
 import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './DbIcons';
 import { encryptConnectionExport, decryptConnectionExport, CONNECTION_FILE_EXT, CONNECTION_FILE_ACCEPT } from '../utils/cryptoHelper';
 import { CONN_ENVS, envLabelKey, legacyEnvOfColor, normalizeEnv, type ConnEnv } from '../utils/connEnv';
@@ -13,7 +13,8 @@ import {
   plannedFromScan,
   type DumpScan,
 } from '../utils/dumpPreview';
-import { buildDump, dumpReaderFor, writeDump, type DumpSpec } from '../utils/dumpBuilder';
+import { buildDump, writeDump } from '../utils/dumpBuilder';
+import { planDatabaseBackup } from '../utils/profileBackup';
 import { getLastExportDir, saveDumpToFolder, saveExportFileAtPath, pickOpenFile, pickSaveFilePath, pickSqliteDatabaseFile } from '../utils/fileSave';
 import { fileBaseFromPath, fileStamp, safeFileBase } from '../utils/exportHelper';
 import { startJob } from '../utils/jobs';
@@ -23,6 +24,7 @@ import { connKey } from '../utils/connKey';
 import { formatRestoreEta, makeRestoreReporter, restoreCancelledResult } from '../utils/restoreProgress';
 import { ConfirmDialog } from './ConfirmDialog';
 import { MasterPasswordModal } from './MasterPasswordModal';
+import { BackupSchedulesDialog } from './BackupSchedulesDialog';
 import { refreshVaultStatus } from '../utils/vault';
 import {
   SECRET_FIELDS,
@@ -563,6 +565,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   const [profileGroup, setProfileGroup] = useState('');
   const [secretError, setSecretError] = useState<string | null>(null); // an error while working with the OS secret store
   const [showMasterPassword, setShowMasterPassword] = useState(false);
+  const [showBackupSchedules, setShowBackupSchedules] = useState(false);
 
   // The ONE place profiles are written: it always strips the secrets out of the config before
   // touching localStorage, and pushes them into the OS secret store at the same time. The in-memory
@@ -1556,43 +1559,15 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
         const jobConn = { connId: connRes.connId, schema: connRes.schema ?? null };
         return runOnJobConnection(jobConn, approvals, async ({ connId: jobConnId }) => {
           if (isBackup) {
-            // The dump is built by the very code the "Export Database" dialog uses (buildDump): this
-            // used to call the Rust `export_multi_tables`, which treated views as tables (emitting
-            // DROP TABLE and INSERT INTO for a view), wrote one INSERT per row, and had no routines
-            // or triggers at all.
-            const list = await dbHelper.getTables(jobConnId);
-            const tables = list.map(item => item.name);
-            if (tables.length === 0) {
-              throw new Error(t('connection.errNoTablesToBackup'));
-            }
-            const [dbObjs, triggers] = await Promise.all([
-              dbHelper.getDatabaseObjects(jobConnId),
-              dbHelper.getAllTriggers(jobConnId),
-            ]);
-            ctx.throwIfCancelled();
-
-            const dumpSpec: DumpSpec = {
-              dbType: config.type,
-              tables,
-              views: list.filter(item => item.type === 'view').map(item => item.name),
-              routines: [
-                ...dbObjs.functions.map((name) => ({ name, kind: 'function' as const })),
-                ...dbObjs.procedures.map((name) => ({ name, kind: 'procedure' as const })),
-              ],
-              triggers: triggers.map((tr) => tr.name),
-              events: dbObjs.events,
+            // What goes into the dump is shared with the backup scheduler (`profileBackup.ts`); the
+            // schema is the one `connect` just reported as current — there is no schema picker here.
+            const { spec: dumpSpec, reader } = await planDatabaseBackup(
+              jobConnId,
+              config.type,
+              connRes.schema ?? null,
               sqlOptions,
-              // The schema `connect` just reported as current — the same one getTables() above read
-              // from. There is no schema picker on this screen, so this is always the first schema in
-              // search_path.
-              schema: connRes.schema,
-              onProgress: (p) => {
-                // Throwing here is what stops the dump between two pages.
-                ctx.throwIfCancelled();
-                ctx.report(p);
-              },
-            };
-            const reader = dumpReaderFor(dbHelper, jobConnId);
+              ctx,
+            );
             // Streamed into the file as it is built — see saveDumpToFolder.
             const saved = await saveDumpToFolder(
               getLastExportDir() || null,
@@ -2793,6 +2768,10 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                   <button className="cm-icon-btn" title={t('vault.title')} onClick={() => setShowMasterPassword(true)}>
                     <KeyRound size={13} />
                   </button>
+                  {/* Schedules act on saved profiles, so they sit with the other whole-set actions. */}
+                  <button className="cm-icon-btn" title={t('backupSchedule.title')} onClick={() => setShowBackupSchedules(true)}>
+                    <CalendarClock size={13} />
+                  </button>
                 </>
               )}
             </div>
@@ -3286,6 +3265,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       {showMasterPassword && (
         <MasterPasswordModal onClose={() => setShowMasterPassword(false)} />
       )}
+
+      {showBackupSchedules && <BackupSchedulesDialog onClose={() => setShowBackupSchedules(false)} />}
 
       {/* ————— Modal: connection export options ————— */}
       {showExportModal && (

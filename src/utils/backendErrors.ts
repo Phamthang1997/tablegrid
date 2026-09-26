@@ -105,6 +105,8 @@ export const EXACT: Record<string, string> = {
   // ssh/known_hosts.rs — trusting a refused host key.
   'Không có khoá máy chủ SSH nào đang chờ xác nhận': 'backend.sshHostKeyNoPending',
   'Khoá máy chủ SSH đã đổi trong lúc chờ xác nhận, hãy kết nối lại': 'backend.sshHostKeyMoved',
+  // backup_prune.rs — a scheduled backup's retention.
+  'Phải giữ lại ít nhất một bản sao lưu': 'backend.backupKeepAtLeastOne',
   'Thiếu private key cho xác thực SSH bằng khóa': 'backend.missingSshKey',
   'Thiếu key': 'backend.missingKey',
   'Thiếu host RDS': 'backend.missingRdsHost',
@@ -175,6 +177,9 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   { re: /^Khoá máy chủ SSH của ([^\s]+) đã thay đổi — có thể có kẻ đang chặn kết nối$/, key: 'backend.sshHostKeyChanged' },
   { re: /^Khoá máy chủ SSH đã lưu trong ~\/\.ssh\/known_hosts, hãy chạy: ssh-keygen -R "([^"]*)"$/, key: 'backend.sshHostKeyOpenSsh' },
   { re: /^Lỗi ghi known_hosts: ([\s\S]*)$/, key: 'backend.knownHostsWriteFailed' },
+  // backup_prune.rs — the payload is the prefix as sent, or the OS error.
+  { re: /^Tiền tố tên bản sao lưu không hợp lệ: ([\s\S]*)$/, key: 'backend.backupPrefixInvalid' },
+  { re: /^Không đọc được thư mục sao lưu: ([\s\S]*)$/, key: 'backend.backupDirReadFailed' },
   { re: /^Lỗi kết nối SSH tới ([^\s]+): ([\s\S]*)$/, key: 'backend.sshConnectFailed' },
   { re: /^Lỗi xác thực SSH bằng mật khẩu: ([\s\S]*)$/, key: 'backend.sshPasswordAuthFailed' },
   { re: /^Lỗi xác thực SSH bằng khóa: ([\s\S]*)$/, key: 'backend.sshKeyAuthFailed' },

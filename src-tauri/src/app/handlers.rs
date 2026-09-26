@@ -64,6 +64,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         crate::export_sink::export_append,
         crate::export_sink::export_close,
         crate::export_sink::export_abort,
+        crate::backup_prune::prune_backups,
         crate::database::import_new_table,
         crate::database::create_table,
         crate::database::drop_table,

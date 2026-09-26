@@ -3,7 +3,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import {
   Minus, Square, X, Plus, Unplug, FileCode, HardDriveDownload, HardDriveUpload,
   PanelLeft, SunMoon, RotateCw, Info, Keyboard, Check, Database,
-  GitBranch, PanelBottom, Bot, ChevronRight, ChevronLeft, BookOpen, Sparkles, KeyRound,
+  GitBranch, PanelBottom, Bot, ChevronRight, ChevronLeft, BookOpen, Sparkles, KeyRound, CalendarClock,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -60,6 +60,8 @@ interface TitleBarProps {
   onShowShortcuts?: () => void;
   onShowAbout?: () => void;
   onShowWhatsNew?: () => void;
+  /** Opens the scheduled backups dialog. Works with nothing connected: schedules name saved profiles. */
+  onScheduledBackups?: () => void;
   onToggleTerminal?: () => void;
   /** The AI Copilot panel is open -> the button takes the accent colour. */
   aiOpen?: boolean;
@@ -104,6 +106,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onShowShortcuts,
   onShowAbout,
   onShowWhatsNew,
+  onScheduledBackups,
   onToggleTerminal,
   aiOpen = false,
   onToggleAiAssistant,
@@ -375,6 +378,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         { label: t('titlebar.newQuery'), Icon: FileCode, onClick: onNewQuery, shortcut: 'Ctrl+T', disabled: !hasConnection },
         { label: t('titlebar.exportDatabase'), Icon: HardDriveDownload, onClick: onExportDatabase, disabled: !hasConnection, separatorBefore: true },
         { label: t('titlebar.importDatabase'), Icon: HardDriveUpload, onClick: onImportDatabase, disabled: !hasConnection },
+        { label: t('titlebar.scheduledBackups'), Icon: CalendarClock, onClick: onScheduledBackups, separatorBefore: true },
       ],
     },
     {
