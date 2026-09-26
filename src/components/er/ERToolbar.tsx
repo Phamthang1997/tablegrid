@@ -24,6 +24,7 @@ import type {
   ERDetailLevel,
   ERTable,
   ERExportFormat,
+  ERExportOutcome,
   ERTool,
   ERViewport,
   ERViewportSubscribe,
@@ -62,7 +63,7 @@ interface ERToolbarProps {
   onShowRelatedTables: () => void;
   /** The picker was closed after a change — the canvas uses it to bring the survivors into view. */
   onTablesApplied: () => void;
-  onExport: (format: ERExportFormat) => void;
+  onExport: (format: ERExportFormat) => Promise<ERExportOutcome | void> | void;
 }
 
 /** Long enough that a table name is typed before the canvas flies anywhere. */
@@ -174,13 +175,34 @@ const ERToolbarInner: React.FC<ERToolbarProps> = ({
   const isFiltered = hiddenTables.size > 0;
   const tableCountLabel = isFiltered ? `${tableCount}/${pickableTables.length}` : pickableTables.length;
 
-  const handleExportAction = (format: ERExportFormat) => {
-    setShowExportMenu(false);
-    onExport(format);
-    if (format === 'clipboard' || format === 'mermaid') {
-      setCopiedStatus(format);
-      setTimeout(() => setCopiedStatus(null), 2500);
+  const handleExportAction = async (format: ERExportFormat) => {
+    const copies = format === 'clipboard' || format === 'mermaid' || format === 'mermaid-selection';
+    // A copy keeps the menu open: its "copied" confirmation is drawn IN the menu, and closing it
+    // first meant nobody ever saw it. A save opens a file dialog, so the menu goes.
+    if (!copies) {
+      setShowExportMenu(false);
+      onExport(format);
+      return;
     }
+    const outcome = await onExport(format);
+    setCopiedStatus(outcome && outcome.tooLarge ? `${format}:large` : format);
+    setTimeout(() => setCopiedStatus(null), outcome && outcome.tooLarge ? 6000 : 2500);
+  };
+
+  // One Mermaid menu row: the label, then the confirmation once copied, and a warning when the
+  // text is past what Mermaid renders by default.
+  const mermaidRow = (format: 'mermaid' | 'mermaid-selection', label: string) => {
+    const done = copiedStatus === format || copiedStatus === `${format}:large`;
+    const large = copiedStatus === `${format}:large`;
+    return (
+      <button type="button" className="er-menu-item" onClick={() => handleExportAction(format)}>
+        {done ? <Check size={13} className="er-green" /> : <FileCode size={13} />}
+        <span>
+          {done ? t('er.exportMermaidDone') : label}
+          {large && <span className="er-menu-item-warn">{t('er.exportMermaidTooLarge')}</span>}
+        </span>
+      </button>
+    );
   };
 
   return (
@@ -456,20 +478,8 @@ const ERToolbarInner: React.FC<ERToolbarProps> = ({
 
             <div className="er-menu-divider" />
             <div className="er-popover-header">{t('er.exportCodeHeader')}</div>
-            <button
-              type="button"
-              className="er-menu-item"
-              onClick={() => handleExportAction('mermaid')}
-            >
-              {copiedStatus === 'mermaid' ? (
-                <Check size={13} className="er-green" />
-              ) : (
-                <FileCode size={13} />
-              )}
-              <span>
-                {copiedStatus === 'mermaid' ? t('er.exportMermaidDone') : t('er.exportMermaid')}
-              </span>
-            </button>
+            {mermaidRow('mermaid', t('er.exportMermaid'))}
+            {hasSelection && mermaidRow('mermaid-selection', t('er.exportMermaidSelection'))}
             <button
               type="button"
               className="er-menu-item"

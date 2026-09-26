@@ -7,6 +7,7 @@ import type {
   ERViewport,
   ERDetailLevel,
   ERExportFormat,
+  ERExportOutcome,
   ERTool,
   ERViewportListener,
 } from './erTypes';
@@ -43,6 +44,7 @@ import { drawScene, hitTestCards, hitTestRelationships, resolveRelationships } f
 import type { ERResolvedRelationship } from './erScene';
 import {
   exportToMermaid,
+  mermaidTooLarge,
   exportToDbml,
   exportToSql,
   generateFullDiagramSvg,
@@ -1405,15 +1407,24 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   // Export
   // ---------------------------------------------------------------------------------------
   const handleExport = useCallback(
-    async (format: ERExportFormat) => {
+    async (format: ERExportFormat): Promise<ERExportOutcome | void> => {
       const baseName = `${database || 'database'}_er_diagram`;
       const theme =
         document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
 
       switch (format) {
-        case 'mermaid': {
-          await navigator.clipboard.writeText(exportToMermaid(visibleTables, relationships));
-          break;
+        case 'mermaid':
+        case 'mermaid-selection': {
+          // The selection is read through its ref, like fitTo: a dependency on it would give
+          // this callback — and the memoized toolbar — a new identity on every click.
+          const selected = selectedRef.current;
+          const picked =
+            format === 'mermaid-selection'
+              ? visibleTables.filter((tb) => selected.has(tb.id))
+              : visibleTables;
+          const text = exportToMermaid(picked, relationships);
+          await navigator.clipboard.writeText(text);
+          return { tooLarge: mermaidTooLarge(text) };
         }
         case 'dbml': {
           const targetPath = await pickSaveFilePath(baseName, 'dbml', 'DBML File (*.dbml)');

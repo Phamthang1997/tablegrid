@@ -20553,6 +20553,16 @@ input.rename-input {
   letter-spacing: 0.5px;
 }
 
+/* The warning under "Mermaid code copied!" when the text is past Mermaid's render limits. */
+.er-menu-item-warn {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--st-warn);
+  white-space: normal;
+}
+
 .er-menu-item {
   display: flex;
   align-items: center;

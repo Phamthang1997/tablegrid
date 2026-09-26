@@ -3260,6 +3260,8 @@ const vi: typeof en = {
     exportCodeHeader: 'Xuất code & lược đồ',
     exportMermaid: 'Copy markdown Mermaid ER',
     exportMermaidDone: 'Đã copy code Mermaid!',
+    exportMermaidSelection: 'Copy Mermaid cho các bảng đang chọn',
+    exportMermaidTooLarge: 'Quá lớn để Mermaid vẽ (GitHub, Notion…) — hãy chọn ít bảng hơn rồi copy phần đang chọn',
     exportDbml: 'Xuất DBML (dbdiagram.io)',
     exportSql: 'Xuất lược đồ DDL SQL',
   },

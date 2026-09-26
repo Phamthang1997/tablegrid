@@ -3290,6 +3290,8 @@ const en = {
     exportCodeHeader: 'Code & schema export',
     exportMermaid: 'Copy Mermaid ER markdown',
     exportMermaidDone: 'Mermaid code copied!',
+    exportMermaidSelection: 'Copy Mermaid for selected tables',
+    exportMermaidTooLarge: 'Too large for Mermaid to render (GitHub, Notion…) — select fewer tables and copy the selection',
     exportDbml: 'Export DBML (dbdiagram.io)',
     exportSql: 'Export DDL SQL schema',
   },

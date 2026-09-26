@@ -3254,6 +3254,8 @@ const ja: typeof en = {
     exportCodeHeader: 'コード & スキーマ',
     exportMermaid: 'Mermaid ER マークダウンをコピー',
     exportMermaidDone: 'Mermaid コードをコピーしました',
+    exportMermaidSelection: '選択中のテーブルの Mermaid をコピー',
+    exportMermaidTooLarge: 'Mermaid (GitHub、Notion など) で描画するには大きすぎます — テーブルを絞って選択範囲をコピーしてください',
     exportDbml: 'DBML を書き出す (dbdiagram.io)',
     exportSql: 'DDL SQL スキーマを書き出す',
   },
