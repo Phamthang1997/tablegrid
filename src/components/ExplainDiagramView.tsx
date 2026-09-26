@@ -10,6 +10,7 @@ import {
   Download, ChevronDown, Flame, Maximize, OctagonAlert, Lightbulb,
 } from 'lucide-react';
 import { pickSaveFilePath, saveExportFileAtPath } from '../utils/fileSave';
+import { explainToMermaid } from '../utils/explainMermaid';
 
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 2.5;
@@ -588,6 +589,7 @@ export const ExplainDiagramView: React.FC<ExplainDiagramViewProps> = ({
   const [zoom, setZoom] = useState(1);
   const [panning, setPanning] = useState(false);
   const [showExportDropdown, setShowExportDropdown] = useState(false);
+  const [mermaidCopied, setMermaidCopied] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const diagramTargetRef = useRef<HTMLDivElement>(null);
   // A drag that moved is a pan, and the click the browser fires at its end must not also select
@@ -710,6 +712,27 @@ export const ExplainDiagramView: React.FC<ExplainDiagramViewProps> = ({
       await exportDiagramImage(flowRoot, totalSelfCost, i18n.language, format, t('explain.colCost'));
     } catch (err) {
       console.error('Failed to export diagram image:', err);
+    }
+  };
+
+  // Text rather than a picture, for a ticket or a PR where Mermaid renders it. Labels are the
+  // diagram's own (translated), like the image export's cost label. The menu stays open so the
+  // confirmation drawn in it is seen.
+  const handleCopyMermaid = async () => {
+    if (!flowRoot) return;
+    try {
+      await navigator.clipboard.writeText(
+        explainToMermaid(flowRoot, totalSelfCost, {
+          flagLabel: (flag) => t(flagLabelKey(flag)),
+          cost: t('explain.colCost'),
+          rows: t('explain.mermaidRows'),
+          locale: i18n.language,
+        }),
+      );
+      setMermaidCopied(true);
+      setTimeout(() => setMermaidCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy the plan as Mermaid:', err);
     }
   };
 
@@ -847,6 +870,9 @@ export const ExplainDiagramView: React.FC<ExplainDiagramViewProps> = ({
                     <button className="copy-dropdown-item" onClick={() => handleExport('png')}>{t('explain.exportAs', { format: 'PNG' })}</button>
                     <button className="copy-dropdown-item" onClick={() => handleExport('jpeg')}>{t('explain.exportAs', { format: 'JPG' })}</button>
                     <button className="copy-dropdown-item" onClick={() => handleExport('svg')}>{t('explain.exportAs', { format: 'SVG' })}</button>
+                    <button className="copy-dropdown-item" onClick={handleCopyMermaid}>
+                      {mermaidCopied ? t('explain.mermaidCopied') : t('explain.copyMermaid')}
+                    </button>
                   </div>
                 </>
               )}
