@@ -241,6 +241,30 @@ function literalToText(raw: string): string {
   return s;
 }
 
+/** One field of COPY's text format: `\N` is NULL, and a backslash escapes the next character. */
+function copyFieldToText(raw: string): string {
+  if (raw === '\\N') return 'NULL';
+  const esc: Record<string, string> = { t: '\t', n: '\n', r: '\r', b: '\b', f: '\f', v: '\v' };
+  return raw.replace(/\\(.)/g, (_m, c: string) => esc[c] ?? c);
+}
+
+/**
+ * Parses a `COPY t (cols) FROM stdin;` statement followed by its data lines — the shape
+ * `scan_dump_file` returns in its preview sample for a pg_dump file. Returns null when it is not one.
+ */
+export function parseCopy(stmt: string): DumpRows | null {
+  const head = new RegExp(`^\\s*COPY\\s+${IDENT}\\s*(\\([^)]*\\))?\\s*FROM\\s+stdin\\b[^\\n]*\\n`, 'i').exec(stmt);
+  if (!head) return null;
+  const columns = head[2] ? splitTopLevel(head[2].slice(1, -1)).map(unquoteIdent) : null;
+  const rows: string[][] = [];
+  for (const line of stmt.slice(head[0].length).split('\n')) {
+    const text = line.replace(/\r$/, '');
+    if (text === '' || text === '\\.') continue;
+    rows.push(text.split('\t').map(copyFieldToText));
+  }
+  return { table: unquoteIdent(head[1]), columns, rows };
+}
+
 /** Parses an INSERT INTO statement. Returns null when it is not one. */
 export function parseInsert(stmt: string): DumpRows | null {
   const head = new RegExp(`^\\s*INSERT(?:\\s+OR\\s+\\w+)?(?:\\s+IGNORE)?\\s+INTO\\s+${IDENT}`, 'i').exec(stmt);

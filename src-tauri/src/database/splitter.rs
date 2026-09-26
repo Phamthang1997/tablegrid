@@ -303,6 +303,12 @@ struct ScanState {
     /// `DELIMITER` only appears in MySQL scripts; there `$$` is a statement terminator, not a
     /// dollar quote. Decided for the WHOLE input, before the first byte is scanned.
     mysql_script: bool,
+    /// Treat a line starting with `\` as a psql meta-command (`\connect db`, `\restrict key`)
+    /// and consume it, as psql does. Only for dump FILES: pg_dump's plain format writes them
+    /// between statements, and sent to the server they are a syntax error that kills the restore.
+    /// Off for the SQL editor, which is not psql — a typed `\dt` should reach the server and
+    /// fail visibly rather than silently vanish from "run all" — and so off for the TS twin too.
+    client_commands: bool,
     delim: Vec<u8>,
     /// The start of the statement being gathered.
     start: usize,
@@ -429,6 +435,27 @@ fn scan_step(b: &[u8], st: &mut ScanState, eof: bool) -> Scan {
                 continue;
             }
         }
+        // A psql meta-command: the whole line is consumed and ends the statement before it, the
+        // same way a DELIMITER line does. pg_dump only writes them between statements.
+        if at_ls && st.client_commands {
+            let mut t = i;
+            while t < n && (b[t] == b' ' || b[t] == b'\t') {
+                t += 1;
+            }
+            if t == n && !eof {
+                need_more!();
+            }
+            if t < n && b[t] == b'\\' {
+                let resume = match b[t..].iter().position(|&x| x == b'\n') {
+                    Some(p) => t + p + 1,
+                    None if !eof => need_more!(),
+                    None => n,
+                };
+                st.pos = resume;
+                st.at_line_start = true;
+                return Scan::Boundary { end: i, resume };
+            }
+        }
         // The DELIMITER command (at the start of a line): it changes the statement terminator, and
         // the line itself is not a statement. This command is NOT SQL: sending it to the server errors out.
         if at_ls {
@@ -495,6 +522,22 @@ fn stmt_text(b: &[u8], from: usize, to: usize) -> Option<String> {
     }
 }
 
+/// Is this `COPY … FROM stdin`, i.e. a statement whose data follows it in the dump instead of in it?
+/// `COPY … FROM '/file'` and `COPY … TO STDOUT` are ordinary statements.
+pub(crate) fn is_copy_from_stdin(stmt: &str) -> bool {
+    let body = strip_leading_comments(stmt);
+    if !body
+        .get(..4)
+        .is_some_and(|h| h.eq_ignore_ascii_case("COPY"))
+    {
+        return false;
+    }
+    let words: Vec<&str> = body.split_whitespace().collect();
+    words
+        .windows(2)
+        .any(|w| w[0].eq_ignore_ascii_case("FROM") && w[1].eq_ignore_ascii_case("STDIN"))
+}
+
 /// Does this input issue a `DELIMITER` command anywhere? Decides `mysql_script` for a whole file.
 pub(crate) fn line_is_delimiter_command(line: &[u8]) -> bool {
     delimiter_candidate(line, 0, true) == Some(true)
@@ -513,6 +556,8 @@ pub(crate) struct StmtSplitter {
     st: ScanState,
     eof: bool,
     done: bool,
+    /// In a COPY data block, the rest of the `COPY … FROM stdin;` line is still to be skipped.
+    copy_skip_line: bool,
 }
 
 impl StmtSplitter {
@@ -521,6 +566,7 @@ impl StmtSplitter {
             buf: Vec::new(),
             st: ScanState {
                 mysql_script,
+                client_commands: false,
                 delim: b";".to_vec(),
                 start: 0,
                 pos: 0,
@@ -528,7 +574,80 @@ impl StmtSplitter {
             },
             eof: false,
             done: false,
+            copy_skip_line: false,
         }
+    }
+
+    /// The splitter for a dump FILE: psql meta-command lines are consumed (see
+    /// `ScanState::client_commands`).
+    pub(crate) fn with_client_commands(mut self) -> Self {
+        self.st.client_commands = true;
+        self
+    }
+
+    /// The statement `next_stmt` just returned was a `COPY … FROM stdin`: what follows its line is
+    /// data, not SQL, up to a line holding only `\.` — read it with `copy_data`.
+    pub(crate) fn begin_copy(&mut self) {
+        self.copy_skip_line = true;
+    }
+
+    /// The next piece of a COPY data block, whole lines only, about `max` bytes: `Some((bytes,
+    /// done))`, or None when more input is needed first. `done` means the `\.` line has been
+    /// consumed and `next_stmt` carries on after it.
+    ///
+    /// The data is never scanned: a data line holding a `'` or a `;` is only data, and scanning
+    /// a 150MB block for statements is also what made a pg_dump file one statement of 158MB.
+    pub(crate) fn copy_data(&mut self, max: usize) -> Option<(Vec<u8>, bool)> {
+        let b = &self.buf;
+        let n = b.len();
+        let mut at = self.st.start;
+        let mut out = Vec::new();
+        let mut done = false;
+        if self.copy_skip_line {
+            match b[at..].iter().position(|&c| c == b'\n') {
+                Some(p) => {
+                    at += p + 1;
+                    self.copy_skip_line = false;
+                }
+                None if self.eof => {
+                    at = n;
+                    self.copy_skip_line = false;
+                    done = true;
+                }
+                None => return None,
+            }
+        }
+        while !done && out.len() < max {
+            match b[at..].iter().position(|&c| c == b'\n') {
+                Some(p) => {
+                    let line = &b[at..at + p];
+                    if line.strip_suffix(b"\r").unwrap_or(line) == b"\\." {
+                        at += p + 1;
+                        done = true;
+                        break;
+                    }
+                    out.extend_from_slice(&b[at..=at + p]);
+                    at += p + 1;
+                }
+                None if self.eof => {
+                    // A file cut off before its `\.`: what is there is still data.
+                    let rest = &b[at..];
+                    if rest.strip_suffix(b"\r").unwrap_or(rest) != b"\\." {
+                        out.extend_from_slice(rest);
+                    }
+                    at = n;
+                    done = true;
+                }
+                None => break,
+            }
+        }
+        self.st.start = at;
+        self.st.pos = at;
+        self.st.at_line_start = true;
+        if out.is_empty() && !done {
+            return None;
+        }
+        Some((out, done))
     }
 
     pub(crate) fn feed(&mut self, bytes: &[u8]) {
@@ -582,6 +701,7 @@ pub(crate) fn split_sql_statements(sql: &str) -> Vec<String> {
     let b = sql.as_bytes();
     let mut st = ScanState {
         mysql_script: sql.lines().any(|l| delimiter_token_of_line(l).is_some()),
+        client_commands: false,
         delim: b";".to_vec(),
         start: 0,
         pos: 0,

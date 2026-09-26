@@ -53,6 +53,8 @@ export const EXACT: Record<string, string> = {
   'Kết nối không khớp với phiên transaction': 'backend.txConnMismatch',
   // database/commands/restore.rs — a programming error rather than a user one, but still text.
   'Cần đúng một nguồn dump: nội dung SQL hoặc đường dẫn tệp.': 'backend.restoreNeedsOneSource',
+  'Tệp dump dùng COPY … FROM stdin (định dạng của pg_dump), chỉ phục hồi được vào PostgreSQL':
+    'backend.copyNeedsPg',
   'Tên savepoint chỉ gồm chữ, số và dấu gạch dưới, bắt đầu bằng chữ': 'backend.txBadSavepointName',
   'Chưa kết nối database': 'backend.notConnected',
   'Chưa kết nối Redis': 'backend.notConnectedRedis',

@@ -5,6 +5,7 @@ import { ChevronDown } from 'lucide-react';
 import {
   parseCreateTable,
   parseInsert,
+  parseCopy,
   buildDropStatements,
   stripLeadingSqlComments,
   plannedFromScan,
@@ -191,7 +192,9 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
       if (ct) createdTables.push(ct);
     }
     for (const st of scan.preview.data) {
-      const ins = parseInsert(stripLeadingSqlComments(st.text));
+      const body = stripLeadingSqlComments(st.text);
+      // A pg_dump file keeps its rows in COPY blocks; the preview sample carries a few data lines.
+      const ins = parseInsert(body) ?? parseCopy(body);
       if (!ins) continue;
       const cur = byTable.get(ins.table);
       if (cur) {

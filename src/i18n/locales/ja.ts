@@ -3047,6 +3047,7 @@ const ja: typeof en = {
     importNoColumn: "テーブルに列 '{{a}}' がありません",
     dumpOpenFailed: 'ダンプファイルを開けませんでした: {{a}}',
     dumpReadFailed: 'ダンプファイルを読み込めませんでした: {{a}}',
+    copyNeedsPg: 'このダンプは COPY … FROM stdin (pg_dump の形式) を使っているため、PostgreSQL にしか復元できません',
     restoreNeedsOneSource: '復元にはダンプの入力が 1 つだけ必要です (SQL テキストまたはファイルパス)。',
     txBadIsolation: 'この DBMS では無効な分離レベルです。',
     txSessionNotReady: 'トランザクションセッションが準備できていません。',

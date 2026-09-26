@@ -21,17 +21,20 @@ use serde_json::{Value, json};
 use tauri::ipc::Channel;
 
 use super::restore::{is_skipped_stmt, upper_head, use_db_name};
-use crate::database::{DumpStatements, classification_head, open_dump, strip_leading_comments};
+use crate::database::{
+    DumpItem, DumpStatements, classification_head, open_dump, strip_leading_comments,
+};
 
 /// An identifier, quoted or not, with an optional schema prefix; group 1 is the bare name.
 const IDENT: &str = r#"(?:[`"\[]?[\w$]+[`"\]]?\s*\.\s*)?[`"\[]?([\w$]+)[`"\]]?"#;
 
 /// A statement that names one of the dump's objects right after its verb — the Rust form of
 /// `OBJECT_NAME_SRC` in `dumpPreview.ts`, plus the spellings it missed (`MATERIALIZED VIEW`, which
-/// this app's own Postgres dump writes, `UNLOGGED TABLE`, `INSERT IGNORE`/`OR REPLACE`/`REPLACE INTO`).
+/// this app's own Postgres dump writes, `UNLOGGED TABLE`, `INSERT IGNORE`/`OR REPLACE`/`REPLACE INTO`,
+/// and pg_dump's `COPY t (…) FROM stdin`, which is where a plain pg_dump file keeps every row).
 static OBJECT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r"(?i)^\s*(?:CREATE\s+(?:UNLOGGED\s+)?TABLE|(?:INSERT|REPLACE)\s+(?:IGNORE\s+|OR\s+\w+\s+)?INTO|DROP\s+(?:TABLE|(?:MATERIALIZED\s+)?VIEW|TRIGGER|PROCEDURE|FUNCTION)\s+IF\s+EXISTS|CREATE\s+(?:OR\s+REPLACE\s+)?(?:ALGORITHM\s*=\s*\S+\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?:SQL\s+SECURITY\s+\w+\s+)?(?:(?:MATERIALIZED\s+)?VIEW|TRIGGER|PROCEDURE|FUNCTION))\s+(?:IF\s+NOT\s+EXISTS\s+)?{IDENT}"
+        r"(?i)^\s*(?:COPY|CREATE\s+(?:UNLOGGED\s+)?TABLE|(?:INSERT|REPLACE)\s+(?:IGNORE\s+|OR\s+\w+\s+)?INTO|DROP\s+(?:TABLE|(?:MATERIALIZED\s+)?VIEW|TRIGGER|PROCEDURE|FUNCTION)\s+IF\s+EXISTS|CREATE\s+(?:OR\s+REPLACE\s+)?(?:ALGORITHM\s*=\s*\S+\s+)?(?:DEFINER\s*=\s*\S+\s+)?(?:SQL\s+SECURITY\s+\w+\s+)?(?:(?:MATERIALIZED\s+)?VIEW|TRIGGER|PROCEDURE|FUNCTION))\s+(?:IF\s+NOT\s+EXISTS\s+)?{IDENT}"
     ))
     .expect("OBJECT_RE")
 });
@@ -71,6 +74,8 @@ const HEAD_BYTES: usize = 512;
 const PREVIEW_MAX: usize = 2000;
 /// A structure statement longer than this is clipped (the preview shows it, it does not run it).
 const PREVIEW_STRUCTURE_BYTES: usize = 20_000;
+/// How much of a COPY block's data is kept with its statement in the preview.
+const PREVIEW_COPY_BYTES: usize = 4_000;
 /// A data statement is clipped here — enough for the few rows per table the Data tab shows.
 const PREVIEW_DATA_BYTES: usize = 64_000;
 /// INSERT statements kept per table.
@@ -118,6 +123,8 @@ pub(crate) struct DumpSummary {
     data: Vec<Value>,
     data_per_table: HashMap<String, usize>,
     preview_complete: bool,
+    /// The last data preview item is a COPY still waiting for a few lines of its data.
+    copy_sample_open: bool,
 }
 
 /// Index into `DumpSummary::objects`.
@@ -131,8 +138,33 @@ impl DumpSummary {
         }
     }
 
+    /// The first lines of a COPY block's data, appended to its statement in the preview the way
+    /// pg_dump writes them, so the SQL view shows what the rows look like.
+    pub(crate) fn add_copy_data(&mut self, data: &[u8]) {
+        if !std::mem::take(&mut self.copy_sample_open) {
+            return;
+        }
+        let Some(item) = self.data.last_mut() else {
+            return;
+        };
+        let mut end = data.len().min(PREVIEW_COPY_BYTES);
+        if end < data.len() {
+            // Whole lines only; a single line longer than the cap is shown clipped.
+            end = data[..end]
+                .iter()
+                .rposition(|&c| c == b'\n')
+                .map_or(end, |p| p + 1);
+            self.preview_complete = false;
+            item["clipped"] = json!(true);
+        }
+        let sample = String::from_utf8_lossy(&data[..end]);
+        let text = format!("{};\n{}\\.", item["text"].as_str().unwrap_or(""), sample);
+        item["text"] = json!(text);
+    }
+
     pub(crate) fn add(&mut self, stmt: &str) {
         self.statements += 1;
+        self.copy_sample_open = false;
         // The same classification as `restore_backup`, so the counts match what it will run.
         let body = strip_leading_comments(stmt);
         let upper = upper_head(body);
@@ -197,7 +229,7 @@ impl DumpSummary {
         let kind = if hu.starts_with("CREATE") || hu.starts_with("ALTER") || hu.starts_with("DROP")
         {
             "structure"
-        } else if hu.starts_with("INSERT") {
+        } else if hu.starts_with("INSERT") || hu.starts_with("COPY") {
             "data"
         } else {
             return;
@@ -233,6 +265,7 @@ impl DumpSummary {
             "commentRuns": comment_runs,
             "clipped": clipped,
         }));
+        self.copy_sample_open = kind == "data" && hu.starts_with("COPY");
     }
 
     pub(crate) fn into_json(self) -> Value {
@@ -277,8 +310,12 @@ fn scan_file(path: &str, on_progress: &Channel<Value>) -> Result<Value, String> 
         let mut stmts = DumpStatements::new(dump.reader, mysql_script);
         let mut summary = DumpSummary::new();
         let mut last = Instant::now();
-        for stmt in stmts.by_ref() {
-            summary.add(&stmt?);
+        for item in stmts.by_ref() {
+            match item? {
+                DumpItem::Stmt(stmt) | DumpItem::CopyStart(stmt) => summary.add(&stmt),
+                DumpItem::CopyData(data) => summary.add_copy_data(&data),
+                DumpItem::CopyEnd => {}
+            }
             if last.elapsed() >= Duration::from_millis(200) {
                 if SCAN_GENERATION.load(Ordering::SeqCst) != generation {
                     return Ok(json!({ "superseded": true }));
@@ -542,6 +579,24 @@ CREATE FUNCTION get_customer_balance(p INT) RETURNS DECIMAL(5,2) BEGIN RETURN 0;
         assert_eq!(
             scan_text("ALTER TABLE a ADD b int;")["preview"]["structure"][0]["table"],
             Value::Null
+        );
+    }
+
+    /// pg_dump keeps every row in `COPY … FROM stdin` blocks: the table has to be named from the
+    /// COPY, and the preview shows its first data lines the way the file writes them.
+    #[test]
+    fn a_copy_block_names_its_table_and_shows_a_sample() {
+        let mut s = DumpSummary::new();
+        s.add("COPY bookings.flights (id, no) FROM stdin");
+        s.add_copy_data(b"1\tPG0001\n2\tPG0002\n");
+        s.add_copy_data(b"3\tPG0003\n");
+        let v = s.into_json();
+        assert_eq!(v["tables"], json!(["flights"]));
+        assert_eq!(v["plan"]["byTable"]["flights"], json!(1));
+        let item = &v["preview"]["data"][0];
+        assert_eq!(
+            item["text"],
+            json!("COPY bookings.flights (id, no) FROM stdin;\n1\tPG0001\n2\tPG0002\n\\.")
         );
     }
 

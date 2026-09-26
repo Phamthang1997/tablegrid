@@ -3081,6 +3081,7 @@ const en = {
     importNoColumn: "The table has no column '{{a}}'",
     dumpOpenFailed: 'Could not open the dump file: {{a}}',
     dumpReadFailed: 'Could not read the dump file: {{a}}',
+    copyNeedsPg: 'The dump uses COPY … FROM stdin (pg_dump\'s format), which can only be restored into PostgreSQL',
     restoreNeedsOneSource: 'A restore needs exactly one dump source: SQL text or a file path.',
     txBadIsolation: 'That isolation level is not valid for this database engine.',
     txSessionNotReady: 'The transaction session is not ready.',

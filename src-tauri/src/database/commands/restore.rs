@@ -8,7 +8,7 @@ use sqlx::{MySqlPool, PgPool};
 use tauri::ipc::Channel;
 
 use crate::database::{
-    DbConnection, DbKind, DumpStatements, build_mysql_url, build_pg_url, open_dump,
+    DbConnection, DbKind, DumpItem, DumpStatements, build_mysql_url, build_pg_url, open_dump,
     probe_mysql_script, reject_conn_read_only, split_sql_statements, sqlite_raw,
     strip_leading_comments,
 };
@@ -145,8 +145,20 @@ fn is_session_level_stmt(stmt_upper: &str) -> bool {
         // filtered out. A PRAGMA the current server does not know must not abort the restore
         // either, which is exactly what this list means.
         || stmt_upper.starts_with("PRAGMA ")
+        // pg_dump's own spelling of `SET search_path = ''`, written as a SELECT so it works
+        // wherever a function call does. It names no table, so the filter would drop it.
+        || stmt_upper.starts_with("SELECT PG_CATALOG.SET_CONFIG(")
         || stmt_upper.starts_with("CREATE DATABASE")
         || stmt_upper.starts_with("CREATE SCHEMA")
+        // What a table is BUILT FROM rather than a table: none of them names the table that
+        // needs it, so the filter dropped them and the table then failed — pg_dump's demo
+        // database lost its `EXCLUDE … USING gist` constraint to a missing `btree_gist`, and a
+        // `serial` column's `film_film_id_seq` holds no whole word `film`. Creating one the
+        // selection does not need is harmless, and one that already exists must not abort.
+        || stmt_upper.starts_with("CREATE EXTENSION")
+        || stmt_upper.starts_with("CREATE TYPE")
+        || stmt_upper.starts_with("CREATE DOMAIN")
+        || stmt_upper.starts_with("CREATE SEQUENCE")
 }
 
 // Does the statement mention one of the selected tables (matched on word boundaries so
@@ -202,7 +214,7 @@ pub(super) fn use_db_name(stmt: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
-// Is this statement a CREATE VIEW? Those are moved to the end of the restore.
+// Is this statement a CREATE VIEW? One that FAILS is retried at the end of the restore.
 //
 // Dumps interleave views with tables alphabetically — sakila's `actor_info` view sits right
 // after the `actor` table, long before the `film` table it reads — while `CREATE VIEW` is
@@ -210,10 +222,13 @@ pub(super) fn use_db_name(stmt: &str) -> Option<String> {
 // The export side has been fixed to write views after the tables, but dumps that already exist (and other
 // tools' dumps) cannot be fixed retroactively, so the runner has to tolerate the wrong order too.
 //
-// Only CREATE VIEW moves, and their relative order is preserved (a view may read another view;
-// the app's export already orders them by dependency — see `orderViewsByDependency`).
-// `DROP VIEW` staying put is harmless. Moving any other kind of statement could change what the dump
-// means — a dump that INSERTs through an updatable view, for example, would break.
+// It used to move EVERY CREATE VIEW to the end up front, and that broke the dumps that were already
+// right: pg_dump orders views by dependency and follows each with its `COMMENT ON VIEW` / `ALTER
+// VIEW … OWNER` / `GRANT`, which then ran against a view that did not exist yet. Running it in
+// place and deferring only on failure keeps a correct dump's meaning and still rescues a wrong one.
+// The retries keep their relative order (a view may read another view). Moving any other kind of
+// statement could change what the dump means — a dump that INSERTs through an updatable view, for
+// example, would break.
 fn is_create_view(stmt: &str) -> bool {
     static RE: std::sync::LazyLock<Option<regex::Regex>> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
@@ -265,20 +280,88 @@ impl Classifier {
     }
 }
 
+/// What `Feed::next` hands the runner.
+enum Step {
+    /// A statement, and whether it is session-level (its failure does not abort the restore).
+    Stmt(String, bool),
+    /// `COPY … FROM stdin`: its data is read with `Feed::copy_chunk` until that answers None.
+    Copy(String),
+}
+
+/// What happened to one COPY block.
+enum CopyOutcome {
+    Done,
+    Cancelled,
+    /// The server refused it; the block's data has been read past, so the run can carry on.
+    Failed(String),
+}
+
+/// The error for a COPY block met on MySQL or SQLite: that data format only Postgres reads.
+const COPY_NEEDS_PG: &str =
+    "Tệp dump dùng COPY … FROM stdin (định dạng của pg_dump), chỉ phục hồi được vào PostgreSQL";
+
+/// Streams one COPY block to Postgres a chunk at a time, straight from the reader thread — a
+/// table's data in a pg_dump file is one block, and 150MB of it must not become one string.
+/// `Err` is only an unreadable file; a refusal from the server is `CopyOutcome::Failed`.
+async fn pg_copy_in(
+    conn: &mut sqlx::PgConnection,
+    sql: &str,
+    feed: &mut Feed,
+    cancel: &AtomicBool,
+    on_chunk: &(dyn Fn(&Feed) + Sync),
+) -> Result<CopyOutcome, String> {
+    let mut copy = match conn.copy_in_raw(sql).await {
+        Ok(c) => c,
+        Err(e) => {
+            feed.skip_copy().await?;
+            return Ok(CopyOutcome::Failed(e.to_string()));
+        }
+    };
+    loop {
+        // Checked between chunks too: one COPY can be most of the file.
+        if cancel.load(Ordering::Relaxed) {
+            let _ = copy.abort("cancelled").await;
+            return Ok(CopyOutcome::Cancelled);
+        }
+        match feed.copy_chunk().await {
+            Ok(Some(data)) => {
+                if let Err(e) = copy.send(data).await {
+                    let msg = e.to_string();
+                    let _ = copy.abort(msg.clone()).await;
+                    feed.skip_copy().await?;
+                    return Ok(CopyOutcome::Failed(msg));
+                }
+                on_chunk(feed);
+            }
+            Ok(None) => break,
+            Err(e) => {
+                let _ = copy.abort(e.clone()).await;
+                return Err(e);
+            }
+        }
+    }
+    match copy.finish().await {
+        Ok(_) => Ok(CopyOutcome::Done),
+        Err(e) => Ok(CopyOutcome::Failed(e.to_string())),
+    }
+}
+
 /// Where a restore's statements come from.
 enum Feed {
     /// Already split, filtered and reordered, so the total is known up front.
     Mem {
         total: usize,
         items: std::vec::IntoIter<(String, bool)>,
+        retry: Vec<(String, bool)>,
+        tail: Option<std::vec::IntoIter<(String, bool)>>,
     },
     /// Split by a reader thread while the file is read. The total is not known until the end, so
     /// progress is the share of the FILE read — which is also what a user watching a 1GB dump wants.
     File {
-        rx: tokio::sync::mpsc::Receiver<Result<String, String>>,
-        /// CREATE VIEW statements, held back until the rest of the file has run.
-        views: Vec<(String, bool)>,
-        /// The held-back views, once the file is exhausted.
+        rx: tokio::sync::mpsc::Receiver<Result<DumpItem, String>>,
+        /// CREATE VIEW statements that failed in place, retried once the rest has run.
+        retry: Vec<(String, bool)>,
+        /// The retries, once the source is exhausted.
         tail: Option<std::vec::IntoIter<(String, bool)>>,
         bytes_read: Arc<std::sync::atomic::AtomicU64>,
         bytes_total: u64,
@@ -316,37 +399,150 @@ impl Feed {
         }
     }
 
+    /// Put back a CREATE VIEW that failed, to run again after everything else.
+    fn defer(&mut self, q: String, session_level: bool) {
+        match self {
+            Feed::Mem { retry, .. } | Feed::File { retry, .. } => retry.push((q, session_level)),
+        }
+    }
+
+    /// Whether the statements now coming are the deferred retries — which are not deferred again.
+    fn retrying(&self) -> bool {
+        match self {
+            Feed::Mem { tail, .. } | Feed::File { tail, .. } => tail.is_some(),
+        }
+    }
+
     /// The next statement to run, None when there is none left, or the error that stopped the
     /// reader (an unreadable or truncated file).
-    async fn next(
-        &mut self,
-        classifier: &mut Classifier,
-    ) -> Result<Option<(String, bool)>, String> {
+    async fn next(&mut self, classifier: &mut Classifier) -> Result<Option<Step>, String> {
+        let stmt = |(q, s): (String, bool)| Step::Stmt(q, s);
         match self {
-            Feed::Mem { items, .. } => Ok(items.next()),
-            Feed::File {
-                rx, views, tail, ..
+            Feed::Mem {
+                items, retry, tail, ..
             } => {
                 if let Some(rest) = tail {
-                    return Ok(rest.next());
+                    return Ok(rest.next().map(stmt));
                 }
-                while let Some(item) = rx.recv().await {
-                    let Some((q, session_level)) = classifier.classify(item?) else {
-                        continue;
-                    };
-                    if is_create_view(&q) {
-                        views.push((q, session_level));
-                        continue;
-                    }
-                    return Ok(Some((q, session_level)));
+                if let Some(item) = items.next() {
+                    return Ok(Some(stmt(item)));
                 }
-                let mut rest = std::mem::take(views).into_iter();
+                let mut rest = std::mem::take(retry).into_iter();
                 let first = rest.next();
                 *tail = Some(rest);
-                Ok(first)
+                Ok(first.map(stmt))
+            }
+            Feed::File {
+                rx, retry, tail, ..
+            } => {
+                if let Some(rest) = tail {
+                    return Ok(rest.next().map(stmt));
+                }
+                while let Some(item) = rx.recv().await {
+                    match item? {
+                        DumpItem::Stmt(q) => {
+                            let Some((q, session_level)) = classifier.classify(q) else {
+                                continue;
+                            };
+                            return Ok(Some(Step::Stmt(q, session_level)));
+                        }
+                        // Filtered like any statement: a COPY names its table.
+                        DumpItem::CopyStart(q) => match classifier.classify(q) {
+                            Some((q, _)) => return Ok(Some(Step::Copy(q))),
+                            None => skip_copy_rx(rx).await?,
+                        },
+                        DumpItem::CopyData(_) | DumpItem::CopyEnd => {}
+                    }
+                }
+                let mut rest = std::mem::take(retry).into_iter();
+                let first = rest.next();
+                *tail = Some(rest);
+                Ok(first.map(stmt))
             }
         }
     }
+
+    /// The next piece of the COPY block `next` just returned; None at its end.
+    async fn copy_chunk(&mut self) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            Feed::Mem { .. } => Ok(None),
+            Feed::File { rx, .. } => match rx.recv().await {
+                Some(Ok(DumpItem::CopyData(d))) => Ok(Some(d)),
+                Some(Ok(_)) | None => Ok(None),
+                Some(Err(e)) => Err(e),
+            },
+        }
+    }
+
+    /// Reads past the rest of the current COPY block.
+    async fn skip_copy(&mut self) -> Result<(), String> {
+        match self {
+            Feed::Mem { .. } => Ok(()),
+            Feed::File { rx, .. } => skip_copy_rx(rx).await,
+        }
+    }
+}
+
+/// A `Feed` reading a dump file on a thread of its own.
+async fn file_feed(
+    path: String,
+    mysql_script: Option<bool>,
+    prepend: Vec<String>,
+) -> Result<Feed, String> {
+    // Opened here rather than in the reader thread so a missing file is a plain error
+    // before anything has started, and so the byte counter is in hand for progress.
+    let p = path.clone();
+    let dump = tokio::task::spawn_blocking(move || open_dump(&p))
+        .await
+        .map_err(|e| e.to_string())??;
+    let bytes_read = dump.bytes_read.clone();
+    let bytes_total = dump.bytes_total;
+    // Bounded: the reader runs at most this many items ahead of the server, so the dump in
+    // memory is a handful of statements (or COPY chunks) whatever the file's size. Dropping the
+    // receiver (the restore returning, cancelled or failed) ends the thread at its next send.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<DumpItem, String>>(16);
+    std::thread::spawn(move || {
+        let mysql_script = match mysql_script {
+            Some(b) => b,
+            None => match probe_mysql_script(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(e));
+                    return;
+                }
+            },
+        };
+        let items = DumpStatements::new(dump.reader, mysql_script);
+        for q in prepend
+            .into_iter()
+            .map(|s| Ok(DumpItem::Stmt(s)))
+            .chain(items)
+        {
+            let failed = q.is_err();
+            if tx.blocking_send(q).is_err() || failed {
+                return;
+            }
+        }
+    });
+    Ok(Feed::File {
+        rx,
+        retry: Vec::new(),
+        tail: None,
+        bytes_read,
+        bytes_total,
+    })
+}
+
+async fn skip_copy_rx(
+    rx: &mut tokio::sync::mpsc::Receiver<Result<DumpItem, String>>,
+) -> Result<(), String> {
+    while let Some(item) = rx.recv().await {
+        match item? {
+            DumpItem::CopyData(_) => {}
+            _ => return Ok(()),
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -439,47 +635,14 @@ pub async fn restore_backup(
                 to_run.extend(classifier.classify(q));
             }
             drop(sql);
-            // Move every CREATE VIEW statement to the end — see `is_create_view`. partition keeps the
-            // order within each group.
-            let (rest, views): (Vec<_>, Vec<_>) =
-                to_run.into_iter().partition(|(q, _)| !is_create_view(q));
-            let mut to_run = rest;
-            to_run.extend(views);
-            Feed::Mem { total: to_run.len(), items: to_run.into_iter() }
+            Feed::Mem {
+                total: to_run.len(),
+                items: to_run.into_iter(),
+                retry: Vec::new(),
+                tail: None,
+            }
         }
-        (None, Some(path)) => {
-            // Opened here rather than in the reader thread so a missing file is a plain error
-            // before anything has started, and so the byte counter is in hand for progress.
-            let p = path.clone();
-            let dump = tokio::task::spawn_blocking(move || open_dump(&p))
-                .await
-                .map_err(|e| e.to_string())??;
-            let bytes_read = dump.bytes_read.clone();
-            let bytes_total = dump.bytes_total;
-            // Bounded: the reader runs at most this many statements ahead of the server, so the
-            // dump in memory is a handful of statements whatever the file's size. Dropping the
-            // receiver (the restore returning, cancelled or failed) ends the thread at its next send.
-            let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, String>>(16);
-            std::thread::spawn(move || {
-                let mysql_script = match mysql_script {
-                    Some(b) => b,
-                    None => match probe_mysql_script(&path) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            let _ = tx.blocking_send(Err(e));
-                            return;
-                        }
-                    },
-                };
-                for q in prepend.into_iter().map(Ok).chain(DumpStatements::new(dump.reader, mysql_script)) {
-                    let failed = q.is_err();
-                    if tx.blocking_send(q).is_err() || failed {
-                        return;
-                    }
-                }
-            });
-            Feed::File { rx, views: Vec::new(), tail: None, bytes_read, bytes_total }
-        }
+        (None, Some(path)) => file_feed(path, mysql_script, prepend).await?,
         _ => return Err("Cần đúng một nguồn dump: nội dung SQL hoặc đường dẫn tệp.".to_string()),
     };
 
@@ -518,13 +681,16 @@ pub async fn restore_backup(
                     break;
                 }
                 let (q, session_level) = match feed.next(&mut classifier).await {
-                    Ok(Some(item)) => item,
+                    Ok(Some(Step::Stmt(q, s))) => (q, s),
                     Ok(None) => break,
-                    Err(e) => {
+                    other => {
                         let _ = sqlx::query("ROLLBACK;").execute(&mut *conn).await;
                         let _ = sqlx::raw_sql("UNLOCK TABLES;").execute(&mut *conn).await;
                         let _ = sqlx::query("SET FOREIGN_KEY_CHECKS = 1;").execute(&mut *conn).await;
-                        return Err(e);
+                        return Err(match other {
+                            Err(e) => e,
+                            _ => COPY_NEEDS_PG.to_string(),
+                        });
                     }
                 };
 
@@ -532,6 +698,12 @@ pub async fn restore_backup(
                 // EVENT through a prepared statement (error 1295), and a dump usually contains all of those.
                 // A restore only needs to run statements, never to read a row, so the text protocol is used for everything.
                 if let Err(e) = sqlx::raw_sql(sqlx::AssertSqlSafe(q.clone())).execute(&mut *conn).await {
+                    // A CREATE VIEW read a table the dump has not created yet: try it again at the end.
+                    // A failed statement does not abort a MySQL transaction, so no savepoint is needed.
+                    if !feed.retrying() && is_create_view(&q) {
+                        feed.defer(q, session_level);
+                        continue;
+                    }
                     // A failing session-/schema-level statement is skipped; a real error rolls back and returns the error.
                     if !session_level {
                         if continue_on_error {
@@ -602,7 +774,49 @@ pub async fn restore_backup(
                     break;
                 }
                 let (q, session_level) = match feed.next(&mut classifier).await {
-                    Ok(Some(item)) => item,
+                    Ok(Some(Step::Stmt(q, s))) => (q, s),
+                    Ok(Some(Step::Copy(q))) => {
+                        // Same savepoint rule as a statement: without one, a refused COPY leaves
+                        // the transaction aborted (25P02) and `continue_on_error` cannot carry on.
+                        if continue_on_error {
+                            let _ = run_str(&mut conn, "SAVEPOINT tn_restore_sp;").await;
+                        }
+                        let done_now = done;
+                        let on_chunk = |f: &Feed| {
+                            let _ = on_progress.send(f.progress_message(done_now));
+                        };
+                        match pg_copy_in(&mut conn, &q, &mut feed, &cancel, &on_chunk).await {
+                            Err(e) => {
+                                let _ = run_str(&mut conn, "ROLLBACK;").await;
+                                return Err(e);
+                            }
+                            Ok(CopyOutcome::Cancelled) => {
+                                cancelled = true;
+                                break;
+                            }
+                            Ok(CopyOutcome::Done) => {
+                                if continue_on_error {
+                                    let _ = run_str(&mut conn, "RELEASE SAVEPOINT tn_restore_sp;").await;
+                                }
+                                statements_count += 1;
+                                done += 1;
+                                tick(done, &feed);
+                            }
+                            Ok(CopyOutcome::Failed(e)) => {
+                                done += 1;
+                                if !continue_on_error {
+                                    let _ = run_str(&mut conn, "ROLLBACK;").await;
+                                    return Err(format!("Lỗi khi chạy lệnh SQL: {}. Chi tiết: {}", stmt_for_error(&q), e));
+                                }
+                                let _ = run_str(&mut conn, "ROLLBACK TO SAVEPOINT tn_restore_sp;").await;
+                                failed_count += 1;
+                                if failed_samples.len() < FAILED_SAMPLES_MAX {
+                                    failed_samples.push(json!({ "sql": stmt_for_error(&q), "error": e }));
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     Ok(None) => break,
                     Err(e) => {
                         let _ = run_str(&mut conn, "ROLLBACK;").await;
@@ -619,13 +833,20 @@ pub async fn restore_backup(
                 // session-level statement: those are allowed to fail (a MySQL `SET` line in a dump
                 // from another dialect), and without a savepoint that "allowed" failure used to poison
                 // the whole transaction and fail everything after it.
-                let savepoint = continue_on_error || session_level;
+                // A CREATE VIEW gets one too, so that failing in place (see `is_create_view`) can be
+                // retried at the end instead of aborting the transaction.
+                let deferrable = !feed.retrying() && is_create_view(&q);
+                let savepoint = continue_on_error || session_level || deferrable;
                 if savepoint {
                     let _ = run_str(&mut conn, "SAVEPOINT tn_restore_sp;").await;
                 }
                 if let Err(e) = run(&mut conn, exec_sql).await {
                     if savepoint {
                         let _ = run_str(&mut conn, "ROLLBACK TO SAVEPOINT tn_restore_sp;").await;
+                    }
+                    if deferrable {
+                        feed.defer(q, session_level);
+                        continue;
                     }
                     done += 1;
                     if session_level {
@@ -674,14 +895,21 @@ pub async fn restore_backup(
                     break;
                 }
                 let (q, session_level) = match feed.next(&mut classifier).await {
-                    Ok(Some(item)) => item,
+                    Ok(Some(Step::Stmt(q, s))) => (q, s),
                     Ok(None) => break,
-                    Err(e) => {
+                    other => {
                         abort();
-                        return Err(e);
+                        return Err(match other {
+                            Err(e) => e,
+                            _ => COPY_NEEDS_PG.to_string(),
+                        });
                     }
                 };
                 if let Err(e) = sqlite_raw(conn_arc, &q) {
+                    if !feed.retrying() && is_create_view(&q) {
+                        feed.defer(q, session_level);
+                        continue;
+                    }
                     done += 1;
                     if !session_level && continue_on_error {
                         failed_count += 1;
@@ -779,4 +1007,88 @@ pub async fn restore_backup(
         "failedSamples": failed_samples
     }))
 }).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Replays a real dump file into a scratch Postgres database through the same `Feed` and
+    /// `pg_copy_in` the restore runs, statement by statement in autocommit. Needs `DUMP_PATH` and
+    /// `PG_URL` (a database it may fill); `… DATABASE` statements are skipped so nothing outside
+    /// that database is touched. Run with:
+    /// `cargo test --lib replay_a_real_dump -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn replay_a_real_dump() {
+        let path = std::env::var("DUMP_PATH").unwrap();
+        let url = std::env::var("PG_URL").unwrap();
+        let pool = PgPool::connect(&url).await.unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        // FILTER=1: select every table the scan found, as the restore dialogs do by default,
+        // instead of replaying the whole file.
+        let tables: Vec<String> = if std::env::var("FILTER").is_ok() {
+            let dump = open_dump(&path).unwrap();
+            let mut summary = super::super::dump_scan::DumpSummary::new();
+            for item in DumpStatements::new(dump.reader, false) {
+                if let DumpItem::Stmt(q) | DumpItem::CopyStart(q) = item.unwrap() {
+                    summary.add(&q);
+                }
+            }
+            let v = summary.into_json();
+            v["tables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t.as_str().unwrap().to_string())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        println!("tables {tables:?}");
+        let mut feed = file_feed(path, Some(false), Vec::new()).await.unwrap();
+        let mut classifier = Classifier {
+            matcher: TableMatcher::new(&tables),
+            run_all: tables.is_empty(),
+            last_use_db: None,
+        };
+        let cancel = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        let (mut ok, mut copies, mut failed) = (0, 0, 0);
+        while let Some(step) = feed.next(&mut classifier).await.unwrap() {
+            match step {
+                Step::Stmt(q, _) => {
+                    if upper_head(strip_leading_comments(&q)).contains("DATABASE") {
+                        continue;
+                    }
+                    match sqlx::raw_sql(sqlx::AssertSqlSafe(q.clone()))
+                        .execute(&mut *conn)
+                        .await
+                    {
+                        Ok(_) => ok += 1,
+                        Err(e) => {
+                            failed += 1;
+                            let head: String = q.chars().take(100).collect();
+                            println!("FAILED {head}: {e}");
+                        }
+                    }
+                }
+                Step::Copy(q) => match pg_copy_in(&mut conn, &q, &mut feed, &cancel, &|_| {})
+                    .await
+                    .unwrap()
+                {
+                    CopyOutcome::Done => copies += 1,
+                    CopyOutcome::Failed(e) => {
+                        failed += 1;
+                        println!("COPY FAILED {q}: {e}");
+                    }
+                    CopyOutcome::Cancelled => unreachable!(),
+                },
+            }
+        }
+        println!(
+            "elapsed {:?} ok={ok} copies={copies} failed={failed}",
+            started.elapsed()
+        );
+    }
 }

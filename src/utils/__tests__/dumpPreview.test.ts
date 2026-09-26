@@ -3,6 +3,7 @@ import {
   parseCreateTable,
   parseInsert,
   plannedFromScan,
+  parseCopy,
   fileBaseName,
   buildDropStatements,
   stripLeadingSqlComments,
@@ -160,6 +161,25 @@ describe('parseInsert', () => {
   it('ngoặc và phẩy nằm trong chuỗi không cắt sai tuple', () => {
     const r = parseInsert("INSERT INTO t (a) VALUES ('a),(b'), ('c')");
     expect(r?.rows).toEqual([['a),(b'], ['c']]);
+  });
+});
+
+describe('parseCopy', () => {
+  it('reads the column list and the tab-separated data lines of a pg_dump COPY', () => {
+    const stmt = 'COPY bookings.flights (flight_id, route_no, note) FROM stdin;\n1\tPG0001\t\\N\n2\tPG0002\ta\\tb\\\\c\n\\.';
+    expect(parseCopy(stmt)).toEqual({
+      table: 'flights',
+      columns: ['flight_id', 'route_no', 'note'],
+      rows: [
+        ['1', 'PG0001', 'NULL'],
+        ['2', 'PG0002', 'a\tb\\c'],
+      ],
+    });
+  });
+
+  it('no column list means columns = null; anything else is not a COPY', () => {
+    expect(parseCopy('COPY t FROM stdin;\n1\n\\.')?.columns).toBeNull();
+    expect(parseCopy('INSERT INTO t VALUES (1)')).toBeNull();
   });
 });
 

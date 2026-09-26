@@ -3054,6 +3054,7 @@ const vi: typeof en = {
     importNoColumn: "Bảng không có cột '{{a}}'",
     dumpOpenFailed: 'Không mở được tệp dump: {{a}}',
     dumpReadFailed: 'Không đọc được tệp dump: {{a}}',
+    copyNeedsPg: 'Tệp dump dùng COPY … FROM stdin (định dạng của pg_dump), chỉ phục hồi được vào PostgreSQL',
     restoreNeedsOneSource: 'Cần đúng một nguồn dump: nội dung SQL hoặc đường dẫn tệp.',
     txBadIsolation: 'Mức cô lập không hợp lệ cho hệ quản trị này',
     txSessionNotReady: 'Phiên transaction không sẵn sàng',

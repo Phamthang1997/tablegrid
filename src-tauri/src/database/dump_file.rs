@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use flate2::read::MultiGzDecoder;
 
-use super::splitter::{StmtSplitter, line_is_delimiter_command};
+use super::splitter::{StmtSplitter, is_copy_from_stdin, line_is_delimiter_command};
 
 /// How much is read from the file per step. Big enough that syscalls are not the cost, small
 /// enough that the buffered unfinished statement stays the only large allocation.
@@ -167,7 +167,24 @@ pub(crate) fn probe_mysql_script(path: &str) -> Result<bool, String> {
     Ok(probe.found())
 }
 
-/// The statements of a dump file, one at a time.
+/// How much COPY data one `DumpItem::CopyData` carries at most (whole lines, so a little more).
+pub(crate) const COPY_CHUNK: usize = 1 << 20;
+
+/// One piece of a dump file, in file order.
+#[derive(Debug, PartialEq)]
+pub(crate) enum DumpItem {
+    /// An ordinary statement.
+    Stmt(String),
+    /// A `COPY … FROM stdin` statement. Its data follows as `CopyData` pieces and then `CopyEnd` —
+    /// always, even when the data block is empty or the file is cut off inside it.
+    CopyStart(String),
+    /// Raw data lines of the COPY in progress, each ending in `\n`, the `\.` line excluded.
+    CopyData(Vec<u8>),
+    CopyEnd,
+}
+
+/// The pieces of a dump file, one at a time: statements, and pg_dump's COPY data blocks in
+/// chunks of about `COPY_CHUNK` — so a 150MB table's data never has to be one string either.
 pub(crate) struct DumpStatements {
     reader: Box<dyn Read + Send>,
     splitter: StmtSplitter,
@@ -177,16 +194,22 @@ pub(crate) struct DumpStatements {
     probe: DelimiterProbe,
     chunk: Vec<u8>,
     finished: bool,
+    /// Inside a COPY data block.
+    copying: bool,
+    /// The last data piece came with the `\.` line; `CopyEnd` is owed on the next call.
+    end_owed: bool,
 }
 
 impl DumpStatements {
     pub(crate) fn new(reader: Box<dyn Read + Send>, mysql_script: bool) -> Self {
         Self {
             reader,
-            splitter: StmtSplitter::new(mysql_script),
+            splitter: StmtSplitter::new(mysql_script).with_client_commands(),
             probe: DelimiterProbe::new(),
             chunk: vec![0; READ_CHUNK],
             finished: false,
+            copying: false,
+            end_owed: false,
         }
     }
 
@@ -194,36 +217,73 @@ impl DumpStatements {
     pub(crate) fn saw_delimiter_line(&self) -> bool {
         self.probe.found()
     }
-}
 
-impl Iterator for DumpStatements {
-    type Item = Result<String, String>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    /// One read from the file into the splitter. `Err` is a read error, already worded.
+    fn fill(&mut self) -> Result<(), String> {
         loop {
-            if let Some(s) = self.splitter.next_stmt() {
-                return Some(Ok(s));
-            }
-            if self.finished {
-                return None;
-            }
             match self.reader.read(&mut self.chunk) {
                 Ok(0) => {
                     self.finished = true;
                     self.probe.finish();
                     self.splitter.finish();
+                    return Ok(());
                 }
                 Ok(n) => {
                     if !self.probe.found() {
                         self.probe.feed(&self.chunk[..n]);
                     }
                     self.splitter.feed(&self.chunk[..n]);
+                    return Ok(());
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => {
                     self.finished = true;
-                    return Some(Err(read_error(e)));
+                    return Err(read_error(e));
                 }
+            }
+        }
+    }
+}
+
+impl Iterator for DumpStatements {
+    type Item = Result<DumpItem, String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.end_owed {
+                self.end_owed = false;
+                return Some(Ok(DumpItem::CopyEnd));
+            }
+            if self.copying {
+                if let Some((data, done)) = self.splitter.copy_data(COPY_CHUNK) {
+                    if done {
+                        self.copying = false;
+                        if data.is_empty() {
+                            return Some(Ok(DumpItem::CopyEnd));
+                        }
+                        self.end_owed = true;
+                    }
+                    return Some(Ok(DumpItem::CopyData(data)));
+                }
+                if self.finished {
+                    // Cannot happen (see below), but a loop must not spin on it if it ever does.
+                    self.copying = false;
+                    return Some(Ok(DumpItem::CopyEnd));
+                }
+            } else if let Some(s) = self.splitter.next_stmt() {
+                if is_copy_from_stdin(&s) {
+                    self.splitter.begin_copy();
+                    self.copying = true;
+                    return Some(Ok(DumpItem::CopyStart(s)));
+                }
+                return Some(Ok(DumpItem::Stmt(s)));
+            } else if self.finished {
+                return None;
+            }
+            // At the end of the file `copy_data` always answers, so this is never reached with
+            // `finished` set while copying.
+            if let Err(e) = self.fill() {
+                return Some(Err(e));
             }
         }
     }
@@ -252,6 +312,10 @@ mod tests {
         let dump = open_dump(path).unwrap();
         DumpStatements::new(dump.reader, mysql)
             .map(Result::unwrap)
+            .map(|item| match item {
+                DumpItem::Stmt(s) => s,
+                other => panic!("unexpected {other:?}"),
+            })
             .collect()
     }
 
@@ -322,5 +386,150 @@ mod tests {
     #[test]
     fn a_missing_file_is_an_error_not_a_panic() {
         assert!(open_dump("Z:/definitely/not/here.sql").is_err());
+    }
+
+    /// What pg_dump's plain format looks like: psql meta-commands between statements, and each
+    /// table's data as `COPY … FROM stdin;` followed by tab-separated lines up to `\.`.
+    const PG_DUMP: &str = concat!(
+        "\\restrict AbC123\n",
+        "SET statement_timeout = 0;\n",
+        "DROP DATABASE demo;\n",
+        "CREATE DATABASE demo;\n",
+        "\\connect -reuse-previous=on \"dbname='demo'\"\n",
+        "SET client_encoding = 'UTF8';\n",
+        "CREATE TABLE bookings.t (id int, note text);\n",
+        "COPY bookings.t (id, note) FROM stdin;\n",
+        "1\tit's; not SQL\n",
+        "2\t\\N\n",
+        "\\.\n",
+        "COPY bookings.empty (id) FROM stdin;\n",
+        "\\.\n",
+        "ALTER TABLE ONLY bookings.t ADD CONSTRAINT t_pkey PRIMARY KEY (id);\n",
+        "\\unrestrict AbC123\n",
+    );
+
+    fn items_of(bytes: &[u8]) -> Vec<DumpItem> {
+        // Tests run in parallel and several call this with the same bytes: one file each.
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let p = temp_file(
+            &format!("pg{}.sql", SEQ.fetch_add(1, Ordering::Relaxed)),
+            bytes,
+        );
+        let dump = open_dump(&p).unwrap();
+        let out: Vec<DumpItem> = DumpStatements::new(dump.reader, false)
+            .map(Result::unwrap)
+            .collect();
+        let _ = std::fs::remove_file(p);
+        out
+    }
+
+    /// Data pieces merged, so the expectation does not depend on where the chunks fall.
+    fn merged(items: Vec<DumpItem>) -> Vec<DumpItem> {
+        let mut out: Vec<DumpItem> = Vec::new();
+        for it in items {
+            match (out.last_mut(), it) {
+                (Some(DumpItem::CopyData(acc)), DumpItem::CopyData(more)) => acc.extend(more),
+                (_, it) => out.push(it),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_pg_dump_file_gives_statements_and_copy_blocks() {
+        use DumpItem::*;
+        let expected = vec![
+            Stmt("SET statement_timeout = 0".into()),
+            Stmt("DROP DATABASE demo".into()),
+            Stmt("CREATE DATABASE demo".into()),
+            Stmt("SET client_encoding = 'UTF8'".into()),
+            Stmt("CREATE TABLE bookings.t (id int, note text)".into()),
+            CopyStart("COPY bookings.t (id, note) FROM stdin".into()),
+            CopyData(b"1\tit's; not SQL\n2\t\\N\n".to_vec()),
+            CopyEnd,
+            CopyStart("COPY bookings.empty (id) FROM stdin".into()),
+            CopyEnd,
+            Stmt("ALTER TABLE ONLY bookings.t ADD CONSTRAINT t_pkey PRIMARY KEY (id)".into()),
+        ];
+        assert_eq!(merged(items_of(PG_DUMP.as_bytes())), expected);
+        assert_eq!(merged(items_of(&gz(PG_DUMP.as_bytes()))), expected);
+        // CRLF line ends: the terminator line is `\.\r`.
+        let crlf = PG_DUMP.replace('\n', "\r\n");
+        let got = merged(items_of(crlf.as_bytes()));
+        assert_eq!(got.iter().filter(|i| **i == CopyEnd).count(), 2);
+        assert_eq!(
+            got.last(),
+            Some(&Stmt(
+                "ALTER TABLE ONLY bookings.t ADD CONSTRAINT t_pkey PRIMARY KEY (id)".into()
+            ))
+        );
+    }
+
+    /// A chunk boundary can fall anywhere in a COPY block — inside a line, between `\` and `.` —
+    /// so the splitter is driven byte by byte here, the worst case there is.
+    #[test]
+    fn a_copy_block_survives_any_chunk_boundary() {
+        let whole = merged(items_of(PG_DUMP.as_bytes()));
+        for chunk in [1usize, 2, 3, 7] {
+            let mut sp = StmtSplitter::new(false).with_client_commands();
+            let mut got = Vec::new();
+            let mut copying = false;
+            let bytes = PG_DUMP.as_bytes();
+            let mut fed = 0;
+            loop {
+                let item = if copying {
+                    sp.copy_data(COPY_CHUNK)
+                        .map(|(d, done)| {
+                            if done {
+                                copying = false;
+                            }
+                            (d, done)
+                        })
+                        .map(|(d, done)| {
+                            if !d.is_empty() {
+                                got.push(DumpItem::CopyData(d));
+                            }
+                            if done {
+                                got.push(DumpItem::CopyEnd);
+                            }
+                        })
+                } else {
+                    sp.next_stmt().map(|s| {
+                        if is_copy_from_stdin(&s) {
+                            sp.begin_copy();
+                            copying = true;
+                            got.push(DumpItem::CopyStart(s));
+                        } else {
+                            got.push(DumpItem::Stmt(s));
+                        }
+                    })
+                };
+                if item.is_some() {
+                    continue;
+                }
+                if fed >= bytes.len() {
+                    sp.finish();
+                    if !copying && sp.next_stmt().is_none() {
+                        break;
+                    }
+                    continue;
+                }
+                let end = (fed + chunk).min(bytes.len());
+                sp.feed(&bytes[fed..end]);
+                fed = end;
+            }
+            assert_eq!(merged(got), whole, "chunk {chunk}");
+        }
+    }
+
+    #[test]
+    fn only_copy_from_stdin_is_a_copy_block() {
+        assert!(is_copy_from_stdin("COPY public.t (a, b) FROM stdin"));
+        assert!(is_copy_from_stdin(
+            "-- Data for t\ncopy t from STDIN with (format text)"
+        ));
+        assert!(!is_copy_from_stdin("COPY t FROM '/tmp/t.csv'"));
+        assert!(!is_copy_from_stdin("COPY (SELECT 1) TO STDOUT"));
+        assert!(!is_copy_from_stdin("SELECT 'COPY t FROM stdin'"));
     }
 }
