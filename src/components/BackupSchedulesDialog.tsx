@@ -137,7 +137,7 @@ export const BackupSchedulesDialog: React.FC<{ onClose: () => void }> = ({ onClo
         width="560px"
         zIndex={10002}
       >
-        <ModalBody>
+        <ModalBody className="bsd-form">
           <div className="form-group">
             <label htmlFor="bsd-profile">{t('backupSchedule.profile')}</label>
             <select

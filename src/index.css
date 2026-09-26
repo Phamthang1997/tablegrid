@@ -15339,6 +15339,17 @@ input.rename-input {
 .bsd-keep { flex: 0 0 110px; }
 .bsd-hint { font-size: 11px; line-height: 1.5; color: var(--win-text-secondary); margin-top: -6px; }
 .bsd-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--win-text-primary); cursor: pointer; }
+/* The editor's fields at the size every other dialog uses (30px, 11px — see ExportDatabaseDialog).
+   The shared .form-input default is 13px, which made this form read as a different app; the native
+   <select> and the time field then also fell back to their own metrics. */
+.bsd-form .form-input { height: 30px; font-size: 11px; padding: 0 10px; }
+.bsd-form select.form-input { padding: 0 8px; }
+.bsd-form input[type='number'] { height: 30px; font-size: 11px; padding: 0 10px; }
+/* The time field: digits of one width so 02:00 does not jiggle while typed, and the picker icon in
+   the theme's own colours (color-scheme), since the WebView draws it. */
+.bsd-form input[type='time'] { font-variant-numeric: tabular-nums; color-scheme: dark; }
+[data-theme='light'] .bsd-form input[type='time'] { color-scheme: light; }
+.bsd-form .bsd-check { font-size: 11px; }
 .bsd-error { font-size: 12px; line-height: 1.5; color: var(--st-danger); }
 .bsd-db-error { display: flex; align-items: center; gap: 8px; font-size: 11.5px; line-height: 1.5; color: var(--st-danger); }
 .bsd-db-error > span { flex: 1; min-width: 0; }
