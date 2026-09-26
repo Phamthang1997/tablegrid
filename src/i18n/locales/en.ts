@@ -2947,6 +2947,12 @@ const en = {
     trustFailed: 'Could not save the key: {{a}}',
   },
   backupSchedule: {
+    databaseDefault: "The connection's database ({{a}})",
+    dbFilter: 'Filter databases…',
+    dbNoMatch: 'No database matches',
+    dbListLoading: 'Loading the databases…',
+    dbListFailed: 'Could not list the databases.',
+    dbRetry: 'Retry',
     title: 'Scheduled backups',
     intro: 'Dump a database on a schedule into a folder, keeping only the newest copies. Backups run while TableGrid is open; a run missed while it was closed can be made up at the next start.',
     empty: 'No scheduled backups yet.',

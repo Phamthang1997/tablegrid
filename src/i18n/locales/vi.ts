@@ -2918,6 +2918,12 @@ const vi: typeof en = {
     trustFailed: 'Không lưu được khoá: {{a}}',
   },
   backupSchedule: {
+    databaseDefault: 'Database của kết nối ({{a}})',
+    dbFilter: 'Lọc database…',
+    dbNoMatch: 'Không có database nào khớp',
+    dbListLoading: 'Đang tải danh sách database…',
+    dbListFailed: 'Không lấy được danh sách database.',
+    dbRetry: 'Thử lại',
     title: 'Sao lưu theo lịch',
     intro: 'Tự dump một database vào thư mục theo lịch, chỉ giữ lại các bản mới nhất. Sao lưu chạy khi TableGrid đang mở; lượt bị lỡ lúc app đóng có thể được chạy bù ở lần mở sau.',
     empty: 'Chưa có lịch sao lưu nào.',
