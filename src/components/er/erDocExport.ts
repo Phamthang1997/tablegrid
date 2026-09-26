@@ -3,8 +3,8 @@
 // README or a PR, where GitHub/GitLab/Notion render the diagrams.
 //
 // Pure, like the rest of erExportHelper: it takes what the ER view already holds (columns, keys,
-// comments, row estimates, relationships) and no backend call. Indexes are therefore not in it —
-// the ER catalog does not carry them.
+// comments, row estimates, relationships) plus the indexes, which the ER catalog does not carry —
+// the caller reads those (`get_table_schema`, one table at a time) and passes them in.
 //
 // One diagram PER TABLE rather than one for the whole schema, because Mermaid refuses to render
 // past its default limits (see MERMAID_MAX_TEXT/EDGES), and a 300-table diagram is unreadable
@@ -31,6 +31,9 @@ export interface ErDocLabels {
   yes: string;
   no: string;
   referencedBy: string;
+  /** The heading over a table's index list. */
+  indexes: string;
+  unique: string;
   none: string;
   /** Under a neighbourhood diagram cut down to `NEIGHBOURS_MAX` tables; n = how many were left out. */
   diagramTrimmed: (n: number) => string;
@@ -59,10 +62,20 @@ export function headingSlug(text: string, used: Map<string, number>): string {
   return n === 0 ? base : `${base}-${n}`;
 }
 
+/** An index as `get_table_schema` reports it: `columns` is the comma-joined column list. */
+export interface ErDocIndex {
+  name: string;
+  columns: string;
+  unique: boolean;
+}
+
 export function exportToMarkdownDoc(
   tables: ERTable[],
   relationships: ERRelationship[],
   labels: ErDocLabels,
+  /** Indexes per table name. A table missing from the map gets no index list; an empty list
+   *  still says so. Left out entirely, no section has one. */
+  indexes?: Record<string, ErDocIndex[]>,
 ): string {
   const L = labels;
   const byName = new Map(tables.map((tb) => [tb.name, tb]));
@@ -106,6 +119,19 @@ export function exportToMarkdownDoc(
       out.push(`| \`${cell(col.name)}\` | ${cell(col.type)} | ${nullable} | ${key} | ${cell(ref)} | ${cell(col.comment)} |`);
     }
     out.push('');
+
+    const idx = indexes?.[tb.name];
+    if (idx) {
+      out.push(`**${L.indexes}:** ${idx.length ? '' : L.none}`);
+      for (const ix of idx) {
+        const cols = ix.columns
+          .split(',')
+          .map((c) => `\`${cell(c.trim())}\``)
+          .join(', ');
+        out.push(`- ${cell(ix.name)} (${cols})${ix.unique ? ` — ${L.unique}` : ''}`);
+      }
+      out.push('');
+    }
 
     const incoming = rels.filter((r) => r.targetTable === tb.name);
     const seen = new Set<string>();

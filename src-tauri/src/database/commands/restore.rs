@@ -301,6 +301,35 @@ impl TableMatcher {
         let lower = stmt.to_lowercase();
         self.lowered.iter().any(|t| lower.contains(t))
     }
+
+    /// Does a SEQUENCE named `seq` belong to a selected table, by the `serial`/identity naming
+    /// `<table>_<column>_seq`? The word-boundary match cannot see it (`_` is a word character, so
+    /// `book_id_seq` holds no whole word `book`), which is how every `setval()` of a filtered
+    /// restore was dropped and the restored tables' sequences restarted at 1.
+    pub(crate) fn owns_sequence(&self, seq: &str) -> bool {
+        let seq = seq.to_lowercase();
+        self.lowered.iter().any(|t| {
+            seq == *t
+                || seq
+                    .strip_prefix(t.as_str())
+                    .is_some_and(|rest| rest.starts_with('_'))
+        })
+    }
+}
+
+/// The sequence a `SELECT [pg_catalog.]setval('schema.seq', …)` sets, without its schema.
+fn setval_sequence(body: &str) -> Option<String> {
+    let head = body.get(..body.len().min(200))?;
+    let lower = head.to_ascii_lowercase();
+    let at = lower.find("setval(")?;
+    if !lower.trim_start().starts_with("select") {
+        return None;
+    }
+    let rest = &head[at + 7..];
+    let start = rest.find('\'')? + 1;
+    let end = start + rest[start..].find('\'')?;
+    let name = rest[start..end].rsplit('.').next()?.trim_matches('"');
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 // The database name in a `USE <db>` statement (for reconnecting once the restore is done).
@@ -366,6 +395,14 @@ impl Classifier {
             // are real statements and affect the charset/timezone of the imported data -> they still have to run
             // (classified as session-level so their failure does not abort the restore). Ordinary comments are dropped.
             return q.contains("/*!").then_some((q, true));
+        }
+        // A sequence's value: it names no table, so the filter decides by the sequence's own name,
+        // and a failure (a sequence the target does not have) is not fatal.
+        if !self.run_all
+            && let Some(seq) = setval_sequence(body)
+        {
+            let ours = self.matcher.owns_sequence(&seq) || self.matcher.matches(&q);
+            return ours.then_some((q, true));
         }
         let session_level = is_session_level_stmt(&head);
         if session_level {
@@ -1163,6 +1200,30 @@ mod tests {
         );
         assert_eq!(
             classify(&["film"], "ALTER DATABASE demo OWNER TO postgres").map(|c| c.1),
+            Some(true)
+        );
+    }
+
+    /// A sequence's value follows its table: pg_dump's `setval('public.book_id_seq', …)` holds no
+    /// whole word `book`, so it used to be filtered out and the restored table's next insert
+    /// collided with row 1.
+    #[test]
+    fn a_sequence_value_follows_its_table() {
+        let q = "SELECT pg_catalog.setval('public.book_id_seq', 5000, true)";
+        assert_eq!(classify(&["book"], q).map(|c| c.1), Some(true));
+        assert_eq!(classify(&["author"], q), None);
+        // A prefix is only a match at a `_`: `bookings_id_seq` is not `book`'s.
+        assert_eq!(
+            classify(&["book"], "SELECT setval('bookings_id_seq', 1)"),
+            None
+        );
+        // The app's own dump names the table itself.
+        assert_eq!(
+            classify(
+                &["film"],
+                "SELECT setval(pg_get_serial_sequence('film', 'film_id'), 1000)"
+            )
+            .map(|c| c.1),
             Some(true)
         );
     }

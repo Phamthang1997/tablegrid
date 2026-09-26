@@ -254,7 +254,12 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
   const browse = async () => {
     const picked = await pickOpenFile({
       title: t('importDialog.pickFileTitle'),
-      filters: [{ name: 'SQL dump', extensions: ['sql', 'gz', 'dump'] }],
+      // A pg_dump -Fc/-Ft archive is read through pg_restore; what a file IS is decided by its
+      // bytes, not its name, so "All files" is offered too.
+      filters: [
+        { name: 'SQL dump / pg_dump archive', extensions: ['sql', 'gz', 'dump', 'backup', 'tar'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
     });
     if (!picked) return;
 
@@ -483,6 +488,7 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
                   <>
                     {t('importDialog.fileSize')} <b style={{ color: 'var(--win-text-primary)' }}>{formatSize(scan.fileBytes)}</b>
                     <div><Trans i18nKey="importDialog.contentStatements" values={{ n: fmtNum(scan.statements) }} components={{ strong: <b style={{ color: 'var(--win-text-primary)' }} /> }} /></div>
+                    {scan.via && <div>{t('importDialog.readVia', { tool: scan.via })}</div>}
                   </>
                 )}
               </div>

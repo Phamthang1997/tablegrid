@@ -87,6 +87,12 @@ export function makeRestoreReporter(t: TFunction): (msg: RestoreProgressMsg) => 
       };
     }
 
+    // A pg_dump archive is read by pg_restore, so neither a byte total nor a statement total exists:
+    // say how many ran, with an indeterminate bar, rather than "120/0".
+    if (!total) {
+      return { label: t('connection.restoreInProgress'), detail: t('connection.restoreDetailCount', { done: done.toLocaleString() }) };
+    }
+
     if (msg.type === 'start') {
       return { label: t('connection.restoreRunning', { n: total.toLocaleString() }), current: 0, total };
     }

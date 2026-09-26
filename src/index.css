@@ -236,6 +236,12 @@ body {
   background: rgba(0, 0, 0, 0.1);
 }
 
+/* The rule above has the same specificity as `:hover` and comes later, so on the light theme the
+   thumb never darkened under the pointer. */
+[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
+}
+
 #root {
   display: flex;
   flex-direction: column;
@@ -3430,6 +3436,13 @@ select.form-input {
   border-color: rgba(255, 255, 255, 0.16);
 }
 
+/* Same specificity as the light rule above and later in the file, so without this the white
+   wash won in the light theme too and hovering LIGHTENED the pill instead of darkening it. */
+[data-theme='light'] .tn-connection-pill:hover {
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.16);
+}
+
 .tn-connection-pill-speed {
   font-weight: 500;
   letter-spacing: 0.2px;
@@ -6156,7 +6169,8 @@ select.form-input {
 }
 
 .st-fk-chip.empty:hover {
-  background: rgba(255, 255, 255, 0.05);
+  /* A white wash is invisible on the light theme; the hover token darkens there instead. */
+  background: var(--win-bg-hover);
 }
 
 .st-fk-arrow {
@@ -12759,9 +12773,10 @@ input.rename-input {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  border: 1px solid var(--win-border, #d1d5db);
-  background: #e5e7eb;
-  color: #4b5563;
+  /* Light-grey literals made this a pale disc on the (default) dark theme. */
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-btn-secondary);
+  color: var(--win-text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12778,7 +12793,7 @@ input.rename-input {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: #d1d5db;
+  background: var(--win-border-strong);
   border: none;
   padding: 0;
   cursor: pointer;
@@ -12786,7 +12801,7 @@ input.rename-input {
 }
 
 .whats-new-dot-btn.active {
-  background: #008ae6;
+  background: var(--win-accent);
 }
 
 .whats-new-close-wrapper {

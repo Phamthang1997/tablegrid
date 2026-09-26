@@ -14,6 +14,7 @@ mod dump_file;
 mod iam;
 mod ident;
 pub(crate) mod introspect;
+mod pg_archive;
 mod read_only;
 mod rows;
 mod splitter;

@@ -307,6 +307,7 @@ fn scan_file(path: &str, on_progress: &Channel<Value>) -> Result<Value, String> 
         let dump = open_dump(path)?;
         let (bytes_read, bytes_total, gzip) =
             (dump.bytes_read.clone(), dump.bytes_total, dump.gzip);
+        let (file_bytes, via) = (dump.file_bytes, dump.via.clone());
         let mut stmts = DumpStatements::new(dump.reader, mysql_script);
         let mut summary = DumpSummary::new();
         let mut last = Instant::now();
@@ -333,7 +334,9 @@ fn scan_file(path: &str, on_progress: &Channel<Value>) -> Result<Value, String> 
         }
         let mut out = summary.into_json();
         if let Some(obj) = out.as_object_mut() {
-            obj.insert("fileBytes".into(), json!(bytes_total));
+            obj.insert("fileBytes".into(), json!(file_bytes));
+            // "pg_restore 18.6" when the file is a pg_dump archive converted through it.
+            obj.insert("via".into(), json!(via));
             obj.insert("gzip".into(), json!(gzip));
             obj.insert("mysqlScript".into(), json!(mysql_script));
         }

@@ -512,7 +512,12 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   const pickBrDump = async () => {
     const path = await pickOpenFile({
       title: t('connection.brPickFile'),
-      filters: [{ name: 'SQL dump', extensions: ['sql', 'gz', 'dump'] }],
+      // A pg_dump -Fc/-Ft archive is read through pg_restore; what a file IS is decided by its
+      // bytes, not its name, so "All files" is offered too.
+      filters: [
+        { name: 'SQL dump / pg_dump archive', extensions: ['sql', 'gz', 'dump', 'backup', 'tar'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
     });
     if (!path) return;
     const seq = ++brScanSeq.current;
@@ -2654,6 +2659,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                 <div>
                   <div className="cm-dropzone-title">{brDumpPath ? fileBaseName(brDumpPath) : t('connection.brPickFile')}</div>
                   <div className="cm-hint">{brScan ? t('connection.brFileSize', { size: (brScan.fileBytes / 1024 / 1024).toFixed(2) }) : t('connection.brPickHint')}</div>
+                  {brScan?.via && <div className="cm-hint">{t('importDialog.readVia', { tool: brScan.via })}</div>}
                 </div>
               </button>
 
