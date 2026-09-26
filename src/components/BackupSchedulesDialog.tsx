@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CalendarClock, CheckCircle2, FolderOpen, Pencil, Play, Plus, Trash2, XCircle } from 'lucide-react';
+import { CalendarClock, CheckCircle2, FolderOpen, Pencil, Play, Plus, RefreshCw, Trash2, XCircle } from 'lucide-react';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 import { ConfirmDialog } from './ConfirmDialog';
-import { loadSavedProfiles } from '../utils/connectProfile';
+import { OptionSelect } from './OptionSelect';
+import { configWithSecrets, loadSavedProfiles } from '../utils/connectProfile';
+import { dbHelper } from '../utils/dbHelper';
 import { pickExportFolder, getLastExportDir } from '../utils/fileSave';
 import { listJobs, subscribeJobs } from '../utils/jobs';
 import {
@@ -39,6 +41,31 @@ export const BackupSchedulesDialog: React.FC<{ onClose: () => void }> = ({ onClo
   const [editing, setEditing] = useState<BackupSchedule | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<BackupSchedule | null>(null);
+  // The profile's databases, for the picker. Stored WITH the profile they belong to and read back
+  // only when it is still the one selected — so switching profiles never shows the previous
+  // server's list, and a slow answer for a profile no longer selected is simply ignored.
+  const [dbList, setDbList] = useState<{ profileId: string; list: string[] | null; error: string | null }>({
+    profileId: '',
+    list: null,
+    error: null,
+  });
+  const dbRequest = useRef('');
+  const loadDatabases = async (profileId: string) => {
+    const profile = profiles.find((p) => p.id === profileId);
+    dbRequest.current = profileId;
+    if (!profile || profile.type === 'sqlite') return;
+    setDbList({ profileId, list: null, error: null });
+    // Asked through the same form-level call Connection Manager's database picker uses: it opens a
+    // short-lived connection from the profile (SSH included), so no connection has to be open here.
+    const { config } = await configWithSecrets(profile);
+    const res = await dbHelper.getDatabasesList(config as DbConnectionConfig);
+    if (dbRequest.current !== profileId) return;
+    setDbList(
+      res.success
+        ? { profileId, list: res.databases, error: null }
+        : { profileId, list: null, error: res.error || t('backupSchedule.dbListFailed') },
+    );
+  };
   // The clock the "next run" line and the file name example read, refreshed while the dialog is open.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -77,6 +104,7 @@ export const BackupSchedulesDialog: React.FC<{ onClose: () => void }> = ({ onClo
     const db = first ? scheduleDbLabel(s, first.config as DbConnectionConfig) : '';
     setProblem(null);
     setEditing({ ...s, folder: getLastExportDir() || '', prefix: sanitizePrefix(db || 'backup') });
+    if (first) void loadDatabases(first.id);
   };
 
   const save = () => {
@@ -99,6 +127,8 @@ export const BackupSchedulesDialog: React.FC<{ onClose: () => void }> = ({ onClo
     const profile = profileOf(editing.profileId);
     const config = profile?.config as DbConnectionConfig | undefined;
     const isSqlite = config?.type === 'sqlite';
+    const dbState = dbList.profileId === editing.profileId ? dbList : null;
+    const loadedList = dbState?.list ?? null;
     return (
       <Modal
         title={t('backupSchedule.editTitle')}
@@ -114,7 +144,11 @@ export const BackupSchedulesDialog: React.FC<{ onClose: () => void }> = ({ onClo
               id="bsd-profile"
               className="form-input"
               value={editing.profileId}
-              onChange={(e) => set({ profileId: e.target.value })}
+              onChange={(e) => {
+                // Another server's databases: the one picked for the previous profile means nothing here.
+                set({ profileId: e.target.value, database: '' });
+                void loadDatabases(e.target.value);
+              }}
             >
               {profiles.length === 0 && <option value="">{t('backupSchedule.noProfiles')}</option>}
               {profiles.map((p) => (
@@ -126,15 +160,47 @@ export const BackupSchedulesDialog: React.FC<{ onClose: () => void }> = ({ onClo
           </div>
           {!isSqlite && (
             <div className="form-group">
-              <label htmlFor="bsd-db">{t('backupSchedule.database')}</label>
-              <input
-                id="bsd-db"
-                type="text"
-                className="form-input"
-                value={editing.database}
-                placeholder={config?.database || t('backupSchedule.databasePlaceholder')}
-                onChange={(e) => set({ database: e.target.value })}
-              />
+              <label>{t('backupSchedule.database')}</label>
+              {loadedList ? (
+                <OptionSelect
+                  value={editing.database}
+                  // A database saved earlier that the server no longer lists stays selectable, so
+                  // opening the editor does not silently change what the schedule dumps.
+                  options={
+                    editing.database && !loadedList.includes(editing.database)
+                      ? [editing.database, ...loadedList]
+                      : loadedList
+                  }
+                  emptyLabel={
+                    config?.database
+                      ? t('backupSchedule.databaseDefault', { a: config.database })
+                      : t('backupSchedule.databasePlaceholder')
+                  }
+                  onChange={(v) => set({ database: v })}
+                  searchPlaceholder={t('backupSchedule.dbFilter')}
+                  noMatchLabel={t('backupSchedule.dbNoMatch')}
+                />
+              ) : (
+                // Still loading, or the server could not be asked: typing the name still works.
+                <input
+                  type="text"
+                  className="form-input"
+                  value={editing.database}
+                  placeholder={config?.database || t('backupSchedule.databasePlaceholder')}
+                  onChange={(e) => set({ database: e.target.value })}
+                />
+              )}
+              {dbState?.list === null && !dbState.error && (
+                <div className="bsd-hint">{t('backupSchedule.dbListLoading')}</div>
+              )}
+              {dbState?.error && (
+                <div className="bsd-db-error">
+                  <span>{dbState.error}</span>
+                  <button type="button" className="btn btn-secondary" onClick={() => void loadDatabases(editing.profileId)}>
+                    <RefreshCw size={12} /> {t('backupSchedule.dbRetry')}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -344,6 +410,7 @@ export const BackupSchedulesDialog: React.FC<{ onClose: () => void }> = ({ onClo
                         onClick={() => {
                           setProblem(null);
                           setEditing(s);
+                          void loadDatabases(s.profileId);
                         }}
                       >
                         <Pencil size={12} />

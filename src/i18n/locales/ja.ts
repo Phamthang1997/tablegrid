@@ -2913,6 +2913,12 @@ const ja: typeof en = {
     trustFailed: '鍵を保存できませんでした: {{a}}',
   },
   backupSchedule: {
+    databaseDefault: '接続のデータベース ({{a}})',
+    dbFilter: 'データベースを絞り込む…',
+    dbNoMatch: '一致するデータベースがありません',
+    dbListLoading: 'データベースを読み込んでいます…',
+    dbListFailed: 'データベースの一覧を取得できませんでした。',
+    dbRetry: '再試行',
     title: 'スケジュールバックアップ',
     intro: 'データベースを定期的にフォルダーへダンプし、新しいものだけを残します。バックアップは TableGrid の起動中に実行されます。終了中に逃した実行は、次回起動時に 1 回だけ実行できます。',
     empty: 'スケジュールバックアップはまだありません。',
