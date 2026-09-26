@@ -3138,7 +3138,6 @@ const en = {
     dumpReadFailed: 'Could not read the dump file: {{a}}',
     copyNeedsPg: 'The dump uses COPY … FROM stdin (pg_dump\'s format), which can only be restored into PostgreSQL',
     pgRestoreMissing: 'This is a pg_dump custom/tar archive, which needs pg_restore to read, and no pg_restore was found on this machine. Install the PostgreSQL client tools or add their bin folder to PATH.',
-    pgArchiveGzipped: 'This compressed file holds a pg_dump custom/tar archive. Decompress it before restoring.',
     pgRestoreFailed: 'pg_restore reported an error: {{a}}',
     restoreNeedsOneSource: 'A restore needs exactly one dump source: SQL text or a file path.',
     txBadIsolation: 'That isolation level is not valid for this database engine.',

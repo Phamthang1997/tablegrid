@@ -3104,7 +3104,6 @@ const ja: typeof en = {
     dumpReadFailed: 'ダンプファイルを読み込めませんでした: {{a}}',
     copyNeedsPg: 'このダンプは COPY … FROM stdin (pg_dump の形式) を使っているため、PostgreSQL にしか復元できません',
     pgRestoreMissing: 'このファイルは pg_dump の custom/tar アーカイブで、読み込みに pg_restore が必要ですが、このマシンに pg_restore が見つかりません。PostgreSQL クライアントツールをインストールするか、その bin フォルダを PATH に追加してください。',
-    pgArchiveGzipped: 'この圧縮ファイルには pg_dump の custom/tar アーカイブが含まれています。復元する前に展開してください。',
     pgRestoreFailed: 'pg_restore がエラーを報告しました: {{a}}',
     restoreNeedsOneSource: '復元にはダンプの入力が 1 つだけ必要です (SQL テキストまたはファイルパス)。',
     txBadIsolation: 'この DBMS では無効な分離レベルです。',

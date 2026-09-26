@@ -57,8 +57,6 @@ export const EXACT: Record<string, string> = {
     'backend.copyNeedsPg',
   'Tệp là bản dump định dạng custom/tar của pg_dump, cần pg_restore để đọc nhưng không tìm thấy pg_restore trên máy — cài PostgreSQL client tools hoặc thêm thư mục bin của nó vào PATH':
     'backend.pgRestoreMissing',
-  'Tệp nén chứa bản dump định dạng custom/tar của pg_dump — hãy giải nén trước khi phục hồi':
-    'backend.pgArchiveGzipped',
   'Tên savepoint chỉ gồm chữ, số và dấu gạch dưới, bắt đầu bằng chữ': 'backend.txBadSavepointName',
   'Chưa kết nối database': 'backend.notConnected',
   'Chưa kết nối Redis': 'backend.notConnectedRedis',

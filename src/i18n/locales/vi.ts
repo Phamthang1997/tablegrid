@@ -3111,7 +3111,6 @@ const vi: typeof en = {
     dumpReadFailed: 'Không đọc được tệp dump: {{a}}',
     copyNeedsPg: 'Tệp dump dùng COPY … FROM stdin (định dạng của pg_dump), chỉ phục hồi được vào PostgreSQL',
     pgRestoreMissing: 'Tệp là bản dump định dạng custom/tar của pg_dump, cần pg_restore để đọc nhưng không tìm thấy pg_restore trên máy — cài PostgreSQL client tools hoặc thêm thư mục bin của nó vào PATH',
-    pgArchiveGzipped: 'Tệp nén chứa bản dump định dạng custom/tar của pg_dump — hãy giải nén trước khi phục hồi',
     pgRestoreFailed: 'pg_restore báo lỗi: {{a}}',
     restoreNeedsOneSource: 'Cần đúng một nguồn dump: nội dung SQL hoặc đường dẫn tệp.',
     txBadIsolation: 'Mức cô lập không hợp lệ cho hệ quản trị này',

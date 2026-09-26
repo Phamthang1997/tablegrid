@@ -201,24 +201,70 @@ pub(crate) struct PgRestoreReader {
     child: Child,
     stdout: ChildStdout,
     stderr: Arc<Mutex<Vec<u8>>>,
+    /// Set when the archive is fed through stdin and READING it failed (a corrupt gzip). That is
+    /// the real cause; pg_restore only sees its input end early and says "unexpected end of file".
+    feed_error: Arc<Mutex<Option<String>>>,
     finished: bool,
 }
 
+/// Where pg_restore reads the archive from.
+pub(crate) enum ArchiveInput {
+    /// A file on disk: pg_restore opens it itself, and can seek in it.
+    Path(String),
+    /// A stream — a gzipped archive decompressed on the fly — copied into pg_restore's stdin by a
+    /// thread of its own. pg_restore reads a piped archive front to back, which is the order a
+    /// script (no `-d`, no `-j`) is written in anyway.
+    Stream(Box<dyn Read + Send>),
+}
+
 impl PgRestoreReader {
-    pub(crate) fn spawn(tool: &PgRestore, archive: &str) -> Result<Self, String> {
+    pub(crate) fn spawn(tool: &PgRestore, input: ArchiveInput) -> Result<Self, String> {
         let mut cmd = silent_command(&tool.path);
         // From 12 on, pg_restore refuses to run without -d or -f, and `-f -` is stdout. Before 12
         // there was no such rule and `-` would be taken as a file name, so it is left out there.
         if tool.major >= 12 {
             cmd.args(["-f", "-"]);
         }
+        // No file argument at all means "read the archive from stdin".
+        let (stdin, stream) = match input {
+            ArchiveInput::Path(path) => {
+                cmd.arg(path);
+                (Stdio::null(), None)
+            }
+            ArchiveInput::Stream(source) => (Stdio::piped(), Some(source)),
+        };
         let mut child = cmd
-            .arg(archive)
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("pg_restore báo lỗi: {e}"))?;
+        let feed_error = Arc::new(Mutex::new(None));
+        if let Some(mut source) = stream {
+            let mut sink = child.stdin.take().ok_or("pg_restore báo lỗi: no stdin")?;
+            let slot = feed_error.clone();
+            std::thread::spawn(move || {
+                // A write error is pg_restore having exited (or been killed on drop) — its own
+                // stderr says why, so only a READ error is worth keeping. Dropping `sink` at the
+                // end closes stdin, which is how pg_restore learns the archive is complete.
+                let mut buf = vec![0u8; 256 * 1024];
+                loop {
+                    let n = match source.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(e) => {
+                            if let Ok(mut s) = slot.lock() {
+                                *s = Some(e.to_string());
+                            }
+                            break;
+                        }
+                    };
+                    if std::io::Write::write_all(&mut sink, &buf[..n]).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
         let stdout = child.stdout.take().ok_or("pg_restore báo lỗi: no stdout")?;
         let mut err_pipe = child.stderr.take().ok_or("pg_restore báo lỗi: no stderr")?;
         let stderr = Arc::new(Mutex::new(Vec::new()));
@@ -242,6 +288,7 @@ impl PgRestoreReader {
             child,
             stdout,
             stderr,
+            feed_error,
             finished: false,
         })
     }
@@ -258,6 +305,12 @@ impl Read for PgRestoreReader {
         }
         self.finished = true;
         let status = self.child.wait()?;
+        let feed_error = self.feed_error.lock().ok().and_then(|mut s| s.take());
+        if let Some(e) = feed_error {
+            // The archive could not be read to its end; whatever pg_restore wrote before that is
+            // a truncated script, even if it happened to exit 0.
+            return Err(std::io::Error::other(e));
+        }
         if status.success() {
             return Ok(0);
         }
