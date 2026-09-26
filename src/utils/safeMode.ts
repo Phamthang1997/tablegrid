@@ -165,6 +165,8 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   cancel_query: 'internal',
   cancel_data_generation: 'internal',
   cancel_restore: 'internal',
+  // Reads a dump file from disk; touches no database.
+  scan_dump_file: 'internal',
   import_begin: 'internal',
   import_finish: 'internal',
   import_abort: 'internal',

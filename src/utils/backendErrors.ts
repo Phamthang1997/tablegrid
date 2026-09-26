@@ -51,6 +51,10 @@ export const EXACT: Record<string, string> = {
   'Đang bật commit thủ công — hãy kết thúc transaction và chuyển về tự động trước khi nhập dữ liệu':
     'backend.txOpenImport',
   'Kết nối không khớp với phiên transaction': 'backend.txConnMismatch',
+  // database/commands/restore.rs — a programming error rather than a user one, but still text.
+  'Cần đúng một nguồn dump: nội dung SQL hoặc đường dẫn tệp.': 'backend.restoreNeedsOneSource',
+  'Tệp dump dùng COPY … FROM stdin (định dạng của pg_dump), chỉ phục hồi được vào PostgreSQL':
+    'backend.copyNeedsPg',
   'Tên savepoint chỉ gồm chữ, số và dấu gạch dưới, bắt đầu bằng chữ': 'backend.txBadSavepointName',
   'Chưa kết nối database': 'backend.notConnected',
   'Chưa kết nối Redis': 'backend.notConnectedRedis',
@@ -149,6 +153,9 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   { re: /^Lỗi khi chạy lệnh SQL: ([\s\S]*?)\. Chi tiết: ([\s\S]*)$/, key: 'backend.sqlFailed' },
   // database/commands/table_import.rs — a mapped column the table does not have.
   { re: /^Bảng không có cột '([^']*)'$/, key: 'backend.importNoColumn' },
+  // database/dump_file.rs — the payload is the OS / gzip error, in its own words.
+  { re: /^Không mở được tệp dump: ([\s\S]*)$/, key: 'backend.dumpOpenFailed' },
+  { re: /^Không đọc được tệp dump: ([\s\S]*)$/, key: 'backend.dumpReadFailed' },
   // terminal/docker.rs — the payload is the OS spawn error or docker's own stderr, which stays
   // in its own words the way `failed[].error` does for a Redis RESTORE.
   { re: /^Không chạy được ([^:]+): ([\s\S]*)$/, key: 'backend.dockerRunFailed' },

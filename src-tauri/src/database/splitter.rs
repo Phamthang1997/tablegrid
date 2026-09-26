@@ -23,39 +23,6 @@ fn delimiter_token_of_line(line: &str) -> Option<&str> {
     Some(token)
 }
 
-// Read the DELIMITER command at the start of line `i` (a character index into `chars`).
-// Returns (the new token, the index right after that line). This command is NOT SQL: sending it to the server errors out.
-fn read_delimiter_command(chars: &[char], i: usize) -> Option<(String, usize)> {
-    let line_end = chars[i..]
-        .iter()
-        .position(|&c| c == '\n')
-        .map(|p| i + p)
-        .unwrap_or(chars.len());
-    let line: String = chars[i..line_end].iter().collect();
-    let token = delimiter_token_of_line(&line)?.to_string();
-    let next = if line_end < chars.len() {
-        line_end + 1
-    } else {
-        chars.len()
-    };
-    Some((token, next))
-}
-
-// Does `chars[i..]` match the statement terminator currently in force?
-fn matches_delimiter(chars: &[char], i: usize, delim: &[char]) -> bool {
-    if i + delim.len() > chars.len() {
-        return false;
-    }
-    chars[i..i + delim.len()] == *delim
-}
-
-// Split a multi-statement SQL string into individual statements. It recognises:
-//   - quoted strings ('..', "..", `..`) and '\' escapes
-//   - comment `-- ...`, `# ...`, `/* ... */`
-//   - Postgres dollar-quoted blocks ($$ ... $$, $tag$ ... $tag$) — a function body contains ';'
-//   - MySQL's DELIMITER command — it changes the statement terminator so trigger/procedure bodies can be written
-// Without the last two, a file containing a function/trigger would be cut in the middle of the body and could
-// run a statement that sits inside it by mistake.
 /// Where a statement's first keyword really is, for deciding whether it WRITES.
 ///
 /// `strip_leading_comments` skips MySQL's executable comments (`/*! … */`, MariaDB's `/*M! … */`)
@@ -265,25 +232,28 @@ fn trigger_stmt_incomplete(seg: &str) -> bool {
 
     has_begin && !last_word_is_end
 }
-
-// Cheap pre-check for the rule above: skip leading whitespace/comments and compare six chars.
-// A dump of INSERTs bails out on the first character instead of rebuilding every statement
-// into a String only to find it is not a trigger.
-fn seg_may_be_create(chars: &[char], from: usize, to: usize) -> bool {
+// Cheap pre-check for the trigger rule: skip leading whitespace/comments and compare six bytes.
+// A dump of INSERTs bails out on the first byte instead of rebuilding every statement into a
+// String only to find it is not a trigger. It may only ever say "maybe": a non-ASCII byte where
+// whitespace could be answers true, and `trigger_stmt_incomplete` then applies the real rule.
+fn seg_may_be_create(b: &[u8], from: usize, to: usize) -> bool {
     let mut i = from;
     loop {
-        while i < to && chars[i].is_whitespace() {
+        while i < to && b[i].is_ascii_whitespace() {
             i += 1;
         }
-        if i + 1 < to && chars[i] == '-' && chars[i + 1] == '-' {
-            while i < to && chars[i] != '\n' {
+        if i < to && !b[i].is_ascii() {
+            return true;
+        }
+        if i + 1 < to && b[i] == b'-' && b[i + 1] == b'-' {
+            while i < to && b[i] != b'\n' {
                 i += 1;
             }
             continue;
         }
-        if i + 1 < to && chars[i] == '/' && chars[i + 1] == '*' {
+        if i + 1 < to && b[i] == b'/' && b[i + 1] == b'*' {
             i += 2;
-            while i + 1 < to && !(chars[i] == '*' && chars[i + 1] == '/') {
+            while i + 1 < to && !(b[i] == b'*' && b[i + 1] == b'/') {
                 i += 1;
             }
             i = (i + 2).min(to);
@@ -291,136 +261,494 @@ fn seg_may_be_create(chars: &[char], from: usize, to: usize) -> bool {
         }
         break;
     }
-    const KW: [char; 6] = ['C', 'R', 'E', 'A', 'T', 'E'];
-    if i + KW.len() > to {
-        return false;
-    }
-    KW.iter()
-        .enumerate()
-        .all(|(k, ch)| chars[i + k].to_ascii_uppercase() == *ch)
+    i + 6 <= to && b[i..i + 6].eq_ignore_ascii_case(b"CREATE")
 }
 
-pub(crate) fn split_sql_statements(sql: &str) -> Vec<String> {
-    let chars: Vec<char> = sql.chars().collect();
-    let n = chars.len();
-    // `DELIMITER` only appears in MySQL scripts; there '$$' is a statement terminator, not a dollar quote.
-    let mysql_script = sql.lines().any(|l| delimiter_token_of_line(l).is_some());
+/// Does `line` hold a whole `DELIMITER` line that has to be waited for? `None` = not enough bytes
+/// to tell yet. Only the first ten bytes decide, so a line that is plainly something else (a
+/// one-line INSERT of a hundred megabytes) never makes the scanner wait for its newline.
+fn delimiter_candidate(b: &[u8], i: usize, eof: bool) -> Option<bool> {
+    let mut t = i;
+    while t < b.len() && (b[t] == b' ' || b[t] == b'\t') {
+        t += 1;
+    }
+    if t + 10 > b.len() {
+        // Too short for `DELIMITER x`: at the end of the input it cannot become one.
+        return if eof { Some(false) } else { None };
+    }
+    Some(b[t..t + 9].eq_ignore_ascii_case(b"DELIMITER") && (b[t + 9] == b' ' || b[t + 9] == b'\t'))
+}
 
-    let mut out: Vec<String> = Vec::new();
-    let mut delim: Vec<char> = vec![';'];
-    let mut start = 0usize; // the start of the statement being gathered
-    let mut at_line_start = true;
-    let mut i = 0usize;
-
-    let push_stmt = |out: &mut Vec<String>, from: usize, to: usize| {
-        let s: String = chars[from..to].iter().collect();
-        let s = s.trim().to_string();
-        if !s.is_empty() {
-            out.push(s);
+/// Position of `needle` in `hay`, or None.
+fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    let first = needle[0];
+    let last_start = hay.len() - needle.len();
+    let mut k = 0;
+    while k <= last_start {
+        let p = hay[k..=last_start].iter().position(|&c| c == first)?;
+        k += p;
+        if hay[k..k + needle.len()] == *needle {
+            return Some(k);
         }
-    };
+        k += 1;
+    }
+    None
+}
+
+/// Where the scan stands between two calls — everything `StmtSplitter` needs to resume.
+struct ScanState {
+    /// `DELIMITER` only appears in MySQL scripts; there `$$` is a statement terminator, not a
+    /// dollar quote. Decided for the WHOLE input, before the first byte is scanned.
+    mysql_script: bool,
+    /// Treat a line starting with `\` as a psql meta-command (`\connect db`, `\restrict key`)
+    /// and consume it, as psql does. Only for dump FILES: pg_dump's plain format writes them
+    /// between statements, and sent to the server they are a syntax error that kills the restore.
+    /// Off for the SQL editor, which is not psql — a typed `\dt` should reach the server and
+    /// fail visibly rather than silently vanish from "run all" — and so off for the TS twin too.
+    client_commands: bool,
+    delim: Vec<u8>,
+    /// The start of the statement being gathered.
+    start: usize,
+    /// How far the scan has got: nothing between `start` and here ends the statement.
+    pos: usize,
+    at_line_start: bool,
+}
+
+enum Scan {
+    /// A statement ends at `end`; the next one starts at `resume`.
+    Boundary { end: usize, resume: usize },
+    /// The bytes run out inside something that cannot be decided yet (a string, a comment, a
+    /// dollar block, a DELIMITER line). `pos` is left at its start, to be rescanned with more.
+    NeedMore,
+    /// `eof` and nothing is left to scan: whatever lies after `start` is the last statement.
+    End,
+}
+
+/// One step of the splitter over `b`, from `st.pos`.
+///
+/// Scans BYTES, not chars: every character the rules look at is ASCII, and a UTF-8 multi-byte
+/// sequence never contains an ASCII byte, so the answer is the same as scanning chars — at a
+/// quarter of the memory (`Vec<char>` is four bytes a character, i.e. 4GB for a 1GB dump).
+///
+/// Without `eof`, a construct that runs off the end of `b` is not guessed at: the step answers
+/// `NeedMore` and the caller feeds more bytes. With `eof`, it behaves exactly like the original
+/// whole-string splitter, which treated an unterminated construct as running to the end.
+fn scan_step(b: &[u8], st: &mut ScanState, eof: bool) -> Scan {
+    let n = b.len();
+    let mut i = st.pos;
+    let mut at_ls = st.at_line_start;
+    // A peek, a two-byte opener or the delimiter itself must fit before anything is decided.
+    let guard = st.delim.len().max(2);
+
+    macro_rules! need_more {
+        () => {{
+            st.pos = i;
+            st.at_line_start = at_ls;
+            return Scan::NeedMore;
+        }};
+    }
 
     while i < n {
-        let c = chars[i];
-        let peek = if i + 1 < n { Some(chars[i + 1]) } else { None };
+        if !eof && i + guard > n {
+            need_more!();
+        }
+        let c = b[i];
+        let peek = b.get(i + 1).copied();
 
         // Line comment: -- ... | # ...  ('#>' and '#-' are Postgres jsonb operators, not comments)
-        if (c == '-' && peek == Some('-')) || (c == '#' && !matches!(peek, Some('>') | Some('-'))) {
-            while i < n && chars[i] != '\n' {
-                i += 1;
+        if (c == b'-' && peek == Some(b'-'))
+            || (c == b'#' && !matches!(peek, Some(b'>') | Some(b'-')))
+        {
+            match b[i..].iter().position(|&x| x == b'\n') {
+                Some(p) => i += p + 1,
+                None if !eof => need_more!(),
+                None => i = n,
             }
-            at_line_start = true;
-            i += 1; // skip the '\n'
+            at_ls = true;
             continue;
         }
         // Block comment: /* ... */
-        if c == '/' && peek == Some('*') {
-            i += 2;
-            while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
-                i += 1;
+        if c == b'/' && peek == Some(b'*') {
+            match find_bytes(&b[i + 2..], b"*/") {
+                Some(p) => i += 2 + p + 2,
+                None if !eof => need_more!(),
+                None => i = n,
             }
-            i = (i + 2).min(n);
-            at_line_start = false;
+            at_ls = false;
             continue;
         }
         // A quoted string / quoted identifier: skip the whole block (including \' and '' escapes)
-        if c == '\'' || c == '"' || c == '`' {
+        if c == b'\'' || c == b'"' || c == b'`' {
             let quote = c;
-            i += 1;
-            while i < n {
-                if chars[i] == '\\' && quote != '`' {
-                    i += 2;
+            let mut k = i + 1;
+            let mut closed = false;
+            while k < n {
+                if b[k] == b'\\' && quote != b'`' {
+                    k += 2;
                     continue;
                 }
-                if chars[i] == quote {
-                    if quote == '\'' && i + 1 < n && chars[i + 1] == '\'' {
-                        i += 2;
+                if b[k] == quote {
+                    if quote == b'\'' && k + 1 == n && !eof {
+                        // `''` or the end of the string: the next byte decides.
+                        break;
+                    }
+                    if quote == b'\'' && k + 1 < n && b[k + 1] == b'\'' {
+                        k += 2;
                         continue;
                     }
-                    i += 1;
+                    k += 1;
+                    closed = true;
                     break;
                 }
-                i += 1;
+                k += 1;
             }
-            at_line_start = false;
+            if !closed && !eof {
+                need_more!();
+            }
+            i = k.min(n);
+            at_ls = false;
             continue;
         }
         // A Postgres dollar-quoted block: $$ ... $$ or $tag$ ... $tag$ (not $1 or ${x})
-        if !mysql_script && c == '$' {
+        if !st.mysql_script && c == b'$' {
             let mut j = i + 1;
-            while j < n && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+            while j < n && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
                 j += 1;
             }
+            if j == n && !eof {
+                need_more!();
+            }
             if j < n
-                && chars[j] == '$'
-                && (j == i + 1 || chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_')
+                && b[j] == b'$'
+                && (j == i + 1 || b[i + 1].is_ascii_alphabetic() || b[i + 1] == b'_')
             {
-                let tag: Vec<char> = chars[i..=j].to_vec();
-                let mut k = j + 1;
-                while k < n && !matches_delimiter(&chars, k, &tag) {
-                    k += 1;
+                let tag = &b[i..=j];
+                match find_bytes(&b[j + 1..], tag) {
+                    Some(p) => i = j + 1 + p + tag.len(),
+                    None if !eof => need_more!(),
+                    None => i = n,
                 }
-                i = if k < n { k + tag.len() } else { n };
-                at_line_start = false;
+                at_ls = false;
                 continue;
             }
         }
-        // The DELIMITER command (at the start of a line): it changes the statement terminator, and the line itself is not a statement
-        if at_line_start && let Some((token, next)) = read_delimiter_command(&chars, i) {
-            push_stmt(&mut out, start, i);
-            delim = token.chars().collect();
-            start = next;
-            i = next;
-            at_line_start = true;
-            continue;
+        // A psql meta-command: the whole line is consumed and ends the statement before it, the
+        // same way a DELIMITER line does. pg_dump only writes them between statements.
+        if at_ls && st.client_commands {
+            let mut t = i;
+            while t < n && (b[t] == b' ' || b[t] == b'\t') {
+                t += 1;
+            }
+            if t == n && !eof {
+                need_more!();
+            }
+            if t < n && b[t] == b'\\' {
+                let resume = match b[t..].iter().position(|&x| x == b'\n') {
+                    Some(p) => t + p + 1,
+                    None if !eof => need_more!(),
+                    None => n,
+                };
+                st.pos = resume;
+                st.at_line_start = true;
+                return Scan::Boundary { end: i, resume };
+            }
+        }
+        // The DELIMITER command (at the start of a line): it changes the statement terminator, and
+        // the line itself is not a statement. This command is NOT SQL: sending it to the server errors out.
+        if at_ls {
+            match delimiter_candidate(b, i, eof) {
+                None => need_more!(),
+                Some(true) => {
+                    let line_end = match b[i..].iter().position(|&x| x == b'\n') {
+                        Some(p) => Some(i + p),
+                        None if !eof => need_more!(),
+                        None => None,
+                    };
+                    let line = String::from_utf8_lossy(&b[i..line_end.unwrap_or(n)]);
+                    if let Some(token) = delimiter_token_of_line(&line) {
+                        let resume = line_end.map_or(n, |e| e + 1);
+                        st.delim = token.as_bytes().to_vec();
+                        st.pos = resume;
+                        st.at_line_start = true;
+                        return Scan::Boundary { end: i, resume };
+                    }
+                }
+                Some(false) => {}
+            }
         }
         // The statement terminator currently in force
-        if matches_delimiter(&chars, i, &delim) {
+        if b[i..].starts_with(&st.delim) {
             // A ';' inside a trigger's BEGIN...END body is not the end of the statement. Only
             // while the delimiter is still ';': a MySQL script that issued DELIMITER already
             // protects the body that way.
-            if delim.len() == 1
-                && delim[0] == ';'
-                && seg_may_be_create(&chars, start, i)
-                && trigger_stmt_incomplete(&chars[start..i].iter().collect::<String>())
+            if st.delim == b";"
+                && seg_may_be_create(b, st.start, i)
+                && trigger_stmt_incomplete(&String::from_utf8_lossy(&b[st.start..i]))
             {
                 i += 1;
-                at_line_start = false;
+                at_ls = false;
                 continue;
             }
-            push_stmt(&mut out, start, i);
-            i += delim.len();
-            start = i;
-            at_line_start = false;
-            continue;
+            let resume = i + st.delim.len();
+            st.pos = resume;
+            st.at_line_start = false;
+            return Scan::Boundary { end: i, resume };
         }
 
-        at_line_start = c == '\n';
+        at_ls = c == b'\n';
         i += 1;
     }
 
-    push_stmt(&mut out, start, n);
-    out
+    st.pos = i;
+    st.at_line_start = at_ls;
+    if eof { Scan::End } else { Scan::NeedMore }
+}
+
+/// Windows-1252 — what MySQL calls `latin1` — for the bytes 0x80..=0x9F, where it differs from
+/// ISO-8859-1. The five bytes 1252 leaves undefined map to the same code point, as MySQL does.
+const CP1252_HIGH: [char; 32] = [
+    '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008D}', '\u{017D}', '\u{008F}',
+    '\u{0090}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{009D}', '\u{017E}', '\u{0178}',
+];
+
+/// Dump bytes as text: UTF-8 when they are valid UTF-8, otherwise latin1 (Windows-1252).
+///
+/// This used to be `from_utf8_lossy`, which turned every accented letter of a latin1 dump — the
+/// classic MySQL `world` sample is one, `Curaçao` is the byte 0xE7 — into U+FFFD, and the restore
+/// then wrote the replacement character into the database with no error anywhere. A single-byte
+/// file is almost never valid UTF-8 by accident, so the check is a reliable answer; it is made per
+/// statement (a boundary is always an ASCII byte, so no character is ever cut in half) because a
+/// streamed file cannot be looked at as a whole first. What is decoded here is sent to the server
+/// as UTF-8, which is why `restore_backup` pins the session charset (`pin_client_charset`).
+pub(crate) fn decode_dump_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => std::borrow::Cow::Borrowed(s),
+        Err(_) => std::borrow::Cow::Owned(
+            bytes
+                .iter()
+                .map(|&c| match c {
+                    0x80..=0x9F => CP1252_HIGH[(c - 0x80) as usize],
+                    _ => c as char,
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// The text of `b[from..to]` as a statement, or None when it is only whitespace.
+fn stmt_text(b: &[u8], from: usize, to: usize) -> Option<String> {
+    let s = decode_dump_text(&b[from..to]);
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+/// Is this `COPY … FROM stdin`, i.e. a statement whose data follows it in the dump instead of in it?
+/// `COPY … FROM '/file'` and `COPY … TO STDOUT` are ordinary statements.
+pub(crate) fn is_copy_from_stdin(stmt: &str) -> bool {
+    let body = strip_leading_comments(stmt);
+    if !body
+        .get(..4)
+        .is_some_and(|h| h.eq_ignore_ascii_case("COPY"))
+    {
+        return false;
+    }
+    let words: Vec<&str> = body.split_whitespace().collect();
+    words
+        .windows(2)
+        .any(|w| w[0].eq_ignore_ascii_case("FROM") && w[1].eq_ignore_ascii_case("STDIN"))
+}
+
+/// Does this input issue a `DELIMITER` command anywhere? Decides `mysql_script` for a whole file.
+pub(crate) fn line_is_delimiter_command(line: &[u8]) -> bool {
+    delimiter_candidate(line, 0, true) == Some(true)
+        && delimiter_token_of_line(&String::from_utf8_lossy(line)).is_some()
+}
+
+/// The splitter fed a piece at a time — what `restore_backup` uses to read a dump file without
+/// holding it in memory.
+///
+/// Bytes go in through `feed`, whole statements come out of `next_stmt`. Only the statement
+/// currently being gathered is buffered: `feed` drops everything before it. `mysql_script` has to
+/// be known up front (a `DELIMITER` line late in the file changes what an early `$$` means), which
+/// is why a file is probed with `line_is_delimiter_command` before it is split.
+pub(crate) struct StmtSplitter {
+    buf: Vec<u8>,
+    st: ScanState,
+    eof: bool,
+    done: bool,
+    /// In a COPY data block, the rest of the `COPY … FROM stdin;` line is still to be skipped.
+    copy_skip_line: bool,
+}
+
+impl StmtSplitter {
+    pub(crate) fn new(mysql_script: bool) -> Self {
+        Self {
+            buf: Vec::new(),
+            st: ScanState {
+                mysql_script,
+                client_commands: false,
+                delim: b";".to_vec(),
+                start: 0,
+                pos: 0,
+                at_line_start: true,
+            },
+            eof: false,
+            done: false,
+            copy_skip_line: false,
+        }
+    }
+
+    /// The splitter for a dump FILE: psql meta-command lines are consumed (see
+    /// `ScanState::client_commands`).
+    pub(crate) fn with_client_commands(mut self) -> Self {
+        self.st.client_commands = true;
+        self
+    }
+
+    /// The statement `next_stmt` just returned was a `COPY … FROM stdin`: what follows its line is
+    /// data, not SQL, up to a line holding only `\.` — read it with `copy_data`.
+    pub(crate) fn begin_copy(&mut self) {
+        self.copy_skip_line = true;
+    }
+
+    /// The next piece of a COPY data block, whole lines only, about `max` bytes: `Some((bytes,
+    /// done))`, or None when more input is needed first. `done` means the `\.` line has been
+    /// consumed and `next_stmt` carries on after it.
+    ///
+    /// The data is never scanned: a data line holding a `'` or a `;` is only data, and scanning
+    /// a 150MB block for statements is also what made a pg_dump file one statement of 158MB.
+    pub(crate) fn copy_data(&mut self, max: usize) -> Option<(Vec<u8>, bool)> {
+        let b = &self.buf;
+        let n = b.len();
+        let mut at = self.st.start;
+        let mut out = Vec::new();
+        let mut done = false;
+        if self.copy_skip_line {
+            match b[at..].iter().position(|&c| c == b'\n') {
+                Some(p) => {
+                    at += p + 1;
+                    self.copy_skip_line = false;
+                }
+                None if self.eof => {
+                    at = n;
+                    self.copy_skip_line = false;
+                    done = true;
+                }
+                None => return None,
+            }
+        }
+        while !done && out.len() < max {
+            match b[at..].iter().position(|&c| c == b'\n') {
+                Some(p) => {
+                    let line = &b[at..at + p];
+                    if line.strip_suffix(b"\r").unwrap_or(line) == b"\\." {
+                        at += p + 1;
+                        done = true;
+                        break;
+                    }
+                    out.extend_from_slice(&b[at..=at + p]);
+                    at += p + 1;
+                }
+                None if self.eof => {
+                    // A file cut off before its `\.`: what is there is still data.
+                    let rest = &b[at..];
+                    if rest.strip_suffix(b"\r").unwrap_or(rest) != b"\\." {
+                        out.extend_from_slice(rest);
+                    }
+                    at = n;
+                    done = true;
+                }
+                None => break,
+            }
+        }
+        self.st.start = at;
+        self.st.pos = at;
+        self.st.at_line_start = true;
+        if out.is_empty() && !done {
+            return None;
+        }
+        Some((out, done))
+    }
+
+    pub(crate) fn feed(&mut self, bytes: &[u8]) {
+        if self.st.start > 0 {
+            self.buf.drain(..self.st.start);
+            self.st.pos -= self.st.start;
+            self.st.start = 0;
+        }
+        self.buf.extend_from_slice(bytes);
+    }
+
+    /// No more bytes will come: what is left is scanned as the end of the input.
+    pub(crate) fn finish(&mut self) {
+        self.eof = true;
+    }
+
+    /// The next whole statement, or None when it needs more bytes (or, after `finish`, when the
+    /// input is exhausted).
+    pub(crate) fn next_stmt(&mut self) -> Option<String> {
+        while !self.done {
+            match scan_step(&self.buf, &mut self.st, self.eof) {
+                Scan::Boundary { end, resume } => {
+                    let s = stmt_text(&self.buf, self.st.start, end);
+                    self.st.start = resume;
+                    if s.is_some() {
+                        return s;
+                    }
+                }
+                Scan::NeedMore => return None,
+                Scan::End => {
+                    self.done = true;
+                    return stmt_text(&self.buf, self.st.start, self.buf.len());
+                }
+            }
+        }
+        None
+    }
+}
+
+// Split a multi-statement SQL string into individual statements. It recognises:
+//   - quoted strings ('..', "..", `..`) and '\' escapes
+//   - comment `-- ...`, `# ...`, `/* ... */`
+//   - Postgres dollar-quoted blocks ($$ ... $$, $tag$ ... $tag$) — a function body contains ';'
+//   - MySQL's DELIMITER command — it changes the statement terminator so trigger/procedure bodies can be written
+// Without the last two, a file containing a function/trigger would be cut in the middle of the body and could
+// run a statement that sits inside it by mistake.
+//
+// The same scanner as `StmtSplitter`, run over the whole string at once (`eof` from the start), so
+// the in-memory and the streamed restore can never split a dump differently.
+pub(crate) fn split_sql_statements(sql: &str) -> Vec<String> {
+    let b = sql.as_bytes();
+    let mut st = ScanState {
+        mysql_script: sql.lines().any(|l| delimiter_token_of_line(l).is_some()),
+        client_commands: false,
+        delim: b";".to_vec(),
+        start: 0,
+        pos: 0,
+        at_line_start: true,
+    };
+    let mut out = Vec::new();
+    loop {
+        match scan_step(b, &mut st, true) {
+            Scan::Boundary { end, resume } => {
+                out.extend(stmt_text(b, st.start, end));
+                st.start = resume;
+            }
+            Scan::NeedMore | Scan::End => {
+                out.extend(stmt_text(b, st.start, b.len()));
+                return out;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -637,5 +965,87 @@ mod tests {
         assert_eq!(head("/* SELECT */ DELETE FROM t"), "DELETE");
         assert_eq!(head("/* daily report */ SELECT 1"), "SELECT");
         assert_eq!(head("/* never closed SELECT 1"), "");
+    }
+
+    /// Feeds `sql` to the streaming splitter `chunk` bytes at a time.
+    fn split_streamed(sql: &str, chunk: usize) -> Vec<String> {
+        let mysql = sql.lines().any(|l| line_is_delimiter_command(l.as_bytes()));
+        let mut sp = StmtSplitter::new(mysql);
+        let mut out = Vec::new();
+        for piece in sql.as_bytes().chunks(chunk) {
+            sp.feed(piece);
+            while let Some(s) = sp.next_stmt() {
+                out.push(s);
+            }
+        }
+        sp.finish();
+        while let Some(s) = sp.next_stmt() {
+            out.push(s);
+        }
+        out
+    }
+
+    /// The restore reads a dump in pieces, and a piece may end anywhere — inside a string, between
+    /// the two quotes of an `''` escape, halfway through `$tag$`, `DELIMITER` or `*/`. Every piece
+    /// size, down to one byte, must give exactly what the whole-string splitter gives.
+    #[test]
+    fn streaming_gives_the_same_statements_whatever_the_chunk_size() {
+        let corpus = [
+            "SELECT 1; SELECT 2",
+            "SELECT ';'; SELECT 'it''s'; SELECT 'a\'b'; SELECT \"x;y\"; SELECT `c;d`;",
+            "SELECT 1 -- a;b\n; /* c;d */ SELECT 2; # hash;\nSELECT 3; SELECT '{}'::jsonb #> '{a}';",
+            "-- hi\nSELECT 1;\n/* block */",
+            "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END $$ LANGUAGE plpgsql; SELECT $1; SELECT ${x};",
+            "CREATE FUNCTION f() RETURNS int AS $body$ SELECT 1; $body$ LANGUAGE sql; SELECT 2",
+            "DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 1; END$$\nDELIMITER ;\nSELECT 2;",
+            "DELIMITER ;;\nCREATE PROCEDURE p() BEGIN SELECT 1; END;;\nDELIMITER ;",
+            "  delimiter //\r\nCREATE TRIGGER t BEFORE INSERT ON a FOR EACH ROW BEGIN SET NEW.x = 1; END//\r\ndelimiter ;\r\nSELECT 'DELIMITER $$';",
+            "CREATE TRIGGER t AFTER INSERT ON a BEGIN UPDATE b SET n = 1; END;\nSELECT 9;",
+            "CREATE TRIGGER t AFTER INSERT ON a BEGIN UPDATE b SET n=1; END -- done\n;\nSELECT 9;",
+            "INSERT INTO t VALUES ('Tiếng Việt; có dấu', 'ｘ'), ('日本語;');\nSELECT 'unterminated",
+            "SELECT 1 /* never closed ; SELECT 2",
+            "INSERT INTO t VALUES ('');SELECT ''''; SELECT '\\';",
+        ];
+        for sql in corpus {
+            let whole = split_sql_statements(sql);
+            for chunk in 1..=sql.len() + 1 {
+                assert_eq!(
+                    split_streamed(sql, chunk),
+                    whole,
+                    "chunk {chunk} of {sql:?}"
+                );
+            }
+        }
+    }
+
+    /// A latin1 dump (MySQL's `world` sample) is decoded as latin1, not replaced with U+FFFD —
+    /// which is what used to land in the database. Windows-1252's own bytes (0x80–0x9F) included.
+    #[test]
+    fn a_latin1_dump_keeps_its_accented_letters() {
+        let mut sp = StmtSplitter::new(false).with_client_commands();
+        sp.feed(b"INSERT INTO city VALUES ('Cura\xe7ao', 'Santaf\xe9 de Bogot\xe1');\nSELECT '\x80 \x93x\x94';");
+        sp.finish();
+        assert_eq!(
+            sp.next_stmt().as_deref(),
+            Some("INSERT INTO city VALUES ('Curaçao', 'Santafé de Bogotá')")
+        );
+        assert_eq!(
+            sp.next_stmt().as_deref(),
+            Some("SELECT '€ \u{201C}x\u{201D}'")
+        );
+        // Valid UTF-8 is read as UTF-8, and borrowed rather than copied.
+        assert!(matches!(
+            decode_dump_text("Curaçao".as_bytes()),
+            std::borrow::Cow::Borrowed("Curaçao")
+        ));
+    }
+
+    #[test]
+    fn a_delimiter_line_is_recognised_on_its_own_bytes() {
+        assert!(line_is_delimiter_command(b"DELIMITER $$"));
+        assert!(line_is_delimiter_command(b"  delimiter ;;\r"));
+        assert!(!line_is_delimiter_command(b"DELIMITER"));
+        assert!(!line_is_delimiter_command(b"SELECT 1 DELIMITER $$"));
+        assert!(!line_is_delimiter_command(b"DELIMITERX $$"));
     }
 }
