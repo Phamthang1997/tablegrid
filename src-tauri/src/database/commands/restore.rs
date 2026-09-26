@@ -131,6 +131,51 @@ pub(super) fn is_skipped_stmt(stmt_upper: &str) -> bool {
         || stmt_upper.starts_with("BEGIN WORK")
         || stmt_upper.starts_with("COMMIT")
         || stmt_upper.starts_with("ROLLBACK")
+        // The target database is the one the user picked, and a dump has no say in dropping it —
+        // or any other. It used to go through the table filter, which matches words: a selected
+        // table called `demo` let pg_dump's `DROP DATABASE demo;` through (fatal on Postgres,
+        // which refuses it inside a transaction; on MySQL it would really drop the database).
+        || stmt_upper.starts_with("DROP DATABASE")
+}
+
+/// `ALTER DATABASE <the dump's db> SET …` aimed at `current` instead — or None for any other
+/// statement, and for the other forms of ALTER DATABASE (OWNER TO, RENAME, …), which stay aimed
+/// at the database they name.
+///
+/// pg_dump --create writes a database's own settings as `ALTER DATABASE demo SET "bookings.lang"
+/// TO 'en'`, meant for the database it is about to `\connect` to. A restore puts everything into
+/// the database the user picked, so the settings follow the data there; aimed at `demo`, the
+/// statement failed on a server that has no `demo`, and the demo's views then read no setting.
+fn retarget_alter_database(stmt: &str, current: &str) -> Option<String> {
+    let body = strip_leading_comments(stmt);
+    let rest = body
+        .get(..14)
+        .filter(|h| h.eq_ignore_ascii_case("ALTER DATABASE"))
+        .map(|_| &body[14..])?;
+    let rest = rest.trim_start();
+    // The name: a quoted identifier (`""` escapes a quote) or a bare word.
+    let name_len = if let Some(quoted) = rest.strip_prefix('"') {
+        let mut i = 0;
+        let b = quoted.as_bytes();
+        loop {
+            match b.get(i) {
+                Some(b'"') if b.get(i + 1) == Some(&b'"') => i += 2,
+                Some(b'"') => break i + 2,
+                Some(_) => i += 1,
+                None => return None,
+            }
+        }
+    } else {
+        rest.find(char::is_whitespace)?
+    };
+    let tail = &rest[name_len..];
+    let verb = tail.trim_start();
+    let is_set = verb.get(..4).is_some_and(|w| w.eq_ignore_ascii_case("SET "))
+        || verb.get(..6).is_some_and(|w| w.eq_ignore_ascii_case("RESET "));
+    if !is_set {
+        return None;
+    }
+    Some(format!("ALTER DATABASE \"{}\"{}", current.replace('"', "\"\""), tail))
 }
 
 // Session-/schema-level statements in a dump file: they always run even when the user selected only some tables
@@ -149,6 +194,9 @@ fn is_session_level_stmt(stmt_upper: &str) -> bool {
         // wherever a function call does. It names no table, so the filter would drop it.
         || stmt_upper.starts_with("SELECT PG_CATALOG.SET_CONFIG(")
         || stmt_upper.starts_with("CREATE DATABASE")
+        // Database-level settings: not a table's, and aimed at a database that may not be this
+        // one (see `retarget_alter_database`), so a failure must not abort the restore.
+        || stmt_upper.starts_with("ALTER DATABASE")
         || stmt_upper.starts_with("CREATE SCHEMA")
         // What a table is BUILT FROM rather than a table: none of them names the table that
         // needs it, so the filter dropped them and the table then failed — pg_dump's demo
@@ -767,6 +815,11 @@ pub async fn restore_backup(
             let _ = run_str(&mut conn, "BEGIN;").await;
             // Only valid inside a transaction, hence after BEGIN; only affects DEFERRABLE constraints.
             let _ = run_str(&mut conn, "SET CONSTRAINTS ALL DEFERRED;").await;
+            // Where `retarget_alter_database` sends a dump's database settings.
+            let current_db: Option<String> = sqlx::query_scalar("SELECT current_database()")
+                .fetch_one(&mut *conn)
+                .await
+                .ok();
 
             loop {
                 if cancel.load(Ordering::Relaxed) {
@@ -826,7 +879,16 @@ pub async fn restore_backup(
                 // A MySQL dump's backtick-quoted identifiers, turned into Postgres' double quotes.
                 // Copied only when there is one to turn: a multi-row INSERT is hundreds of KB, and
                 // this used to be one more full copy of every statement of the dump.
-                let exec_sql = if q.contains('`') { q.replace('`', "\"") } else { q.clone() };
+                let exec_sql = if let Some(sql) = current_db
+                    .as_deref()
+                    .and_then(|db| retarget_alter_database(&q, db))
+                {
+                    sql
+                } else if q.contains('`') {
+                    q.replace('`', "\"")
+                } else {
+                    q.clone()
+                };
                 // One error puts a Postgres transaction into the aborted state (25P02), after which
                 // every later statement fails with "current transaction is aborted". Carrying on needs
                 // a rollback point per statement. Paid when the user asked to carry on, and for every
@@ -1012,6 +1074,66 @@ pub async fn restore_backup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn classify(tables: &[&str], q: &str) -> Option<(String, bool)> {
+        let tables: Vec<String> = tables.iter().map(|t| t.to_string()).collect();
+        Classifier {
+            matcher: TableMatcher::new(&tables),
+            run_all: false,
+            last_use_db: None,
+        }
+        .classify(q.to_string())
+    }
+
+    /// The table filter matches WORDS, so pg_dump's database statements used to get through it
+    /// by accident: the demo dump's function `lang` let `ALTER DATABASE demo SET "bookings.lang"`
+    /// through as an ordinary statement, whose failure (no `demo` on the server) killed the run.
+    #[test]
+    fn database_statements_are_never_decided_by_the_table_filter() {
+        // Never run, even when a selected name matches.
+        assert_eq!(classify(&["demo"], "DROP DATABASE demo"), None);
+        assert_eq!(classify(&[], "-- x\ndrop database if exists demo"), None);
+        // Always attempted, and a failure is not fatal.
+        assert_eq!(
+            classify(&["lang"], "ALTER DATABASE demo SET \"bookings.lang\" TO 'en'"),
+            Some(("ALTER DATABASE demo SET \"bookings.lang\" TO 'en'".into(), true))
+        );
+        assert_eq!(
+            classify(&["film"], "ALTER DATABASE demo OWNER TO postgres").map(|c| c.1),
+            Some(true)
+        );
+    }
+
+    /// Everything else a table is built from runs whatever is selected.
+    #[test]
+    fn what_a_table_is_built_from_always_runs() {
+        for q in [
+            "CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA bookings",
+            "CREATE TYPE mood AS ENUM ('a')",
+            "CREATE DOMAIN d AS int",
+            "CREATE SEQUENCE bookings.film_film_id_seq",
+            "SELECT pg_catalog.set_config('search_path', '', false)",
+        ] {
+            assert_eq!(classify(&["film"], q).map(|c| c.1), Some(true), "{q}");
+        }
+        assert_eq!(classify(&["film"], "SELECT 1"), None);
+    }
+
+    #[test]
+    fn a_dumps_database_settings_follow_the_data_into_the_target() {
+        assert_eq!(
+            retarget_alter_database("-- Name: demo\nALTER DATABASE demo SET \"bookings.lang\" TO 'en'", "postgres").as_deref(),
+            Some("ALTER DATABASE \"postgres\" SET \"bookings.lang\" TO 'en'")
+        );
+        assert_eq!(
+            retarget_alter_database("alter database \"my \"\"db\"\"\" reset all", "x\"y").as_deref(),
+            Some("ALTER DATABASE \"x\"\"y\" reset all")
+        );
+        // Other forms stay aimed at the database they name.
+        assert_eq!(retarget_alter_database("ALTER DATABASE demo OWNER TO postgres", "p"), None);
+        assert_eq!(retarget_alter_database("ALTER DATABASE demo", "p"), None);
+        assert_eq!(retarget_alter_database("ALTER TABLE t SET SCHEMA s", "p"), None);
+    }
 
     /// Replays a real dump file into a scratch Postgres database through the same `Feed` and
     /// `pg_copy_in` the restore runs, statement by statement in autocommit. Needs `DUMP_PATH` and
