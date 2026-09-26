@@ -187,6 +187,10 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   close_ssh_terminal: 'internal',
   open_local_terminal: 'internal',
   open_ssh_terminal: 'internal',
+  // The host key prompt (`sshHostKeys.ts`): reading a refused key back and trusting it touch no
+  // database, and trusting already has its own dialog.
+  ssh_host_key_challenge: 'internal',
+  ssh_trust_host_key: 'internal',
   resize_local_terminal: 'internal',
   resize_ssh_terminal: 'internal',
   send_local_input: 'internal',

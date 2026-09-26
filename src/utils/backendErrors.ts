@@ -104,6 +104,9 @@ export const EXACT: Record<string, string> = {
   'Thiếu danh sách thay đổi': 'backend.missingChangeList',
   'Thiếu đường dẫn tệp SQLite': 'backend.missingSqlitePath',
   'Thiếu địa chỉ máy chủ SSH': 'backend.missingSshHost',
+  // ssh/known_hosts.rs — trusting a refused host key.
+  'Không có khoá máy chủ SSH nào đang chờ xác nhận': 'backend.sshHostKeyNoPending',
+  'Khoá máy chủ SSH đã đổi trong lúc chờ xác nhận, hãy kết nối lại': 'backend.sshHostKeyMoved',
   'Thiếu private key cho xác thực SSH bằng khóa': 'backend.missingSshKey',
   'Thiếu key': 'backend.missingKey',
   'Thiếu host RDS': 'backend.missingRdsHost',
@@ -169,6 +172,11 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   // database.rs — a statement's time fence (the connection's `statementTimeoutSecs`).
   { re: /^Câu lệnh đã chạy quá ([\d]+) giây và bị dừng$/, key: 'backend.statementTimeout' },
   { re: /^Lỗi tại câu lệnh:\n([\s\S]*)\n\nChi tiết: ([\s\S]*)$/, key: 'backend.sqlStatementFailed' },
+  // ssh/auth.rs + ssh/known_hosts.rs — a host key that is not trusted (yet), and saving one.
+  { re: /^Khoá máy chủ SSH của ([^\s]+) chưa được tin cậy$/, key: 'backend.sshHostKeyUnknown' },
+  { re: /^Khoá máy chủ SSH của ([^\s]+) đã thay đổi — có thể có kẻ đang chặn kết nối$/, key: 'backend.sshHostKeyChanged' },
+  { re: /^Khoá máy chủ SSH đã lưu trong ~\/\.ssh\/known_hosts, hãy chạy: ssh-keygen -R "([^"]*)"$/, key: 'backend.sshHostKeyOpenSsh' },
+  { re: /^Lỗi ghi known_hosts: ([\s\S]*)$/, key: 'backend.knownHostsWriteFailed' },
   { re: /^Lỗi kết nối SSH tới ([^\s]+): ([\s\S]*)$/, key: 'backend.sshConnectFailed' },
   { re: /^Lỗi xác thực SSH bằng mật khẩu: ([\s\S]*)$/, key: 'backend.sshPasswordAuthFailed' },
   { re: /^Lỗi xác thực SSH bằng khóa: ([\s\S]*)$/, key: 'backend.sshKeyAuthFailed' },

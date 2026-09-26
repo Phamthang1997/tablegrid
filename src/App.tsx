@@ -3,6 +3,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { TitleBar } from './components/TitleBar';
 import { SafeModeGate } from './components/SafeModeGate';
+import { SshHostKeyGate } from './components/SshHostKeyGate';
 import { McpApprovalGate } from './components/McpApprovalGate';
 import { LockScreen } from './components/LockScreen';
 import {
@@ -2386,6 +2387,8 @@ export const App: React.FC = () => {
           the question still appears wherever the command came from. */}
       <SafeModeGate />
       <McpApprovalGate />
+      {/* Asked from `dbHelper` when an SSH server's key is not trusted (yet) — see `utils/sshHostKeys.ts`. */}
+      <SshHostKeyGate />
 
       {/* The master-password gate. An overlay ON TOP of the mounted app rather than an early
           return: every query tab stays mounted so a run's results survive a tab switch, and an idle

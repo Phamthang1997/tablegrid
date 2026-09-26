@@ -33,7 +33,9 @@ pub fn init(app: &tauri::App) {
         // one allowed to ask. It also auto-unlocks from the device key when there is one, which has
         // to happen before the first frame or a "remember on this device" user sees the lock screen
         // flash past.
-        crate::credentials::vault::init(dir);
+        crate::credentials::vault::init(dir.clone());
+        // Same directory, same reason: the app's own known_hosts file (`ssh/known_hosts.rs`).
+        crate::ssh::known_hosts::init(dir);
     }
 }
 
