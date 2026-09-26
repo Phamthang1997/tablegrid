@@ -96,6 +96,8 @@ export type ERExportFormat =
   /** Mermaid for the selected tables only — what fits Mermaid's render limits on a big schema. */
   | 'mermaid-selection'
   | 'dbml'
+  /** The schema as a Markdown document with one Mermaid diagram per table (`erDocExport.ts`). */
+  | 'markdown'
   | 'sql';
 
 /** What an export reports back to the toolbar. */

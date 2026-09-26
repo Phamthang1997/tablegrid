@@ -50,6 +50,7 @@ import {
   generateFullDiagramSvg,
   exportDiagramToPng,
 } from './erExportHelper';
+import { exportToMarkdownDoc } from './erDocExport';
 import { pickSaveFilePath, saveExportFileAtPath } from '../../utils/fileSave';
 import { ERToolbar } from './ERToolbar';
 import { ERMinimap } from './ERMinimap';
@@ -233,7 +234,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   relationships,
   onOpenTable,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -1426,6 +1427,36 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
           await navigator.clipboard.writeText(text);
           return { tooLarge: mermaidTooLarge(text) };
         }
+        case 'markdown': {
+          const targetPath = await pickSaveFilePath(
+            `${database || 'database'}_schema`,
+            'md',
+            'Markdown (*.md)'
+          );
+          if (!targetPath) return;
+          const date = new Date().toLocaleDateString(i18n.language);
+          const doc = exportToMarkdownDoc(visibleTables, relationships, {
+            title: t('er.docTitle', { db: database || 'database' }),
+            generated: (tableCount, relationCount) =>
+              t('er.docGenerated', { date, tables: tableCount, relations: relationCount }),
+            contents: t('er.docContents'),
+            view: t('er.docView'),
+            rows: t('er.docRows'),
+            column: t('er.docColumn'),
+            type: t('er.docType'),
+            nullable: t('er.docNullable'),
+            key: t('er.docKey'),
+            references: t('er.docReferences'),
+            comment: t('er.docComment'),
+            yes: t('er.docYes'),
+            no: t('er.docNo'),
+            referencedBy: t('er.docReferencedBy'),
+            none: t('er.docNone'),
+            diagramTrimmed: (n) => t('er.docDiagramTrimmed', { n }),
+          });
+          await saveExportFileAtPath(targetPath, doc, 'text/markdown');
+          break;
+        }
         case 'dbml': {
           const targetPath = await pickSaveFilePath(baseName, 'dbml', 'DBML File (*.dbml)');
           if (!targetPath) return;
@@ -1498,7 +1529,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
         }
       }
     },
-    [database, detailLevel, relationships, visibleTables]
+    [database, detailLevel, relationships, visibleTables, t, i18n.language]
   );
 
   return (
