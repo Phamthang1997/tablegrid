@@ -3316,6 +3316,8 @@ const en = {
     docYes: 'yes',
     docNo: 'no',
     docReferencedBy: 'Referenced by',
+    docIndexes: 'Indexes',
+    docUnique: 'unique',
     docNone: 'none',
     docDiagramTrimmed: '{{n}} more related tables are not shown in this diagram',
     exportSql: 'Export DDL SQL schema',

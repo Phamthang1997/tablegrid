@@ -52,6 +52,7 @@ import {
 } from './erExportHelper';
 import { exportToMarkdownDoc } from './erDocExport';
 import { pickSaveFilePath, saveExportFileAtPath } from '../../utils/fileSave';
+import { dbHelper } from '../../utils/dbHelper';
 import { ERToolbar } from './ERToolbar';
 import { ERMinimap } from './ERMinimap';
 
@@ -1435,6 +1436,16 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
           );
           if (!targetPath) return;
           const date = new Date().toLocaleDateString(i18n.language);
+          // Indexes are not in the ER catalog, so they are read here — one table after another,
+          // not all at once: this is the user's database, possibly production, and a few hundred
+          // concurrent introspection queries is exactly what the app avoids elsewhere (the same
+          // reason dumpBuilder pages sequentially). Views have no indexes of their own.
+          const indexes: Record<string, { name: string; columns: string; unique: boolean }[]> = {};
+          for (const tb of visibleTables) {
+            if (tb.kind === 'view') continue;
+            const info = await dbHelper.getTableSchema(connId, tb.name, tb.schema);
+            indexes[tb.name] = info.indexes;
+          }
           const doc = exportToMarkdownDoc(visibleTables, relationships, {
             title: t('er.docTitle', { db: database || 'database' }),
             generated: (tableCount, relationCount) =>
@@ -1453,7 +1464,9 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
             referencedBy: t('er.docReferencedBy'),
             none: t('er.docNone'),
             diagramTrimmed: (n) => t('er.docDiagramTrimmed', { n }),
-          });
+            indexes: t('er.docIndexes'),
+            unique: t('er.docUnique'),
+          }, indexes);
           await saveExportFileAtPath(targetPath, doc, 'text/markdown');
           break;
         }
@@ -1529,7 +1542,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
         }
       }
     },
-    [database, detailLevel, relationships, visibleTables, t, i18n.language]
+    [connId, database, detailLevel, relationships, visibleTables, t, i18n.language]
   );
 
   return (

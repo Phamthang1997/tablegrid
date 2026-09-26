@@ -3280,6 +3280,8 @@ const ja: typeof en = {
     docYes: 'はい',
     docNo: 'いいえ',
     docReferencedBy: '参照元',
+    docIndexes: 'インデックス',
+    docUnique: '一意',
     docNone: 'なし',
     docDiagramTrimmed: 'この図には関連テーブルがあと {{n}} 件表示されていません',
     exportSql: 'DDL SQL スキーマを書き出す',

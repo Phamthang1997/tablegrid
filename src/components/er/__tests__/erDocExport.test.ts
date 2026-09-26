@@ -17,6 +17,8 @@ const labels: ErDocLabels = {
   yes: 'yes',
   no: 'no',
   referencedBy: 'Referenced by',
+  indexes: 'Indexes',
+  unique: 'unique',
   none: 'none',
   diagramTrimmed: (n) => `${n} more not shown`,
 };
@@ -96,6 +98,26 @@ describe('exportToMarkdownDoc', () => {
     expect(hubSection.startsWith('hub')).toBe(true);
     expect(hubSection.match(/ \{\n/g)).toHaveLength(NEIGHBOURS_MAX + 1);
     expect(hubSection).toContain('_3 more not shown_');
+  });
+});
+
+describe('exportToMarkdownDoc — indexes', () => {
+  it('lists each table\'s indexes when they are given, and says so when there are none', () => {
+    const doc = exportToMarkdownDoc(tables, rels, labels, {
+      customer: [
+        { name: 'PRIMARY', columns: 'customer_id', unique: true },
+        { name: 'idx_store_email', columns: 'store_id, email', unique: false },
+      ],
+      store: [],
+    });
+    expect(doc).toContain('**Indexes:** \n- PRIMARY (`customer_id`) — unique\n- idx_store_email (`store_id`, `email`)');
+    expect(doc).toContain('**Indexes:** none');
+    // A table the map does not mention gets no index line at all (it was not read, not empty).
+    expect(doc.split('\n## ').find((s) => s.startsWith('lonely'))).not.toContain('Indexes');
+  });
+
+  it('writes no index lines when no indexes are passed', () => {
+    expect(exportToMarkdownDoc(tables, rels, labels)).not.toContain('Indexes');
   });
 });
 

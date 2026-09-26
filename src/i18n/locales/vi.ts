@@ -3286,6 +3286,8 @@ const vi: typeof en = {
     docYes: 'có',
     docNo: 'không',
     docReferencedBy: 'Được tham chiếu bởi',
+    docIndexes: 'Index',
+    docUnique: 'duy nhất',
     docNone: 'không có',
     docDiagramTrimmed: 'Còn {{n}} bảng liên quan không hiện trong sơ đồ này',
     exportSql: 'Xuất lược đồ DDL SQL',
