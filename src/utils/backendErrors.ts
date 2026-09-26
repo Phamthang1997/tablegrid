@@ -55,6 +55,10 @@ export const EXACT: Record<string, string> = {
   'Cần đúng một nguồn dump: nội dung SQL hoặc đường dẫn tệp.': 'backend.restoreNeedsOneSource',
   'Tệp dump dùng COPY … FROM stdin (định dạng của pg_dump), chỉ phục hồi được vào PostgreSQL':
     'backend.copyNeedsPg',
+  'Tệp là bản dump định dạng custom/tar của pg_dump, cần pg_restore để đọc nhưng không tìm thấy pg_restore trên máy — cài PostgreSQL client tools hoặc thêm thư mục bin của nó vào PATH':
+    'backend.pgRestoreMissing',
+  'Tệp nén chứa bản dump định dạng custom/tar của pg_dump — hãy giải nén trước khi phục hồi':
+    'backend.pgArchiveGzipped',
   'Tên savepoint chỉ gồm chữ, số và dấu gạch dưới, bắt đầu bằng chữ': 'backend.txBadSavepointName',
   'Chưa kết nối database': 'backend.notConnected',
   'Chưa kết nối Redis': 'backend.notConnectedRedis',
@@ -156,6 +160,8 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   // database/dump_file.rs — the payload is the OS / gzip error, in its own words.
   { re: /^Không mở được tệp dump: ([\s\S]*)$/, key: 'backend.dumpOpenFailed' },
   { re: /^Không đọc được tệp dump: ([\s\S]*)$/, key: 'backend.dumpReadFailed' },
+  // database/pg_archive.rs — the payload is pg_restore's own stderr, in its own words.
+  { re: /^pg_restore báo lỗi: ([\s\S]*)$/, key: 'backend.pgRestoreFailed' },
   // terminal/docker.rs — the payload is the OS spawn error or docker's own stderr, which stays
   // in its own words the way `failed[].error` does for a Redis RESTORE.
   { re: /^Không chạy được ([^:]+): ([\s\S]*)$/, key: 'backend.dockerRunFailed' },

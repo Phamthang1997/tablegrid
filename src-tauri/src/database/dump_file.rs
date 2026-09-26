@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use flate2::read::MultiGzDecoder;
 
+use super::pg_archive::{PgRestoreReader, detect_pg_archive, find_pg_restore};
 use super::splitter::{
     StmtSplitter, decode_dump_text, is_copy_from_stdin, line_is_delimiter_command,
 };
@@ -46,14 +47,19 @@ pub(crate) struct DumpFile {
     pub(crate) reader: Box<dyn Read + Send>,
     /// Bytes read from the file so far.
     pub(crate) bytes_read: Arc<AtomicU64>,
-    /// Size of the file on disk.
+    /// What `bytes_read` runs up to, for a progress bar — 0 when that cannot be known (an archive
+    /// read through `pg_restore`, which reads the file itself).
     pub(crate) bytes_total: u64,
+    /// Size of the file on disk, always.
+    pub(crate) file_bytes: u64,
     pub(crate) gzip: bool,
+    /// The tool the file was converted through, e.g. "pg_restore 18.6"; None for SQL text.
+    pub(crate) via: Option<String>,
 }
 
 pub(crate) fn open_dump(path: &str) -> Result<DumpFile, String> {
     let file = File::open(path).map_err(|e| format!("Không mở được tệp dump: {e}"))?;
-    let bytes_total = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let file_bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
     let bytes_read = Arc::new(AtomicU64::new(0));
     let mut buffered = BufReader::with_capacity(
         READ_CHUNK,
@@ -65,24 +71,64 @@ pub(crate) fn open_dump(path: &str) -> Result<DumpFile, String> {
     let head = buffered
         .fill_buf()
         .map_err(|e| format!("Không mở được tệp dump: {e}"))?;
+
+    // pg_dump's custom / tar archive: SQL comes out of the machine's own pg_restore.
+    if detect_pg_archive(head).is_some() {
+        drop(buffered);
+        let tool = find_pg_restore().ok_or_else(|| PG_RESTORE_MISSING.to_string())?;
+        let reader = PgRestoreReader::spawn(&tool, path)?;
+        let out_read = Arc::new(AtomicU64::new(0));
+        return Ok(DumpFile {
+            reader: Box::new(Counting {
+                inner: reader,
+                read: out_read.clone(),
+            }),
+            bytes_read: out_read,
+            bytes_total: 0,
+            file_bytes,
+            gzip: false,
+            via: Some(tool.label),
+        });
+    }
+
     let gzip = head.len() >= 2 && head[0] == 0x1f && head[1] == 0x8b;
     // `MultiGz`: `cat a.sql.gz b.sql.gz` is a valid gzip file of two members, and the single-member
     // decoder would silently stop after the first.
     let reader: Box<dyn Read + Send> = if gzip {
-        Box::new(MultiGzDecoder::new(buffered))
+        let mut inner = BufReader::with_capacity(READ_CHUNK, MultiGzDecoder::new(buffered));
+        // A gzipped ARCHIVE cannot be streamed into pg_restore by path; say so rather than
+        // reading compressed binary as SQL and failing on its first "statement".
+        let inner_head = inner.fill_buf().map_err(read_error)?;
+        if detect_pg_archive(inner_head).is_some() {
+            return Err(PG_ARCHIVE_GZIPPED.to_string());
+        }
+        Box::new(inner)
     } else {
         Box::new(buffered)
     };
     Ok(DumpFile {
         reader,
         bytes_read,
-        bytes_total,
+        bytes_total: file_bytes,
+        file_bytes,
         gzip,
+        via: None,
     })
 }
 
+/// No `pg_restore` anywhere the app looks (see `pg_archive::candidates`).
+const PG_RESTORE_MISSING: &str = "Tệp là bản dump định dạng custom/tar của pg_dump, cần pg_restore để đọc nhưng không tìm thấy pg_restore trên máy — cài PostgreSQL client tools hoặc thêm thư mục bin của nó vào PATH";
+const PG_ARCHIVE_GZIPPED: &str =
+    "Tệp nén chứa bản dump định dạng custom/tar của pg_dump — hãy giải nén trước khi phục hồi";
+
 fn read_error(e: std::io::Error) -> String {
-    format!("Không đọc được tệp dump: {e}")
+    let m = e.to_string();
+    // pg_restore's own failure already carries its framing; wrapping it again would give the UI
+    // a nested Vietnamese sentence `backendErrors.ts` cannot match.
+    if m.starts_with("pg_restore báo lỗi:") {
+        return m;
+    }
+    format!("Không đọc được tệp dump: {m}")
 }
 
 /// Watches raw dump bytes for a `DELIMITER` line, a chunk at a time.
@@ -390,6 +436,19 @@ mod tests {
             s.unwrap();
         }
         assert!(it.saw_delimiter_line());
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// A gzipped pg_dump archive cannot go to pg_restore by path: it is refused in words, instead of
+    /// its compressed bytes being read as SQL.
+    #[test]
+    fn a_gzipped_pg_archive_is_refused_in_words() {
+        let p = temp_file(
+            "archive.dump.gz",
+            &gz(b"PGDMP\x01\x10\x00rest of the archive"),
+        );
+        let err = open_dump(&p).err().expect("refused");
+        assert!(err.contains("giải nén"), "{err}");
         let _ = std::fs::remove_file(p);
     }
 

@@ -317,6 +317,8 @@ export interface ScannedStatement {
 export interface DumpScan {
   fileBytes: number;
   gzip: boolean;
+  /** "pg_restore 18.6" when the file is a pg_dump -Fc/-Ft archive read through the machine's pg_restore. */
+  via: string | null;
   /** Passed back to `restore_backup` so it does not have to read the file once more to find out. */
   mysqlScript: boolean;
   statements: number;
