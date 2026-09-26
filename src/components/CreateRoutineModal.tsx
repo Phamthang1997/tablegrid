@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { nextRowId, type WithRowId } from '../utils/rowIds';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 import { dbHelper } from '../utils/dbHelper';
 import { Plus, Trash2, Save, AlertTriangle, CheckCircle } from 'lucide-react';
@@ -26,8 +27,9 @@ export const CreateRoutineModal: React.FC<CreateRoutineModalProps> = ({
   const [name, setName] = useState<string>('new_procedure');
   const [kind, setKind] = useState<'procedure' | 'function'>('procedure');
   const [returnType, setReturnType] = useState<string>('INT');
-  const [params, setParams] = useState<RoutineParamDraft[]>([
-    { mode: 'IN', name: 'p_id', type: 'INT' },
+  // `rowId` is the row's React key (see `utils/rowIds.ts`); only the DDL below reads the rest.
+  const [params, setParams] = useState<WithRowId<RoutineParamDraft>[]>(() => [
+    { rowId: nextRowId(), mode: 'IN', name: 'p_id', type: 'INT' },
   ]);
   const [bodySql, setBodySql] = useState<string>('SELECT * FROM my_table;');
 
@@ -59,7 +61,7 @@ export const CreateRoutineModal: React.FC<CreateRoutineModalProps> = ({
   }, [name, kind, returnType, params, bodySql, dbType]);
 
   const handleAddParam = () => {
-    setParams([...params, { mode: 'IN', name: `p_arg${params.length + 1}`, type: 'VARCHAR(255)' }]);
+    setParams([...params, { rowId: nextRowId(), mode: 'IN', name: `p_arg${params.length + 1}`, type: 'VARCHAR(255)' }]);
   };
 
   const handleRemoveParam = (index: number) => {
@@ -171,7 +173,7 @@ export const CreateRoutineModal: React.FC<CreateRoutineModalProps> = ({
               </thead>
               <tbody>
                 {params.map((p, index) => (
-                  <tr key={index}>
+                  <tr key={p.rowId}>
                     <td style={{ padding: '4px 8px' }}>
                       <select
                         value={p.mode}
