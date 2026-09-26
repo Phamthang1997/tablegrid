@@ -82,7 +82,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
         <div className="whats-new-window-container">
           <div className="whats-new-window-titlebar">
             <div className="whats-new-window-title">
-              <Sparkles size={13} style={{ color: '#0284c7' }} />
+              <Sparkles size={13} style={{ color: 'var(--win-accent)' }} />
               <span>SQL_Workspace - AI Assistant</span>
             </div>
             <div className="whats-new-window-controls">
@@ -119,16 +119,16 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
                 <span style={{ fontSize: '9px', opacity: 0.7 }}>MySQL Dialect</span>
               </div>
               <div className="whats-new-code-body">
-                <div className="whats-new-code-line"><span className="whats-new-line-num">1</span><span style={{ color: '#0284c7' }}>CREATE FUNCTION</span> get_cust_name(</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">2</span>  p_id <span style={{ color: '#0284c7' }}>INT</span>) <span style={{ color: '#0284c7' }}>RETURNS VARCHAR</span>(100)</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">3</span><span style={{ color: '#0284c7' }}>READS SQL DATA</span></div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">4</span><span style={{ color: '#0284c7' }}>BEGIN</span></div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">5</span>  <span style={{ color: '#0284c7' }}>DECLARE</span> full_name <span style={{ color: '#0284c7' }}>VARCHAR</span>(100);</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">6</span>  <span style={{ color: '#0284c7' }}>SELECT CONCAT</span>(first_name, <span style={{ color: '#d97706' }}>' '</span>, last_name)</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">7</span>  <span style={{ color: '#0284c7' }}>INTO</span> full_name <span style={{ color: '#0284c7' }}>FROM</span> customer</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">8</span>  <span style={{ color: '#0284c7' }}>WHERE</span> customer_id = p_id;</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">9</span>  <span style={{ color: '#0284c7' }}>RETURN</span> full_name;</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">10</span><span style={{ color: '#0284c7' }}>END</span>;</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">1</span><span style={{ color: 'var(--win-accent)' }}>CREATE FUNCTION</span> get_cust_name(</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">2</span>  p_id <span style={{ color: 'var(--win-accent)' }}>INT</span>) <span style={{ color: 'var(--win-accent)' }}>RETURNS VARCHAR</span>(100)</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">3</span><span style={{ color: 'var(--win-accent)' }}>READS SQL DATA</span></div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">4</span><span style={{ color: 'var(--win-accent)' }}>BEGIN</span></div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">5</span>  <span style={{ color: 'var(--win-accent)' }}>DECLARE</span> full_name <span style={{ color: 'var(--win-accent)' }}>VARCHAR</span>(100);</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">6</span>  <span style={{ color: 'var(--win-accent)' }}>SELECT CONCAT</span>(first_name, <span style={{ color: 'var(--st-warn)' }}>' '</span>, last_name)</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">7</span>  <span style={{ color: 'var(--win-accent)' }}>INTO</span> full_name <span style={{ color: 'var(--win-accent)' }}>FROM</span> customer</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">8</span>  <span style={{ color: 'var(--win-accent)' }}>WHERE</span> customer_id = p_id;</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">9</span>  <span style={{ color: 'var(--win-accent)' }}>RETURN</span> full_name;</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">10</span><span style={{ color: 'var(--win-accent)' }}>END</span>;</div>
               </div>
             </div>
 
@@ -140,15 +140,15 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
                 <span className="whats-new-ai-badge">ChatGPT 4o</span>
               </div>
               <div className="whats-new-code-body">
-                <div className="whats-new-code-line bg-blue"><span className="whats-new-line-num">1</span><span style={{ color: '#0284c7' }}>CREATE FUNCTION</span> get_cust_name(</div>
-                <div className="whats-new-code-line bg-blue"><span className="whats-new-line-num">2</span>  p_id <span style={{ color: '#0284c7' }}>INT</span>) <span style={{ color: '#0284c7' }}>RETURNS VARCHAR</span>(100) <span style={{ color: '#0284c7' }}>AS $$</span></div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">3</span><span style={{ color: '#0284c7' }}>DECLARE</span> v_name <span style={{ color: '#0284c7' }}>VARCHAR</span>(100);</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">4</span><span style={{ color: '#0284c7' }}>BEGIN</span></div>
-                <div className="whats-new-code-line bg-green"><span className="whats-new-line-num">5</span>  <span style={{ color: '#0284c7' }}>SELECT</span> first_name || <span style={{ color: '#d97706' }}>' '</span> || last_name</div>
-                <div className="whats-new-code-line bg-green"><span className="whats-new-line-num">6</span>  <span style={{ color: '#0284c7' }}>INTO</span> v_name <span style={{ color: '#0284c7' }}>FROM</span> customer <span style={{ color: '#0284c7' }}>WHERE</span> id = p_id;</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">7</span>  <span style={{ color: '#0284c7' }}>RETURN</span> v_name;</div>
-                <div className="whats-new-code-line"><span className="whats-new-line-num">8</span><span style={{ color: '#0284c7' }}>END</span>;</div>
-                <div className="whats-new-code-line bg-blue"><span className="whats-new-line-num">9</span><span style={{ color: '#0284c7' }}>$$ LANGUAGE</span> plpgsql;</div>
+                <div className="whats-new-code-line bg-blue"><span className="whats-new-line-num">1</span><span style={{ color: 'var(--win-accent)' }}>CREATE FUNCTION</span> get_cust_name(</div>
+                <div className="whats-new-code-line bg-blue"><span className="whats-new-line-num">2</span>  p_id <span style={{ color: 'var(--win-accent)' }}>INT</span>) <span style={{ color: 'var(--win-accent)' }}>RETURNS VARCHAR</span>(100) <span style={{ color: 'var(--win-accent)' }}>AS $$</span></div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">3</span><span style={{ color: 'var(--win-accent)' }}>DECLARE</span> v_name <span style={{ color: 'var(--win-accent)' }}>VARCHAR</span>(100);</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">4</span><span style={{ color: 'var(--win-accent)' }}>BEGIN</span></div>
+                <div className="whats-new-code-line bg-green"><span className="whats-new-line-num">5</span>  <span style={{ color: 'var(--win-accent)' }}>SELECT</span> first_name || <span style={{ color: 'var(--st-warn)' }}>' '</span> || last_name</div>
+                <div className="whats-new-code-line bg-green"><span className="whats-new-line-num">6</span>  <span style={{ color: 'var(--win-accent)' }}>INTO</span> v_name <span style={{ color: 'var(--win-accent)' }}>FROM</span> customer <span style={{ color: 'var(--win-accent)' }}>WHERE</span> id = p_id;</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">7</span>  <span style={{ color: 'var(--win-accent)' }}>RETURN</span> v_name;</div>
+                <div className="whats-new-code-line"><span className="whats-new-line-num">8</span><span style={{ color: 'var(--win-accent)' }}>END</span>;</div>
+                <div className="whats-new-code-line bg-blue"><span className="whats-new-line-num">9</span><span style={{ color: 'var(--win-accent)' }}>$$ LANGUAGE</span> plpgsql;</div>
               </div>
               <div className="whats-new-editor-actions">
                 <button className="whats-new-action-btn-outline">New Query</button>
@@ -169,7 +169,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
         <div className="whats-new-window-container">
           <div className="whats-new-window-titlebar">
             <div className="whats-new-window-title">
-              <Layers size={13} style={{ color: '#d97706' }} />
+              <Layers size={13} style={{ color: 'var(--st-warn)' }} />
               <span>SQL_3schemas - Model Workspace</span>
             </div>
             <div className="whats-new-window-controls">
@@ -190,10 +190,10 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
 
           <div className="whats-new-toolbar">
             <div className="whats-new-toolbar-left">
-              <button className="whats-new-small-btn"><Copy size={10} style={{ color: '#0284c7' }} /> Save</button>
-              <button className="whats-new-small-btn"><Plus size={10} style={{ color: '#22c55e' }} /> New Model</button>
-              <button className="whats-new-small-btn"><GitBranch size={10} style={{ color: '#0284c7' }} /> New Diagram</button>
-              <button className="whats-new-small-btn"><FileText size={10} style={{ color: '#d97706' }} /> New Data Dictionary</button>
+              <button className="whats-new-small-btn"><Copy size={10} style={{ color: 'var(--win-accent)' }} /> Save</button>
+              <button className="whats-new-small-btn"><Plus size={10} style={{ color: 'var(--st-ok)' }} /> New Model</button>
+              <button className="whats-new-small-btn"><GitBranch size={10} style={{ color: 'var(--win-accent)' }} /> New Diagram</button>
+              <button className="whats-new-small-btn"><FileText size={10} style={{ color: 'var(--st-warn)' }} /> New Data Dictionary</button>
             </div>
           </div>
 
@@ -207,7 +207,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: 'var(--win-bg-card)', borderBottom: '1px solid var(--win-border)', fontSize: '11px' }}>
-            <span style={{ padding: '2px 8px', borderRadius: '4px', background: '#0284c7', color: '#fff', fontWeight: 600 }}>All</span>
+            <span style={{ padding: '2px 8px', borderRadius: '4px', background: 'var(--win-accent)', color: '#fff', fontWeight: 600 }}>All</span>
             <span style={{ padding: '2px 8px', color: 'var(--win-text-secondary)' }}>Model</span>
             <span style={{ padding: '2px 8px', color: 'var(--win-text-secondary)' }}>Diagram</span>
             <span style={{ padding: '2px 8px', color: 'var(--win-text-secondary)' }}>Data Dictionary</span>
@@ -227,16 +227,16 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
               <tbody>
                 <tr style={{ borderBottom: '1px solid var(--win-border)' }}>
                   <td style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                    <Layers size={12} style={{ color: '#22c55e' }} /> Model_1
+                    <Layers size={12} style={{ color: 'var(--st-ok)' }} /> Model_1
                   </td>
                   <td>Model</td>
                   <td>MySQL</td>
                   <td>v5.7 - v9+</td>
                   <td style={{ opacity: 0.7 }}>-</td>
                 </tr>
-                <tr style={{ borderBottom: '1px solid var(--win-border)', background: 'rgba(0,0,0,0.02)' }}>
+                <tr style={{ borderBottom: '1px solid var(--win-border)', background: 'var(--win-bg-subtle)' }}>
                   <td style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                    <Layers size={12} style={{ color: '#22c55e' }} /> Model_2
+                    <Layers size={12} style={{ color: 'var(--st-ok)' }} /> Model_2
                   </td>
                   <td>Model</td>
                   <td>PostgreSQL</td>
@@ -245,16 +245,16 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
                 </tr>
                 <tr style={{ borderBottom: '1px solid var(--win-border)' }}>
                   <td style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                    <Layers size={12} style={{ color: '#22c55e' }} /> Model_3
+                    <Layers size={12} style={{ color: 'var(--st-ok)' }} /> Model_3
                   </td>
                   <td>Model</td>
                   <td>SQLite</td>
                   <td>v3.46+</td>
                   <td style={{ opacity: 0.7 }}>-</td>
                 </tr>
-                <tr style={{ borderBottom: '1px solid var(--win-border)', background: 'rgba(0,0,0,0.02)' }}>
+                <tr style={{ borderBottom: '1px solid var(--win-border)', background: 'var(--win-bg-subtle)' }}>
                   <td style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                    <GitBranch size={12} style={{ color: '#0284c7' }} /> Diagram_1
+                    <GitBranch size={12} style={{ color: 'var(--win-accent)' }} /> Diagram_1
                   </td>
                   <td>Diagram</td>
                   <td>Redis</td>
@@ -263,7 +263,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
                 </tr>
                 <tr style={{ borderBottom: '1px solid var(--win-border)' }}>
                   <td style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 500 }}>
-                    <GitBranch size={12} style={{ color: '#0284c7' }} /> Diagram_2
+                    <GitBranch size={12} style={{ color: 'var(--win-accent)' }} /> Diagram_2
                   </td>
                   <td>Diagram</td>
                   <td>SQL Server</td>
@@ -319,20 +319,20 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
             <div style={{ width: '2px', height: '12px', background: 'var(--win-border-strong, #8b5cf6)' }} />
 
             <div style={{ display: 'flex', gap: '16px' }}>
-              <div className="whats-new-explain-node" style={{ border: '1.5px solid #0284c7' }}>
+              <div className="whats-new-explain-node" style={{ border: '1.5px solid var(--win-accent)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
                   <span style={{ fontWeight: 600, fontSize: '10.5px' }}>Index Scan (idx_orders_cust)</span>
-                  <span style={{ fontSize: '9px', background: '#0284c7', color: '#fff', padding: '1px 5px', borderRadius: '4px' }}>12%</span>
+                  <span style={{ fontSize: '9px', background: 'var(--win-accent)', color: '#fff', padding: '1px 5px', borderRadius: '4px' }}>12%</span>
                 </div>
                 <span style={{ fontSize: '9.5px', opacity: 0.8 }}>Index Cond: customer_id = 42</span>
               </div>
 
-              <div className="whats-new-explain-node" style={{ border: '1.5px solid #ef4444' }}>
+              <div className="whats-new-explain-node" style={{ border: '1.5px solid var(--st-danger)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
                   <span style={{ fontWeight: 600, fontSize: '10.5px' }}>Seq Scan (payments)</span>
-                  <span style={{ fontSize: '9px', background: '#ef4444', color: '#fff', padding: '1px 5px', borderRadius: '4px' }}>36% (Bottleneck)</span>
+                  <span style={{ fontSize: '9px', background: 'var(--st-danger)', color: '#fff', padding: '1px 5px', borderRadius: '4px' }}>36% (Bottleneck)</span>
                 </div>
-                <span style={{ fontSize: '9.5px', color: '#ef4444' }}>Filter: (amount &gt; 500) • 45k rows</span>
+                <span style={{ fontSize: '9.5px', color: 'var(--st-danger)' }}>Filter: (amount &gt; 500) • 45k rows</span>
               </div>
             </div>
           </div>
@@ -349,7 +349,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
         <div className="whats-new-window-container">
           <div className="whats-new-window-titlebar">
             <div className="whats-new-window-title">
-              <Wand2 size={13} style={{ color: '#10b981' }} />
+              <Wand2 size={13} style={{ color: 'var(--st-ok)' }} />
               <span>Data Generator Tool</span>
             </div>
             <div className="whats-new-window-controls">
@@ -360,7 +360,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
           </div>
 
           <div className="whats-new-toolbar">
-            <span style={{ fontWeight: 600, fontSize: '11px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <span style={{ fontWeight: 600, fontSize: '11px', color: 'var(--st-ok)', display: 'flex', alignItems: 'center', gap: '4px' }}>
               <Wand2 size={12} /> Target Table: public.users
             </span>
             <span style={{ fontSize: '9.5px', opacity: 0.7 }}>Target Rows: 50,000</span>
@@ -369,22 +369,22 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
           <div style={{ flex: 1, padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px', background: 'var(--win-bg-subtle, #f5f6f8)' }}>
             <div className="whats-new-data-row-item">
               <span style={{ fontWeight: 600, width: '120px' }}>user_id (PK)</span>
-              <span style={{ fontSize: '9.5px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', padding: '1px 6px', borderRadius: '4px', fontWeight: 500 }}>Auto Increment</span>
+              <span style={{ fontSize: '9.5px', background: 'rgba(16, 185, 129, 0.15)', color: 'var(--st-ok)', padding: '1px 6px', borderRadius: '4px', fontWeight: 500 }}>Auto Increment</span>
               <span style={{ fontSize: '9.5px', opacity: 0.7 }}>Start: 10001, Step: 1</span>
             </div>
             <div className="whats-new-data-row-item">
               <span style={{ fontWeight: 600, width: '120px' }}>full_name</span>
-              <span style={{ fontSize: '9.5px', background: 'rgba(2, 132, 199, 0.15)', color: '#0284c7', padding: '1px 6px', borderRadius: '4px', fontWeight: 500 }}>Faker: Person.fullName</span>
+              <span style={{ fontSize: '9.5px', background: 'var(--win-accent-subtle)', color: 'var(--win-accent)', padding: '1px 6px', borderRadius: '4px', fontWeight: 500 }}>Faker: Person.fullName</span>
               <span style={{ fontSize: '9.5px', opacity: 0.7 }}>Locale: vi_VN</span>
             </div>
             <div className="whats-new-data-row-item">
               <span style={{ fontWeight: 600, width: '120px' }}>email</span>
-              <span style={{ fontSize: '9.5px', background: 'rgba(2, 132, 199, 0.15)', color: '#0284c7', padding: '1px 6px', borderRadius: '4px', fontWeight: 500 }}>Faker: Internet.email</span>
+              <span style={{ fontSize: '9.5px', background: 'var(--win-accent-subtle)', color: 'var(--win-accent)', padding: '1px 6px', borderRadius: '4px', fontWeight: 500 }}>Faker: Internet.email</span>
               <span style={{ fontSize: '9.5px', opacity: 0.7 }}>Domain: @company.com</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto', background: 'var(--win-bg-card)', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--win-border)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Cpu size={13} style={{ color: '#10b981' }} />
+                <Cpu size={13} style={{ color: 'var(--st-ok)' }} />
                 <span style={{ fontSize: '10.5px', fontWeight: 500 }}>Batch Speed: ~12,500 rows/sec</span>
               </div>
               <button className="whats-new-action-btn-primary">Start Generating Data</button>
@@ -403,7 +403,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
         <div className="whats-new-window-container">
           <div className="whats-new-window-titlebar">
             <div className="whats-new-window-title">
-              <Layers size={13} style={{ color: '#d97706' }} />
+              <Layers size={13} style={{ color: 'var(--st-warn)' }} />
               <span>Schema Compare & Synchronization</span>
             </div>
             <div className="whats-new-window-controls">
@@ -414,10 +414,10 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
           </div>
 
           <div className="whats-new-toolbar">
-            <span style={{ fontWeight: 600, fontSize: '11px', color: '#d97706', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <span style={{ fontWeight: 600, fontSize: '11px', color: 'var(--st-warn)', display: 'flex', alignItems: 'center', gap: '4px' }}>
               <Layers size={12} /> Staging_DB vs Production_DB
             </span>
-            <span style={{ fontSize: '9.5px', color: '#d97706', background: 'rgba(217, 119, 6, 0.15)', padding: '1px 6px', borderRadius: '4px' }}>
+            <span style={{ fontSize: '9.5px', color: 'var(--st-warn)', background: 'rgba(217, 119, 6, 0.15)', padding: '1px 6px', borderRadius: '4px' }}>
               3 Differences Found
             </span>
           </div>
@@ -425,21 +425,21 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
           <div style={{ flex: 1, padding: '8px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', background: 'var(--win-bg-subtle, #f5f6f8)' }}>
             <div className="whats-new-compare-col">
               <div className="whats-new-compare-header">Source Differences</div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 5px', fontSize: '9.5px', background: 'rgba(34, 197, 94, 0.12)', borderLeft: '3px solid #22c55e', borderRadius: '2px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 5px', fontSize: '9.5px', background: 'rgba(34, 197, 94, 0.12)', borderLeft: '3px solid var(--st-ok)', borderRadius: '2px' }}>
                 <span>+ TABLE: user_sessions</span>
-                <span style={{ fontSize: '8.5px', background: '#22c55e', color: '#fff', padding: '1px 4px', borderRadius: '3px' }}>NEW</span>
+                <span style={{ fontSize: '8.5px', background: 'var(--st-ok)', color: '#fff', padding: '1px 4px', borderRadius: '3px' }}>NEW</span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 5px', fontSize: '9.5px', background: 'rgba(217, 119, 6, 0.12)', borderLeft: '3px solid #d97706', borderRadius: '2px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 5px', fontSize: '9.5px', background: 'rgba(217, 119, 6, 0.12)', borderLeft: '3px solid var(--st-warn)', borderRadius: '2px' }}>
                 <span>~ COLUMN: orders.status</span>
-                <span style={{ fontSize: '8.5px', background: '#d97706', color: '#fff', padding: '1px 4px', borderRadius: '3px' }}>MODIFIED</span>
+                <span style={{ fontSize: '8.5px', background: 'var(--st-warn)', color: '#fff', padding: '1px 4px', borderRadius: '3px' }}>MODIFIED</span>
               </div>
             </div>
             <div className="whats-new-compare-col">
               <div className="whats-new-compare-header">Generated Migration DDL</div>
               <div className="whats-new-code-body">
-                <div style={{ color: '#22c55e' }}>-- Add new table user_sessions</div>
+                <div style={{ color: 'var(--st-ok)' }}>-- Add new table user_sessions</div>
                 <div>CREATE TABLE user_sessions (...);</div>
-                <div style={{ color: '#d97706', marginTop: '4px' }}>-- Modify status column</div>
+                <div style={{ color: 'var(--st-warn)', marginTop: '4px' }}>-- Modify status column</div>
                 <div>ALTER TABLE orders ALTER COLUMN status TYPE VARCHAR(50);</div>
               </div>
             </div>
@@ -454,7 +454,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
   return (
     <Modal
       title={t('whatsNew.modalHeader', { defaultValue: "What's New in TableGrid 17" })}
-      icon={<Sparkles size={16} style={{ color: '#0284c7' }} />}
+      icon={<Sparkles size={16} style={{ color: 'var(--win-accent)' }} />}
       onClose={handleClose}
       width="780px"
       height="560px"

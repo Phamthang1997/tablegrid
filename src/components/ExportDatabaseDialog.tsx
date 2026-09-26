@@ -451,7 +451,7 @@ export const ExportDatabaseDialog: React.FC<ExportDatabaseDialogProps> = ({ conn
             <div style={{
               fontSize: '10.5px',
               lineHeight: 1.5,
-              color: 'var(--win-warning, #d68a00)',
+              color: 'var(--st-warn, #d68a00)',
               background: 'var(--win-bg-window)',
               border: '1px solid var(--win-border)',
               borderRadius: '4px',
@@ -531,7 +531,7 @@ export const ExportDatabaseDialog: React.FC<ExportDatabaseDialogProps> = ({ conn
   const footerContent = (
     <>
       {error ? (
-        <span style={{ marginRight: 'auto', fontSize: '11px', color: 'var(--win-error, #ff6b6b)' }}>
+        <span style={{ marginRight: 'auto', fontSize: '11px', color: 'var(--st-danger, #ff6b6b)' }}>
           {error}
         </span>
       ) : null}

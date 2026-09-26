@@ -215,7 +215,7 @@ export const TxControl: React.FC<TxControlProps> = ({ dbType, connected, connId 
                 height: '7px',
                 borderRadius: '50%',
                 marginRight: '6px',
-                background: status.aborted ? 'var(--win-danger, #ef4444)' : '#f59e0b',
+                background: status.aborted ? 'var(--st-danger, #ef4444)' : '#f59e0b',
                 flexShrink: 0,
               }}
             />
@@ -319,7 +319,7 @@ export const TxControl: React.FC<TxControlProps> = ({ dbType, connected, connId 
               }}
             >
               {pendingList === null ? (
-                <div style={{ color: 'var(--win-danger, #ef4444)', fontFamily: 'var(--win-font-sans)', lineHeight: 1.5 }}>
+                <div style={{ color: 'var(--st-danger, #ef4444)', fontFamily: 'var(--win-font-sans)', lineHeight: 1.5 }}>
                   {t('tx.staleBackend')}
                 </div>
               ) : pendingList.length === 0 ? (
@@ -389,7 +389,7 @@ export const TxControl: React.FC<TxControlProps> = ({ dbType, connected, connId 
                 }}
               >
                 {status.aborted && (
-                  <div style={{ display: 'flex', gap: '6px', color: 'var(--win-danger, #ef4444)' }}>
+                  <div style={{ display: 'flex', gap: '6px', color: 'var(--st-danger, #ef4444)' }}>
                     <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
                     <span>{t('tx.abortedHint')}</span>
                   </div>
@@ -398,7 +398,7 @@ export const TxControl: React.FC<TxControlProps> = ({ dbType, connected, connId 
                   <div style={{ color: 'var(--win-text-secondary)' }}>{t('tx.implicitNotice')}</div>
                 )}
                 {isLong && (
-                  <div style={{ color: 'var(--win-danger, #ef4444)' }}>{t('tx.longOpen', { n: elapsed })}</div>
+                  <div style={{ color: 'var(--st-danger, #ef4444)' }}>{t('tx.longOpen', { n: elapsed })}</div>
                 )}
                 {status.sqlTruncated && (
                   <div style={{ color: 'var(--win-text-secondary)' }}>
@@ -468,7 +468,7 @@ export const TxControl: React.FC<TxControlProps> = ({ dbType, connected, connId 
                   borderTop: '1px solid var(--win-border)',
                   fontSize: '11.5px',
                   lineHeight: 1.45,
-                  color: 'var(--win-danger, #ef4444)',
+                  color: 'var(--st-danger, #ef4444)',
                 }}
               >
                 {error}
@@ -510,7 +510,7 @@ export const TxControl: React.FC<TxControlProps> = ({ dbType, connected, connId 
               {t('tx.closeMessage', { n: status.statements })}
             </div>
             {error && (
-              <div style={{ fontSize: '11px', lineHeight: 1.45, color: 'var(--win-danger, #ef4444)' }}>{error}</div>
+              <div style={{ fontSize: '11px', lineHeight: 1.45, color: 'var(--st-danger, #ef4444)' }}>{error}</div>
             )}
           </ModalBody>
           <ModalFooter>

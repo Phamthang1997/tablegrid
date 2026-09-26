@@ -536,7 +536,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
             borderRadius: '4px',
             border: '1px solid var(--win-border)',
             background: 'var(--win-bg-card)',
-            color: '#10b981',
+            color: 'var(--st-ok)',
             cursor: 'pointer',
             flexShrink: 0,
           }}
@@ -586,11 +586,11 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
                   height: '28px',
                   borderRadius: '4px',
                   border: '1px solid #93c5fd',
-                  background: '#eff6ff',
+                  background: 'var(--win-accent-subtle)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: '#10b981',
+                  color: 'var(--st-ok)',
                   fontWeight: 700,
                   fontSize: '11px',
                   flexShrink: 0,
@@ -670,7 +670,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
                     style={{
                       background: 'transparent',
                       border: 'none',
-                      color: '#ef4444',
+                      color: 'var(--st-danger)',
                       cursor: 'pointer',
                       padding: '2px',
                     }}

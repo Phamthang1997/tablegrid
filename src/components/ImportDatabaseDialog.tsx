@@ -910,7 +910,7 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
       {progress ? (
         <ProgressBar progress={progress} />
       ) : error ? (
-        <span style={{ marginRight: 'auto', fontSize: '11px', color: 'var(--win-error, #ff6b6b)' }}>
+        <span style={{ marginRight: 'auto', fontSize: '11px', color: 'var(--st-danger, #ff6b6b)' }}>
           {error}
         </span>
       ) : null}

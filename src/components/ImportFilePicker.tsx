@@ -209,7 +209,7 @@ export const ImportFilePicker: React.FC<ImportFilePickerProps> = ({
           {error && (
             <div style={{
               fontSize: '11px',
-              color: 'var(--win-error, #ff6b6b)',
+              color: 'var(--st-danger, #ff6b6b)',
               background: 'rgba(255,107,107,0.08)',
               border: '1px solid rgba(255,107,107,0.35)',
               borderRadius: '4px',

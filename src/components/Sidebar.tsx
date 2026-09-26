@@ -2250,7 +2250,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, fontSize: '12px', color: 'var(--win-text-primary)' }}>
-                        <FileCode size={13} color="var(--win-accent)" />
+                        <FileCode size={13} style={{ color: 'var(--win-accent)' }} />
                         <span>{sq.name}</span>
                       </div>
                       <button
@@ -2457,7 +2457,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                         deleteHistoryEntry(item.id);
                                         setHistoryList(loadHistory());
                                       }}
-                                      style={{ color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '2px' }}
+                                      style={{ color: 'var(--st-danger)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '2px' }}
                                       title="Delete history entry"
                                     >
                                       Delete
@@ -2522,7 +2522,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       >
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, fontSize: '12px', color: 'var(--win-text-primary)' }}>
-                            <FileCode size={13} color="var(--win-accent)" />
+                            <FileCode size={13} style={{ color: 'var(--win-accent)' }} />
                             <span>{sq.name}</span>
                           </div>
                           <button

@@ -62,13 +62,13 @@ const LoadingSpinner: React.FC<{ size?: number; style?: React.CSSProperties }> =
       cx="12"
       cy="12"
       r="10"
-      stroke="var(--win-border-strong, #383b44)"
+      style={{ stroke: 'var(--win-border-strong)' }}
       strokeWidth="3"
       opacity="0.2"
     />
     <path
       d="M12 2C6.47715 2 2 6.47715 2 12C2 13.5683 2.36155 15.0506 3.00769 16.3718"
-      stroke="var(--win-accent)"
+      style={{ stroke: 'var(--win-accent)' }}
       strokeWidth="3"
       strokeLinecap="round"
     />

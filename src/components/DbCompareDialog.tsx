@@ -199,7 +199,7 @@ const DiffProgressBar: React.FC<{
         )}
         {pIdentical > 0 && (
           <div
-            style={{ width: `${pIdentical}%`, background: 'rgba(255, 255, 255, 0.15)' }}
+            style={{ width: `${pIdentical}%`, background: 'var(--win-bg-active)' }}
             title={t('compare.summaryIdentical', { n: summary.tablesIdentical })}
           />
         )}
@@ -722,9 +722,9 @@ export const DbCompareDialog: React.FC<DbCompareDialogProps> = ({
 
                   {/* Operation Icon (Navicat style) */}
                   <span style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-                    {tb.status === 'onlySource' && <span title="Create Table"><Plus size={14} style={{ color: '#10b981' }} /></span>}
-                    {tb.status === 'onlyTarget' && <span title="Drop Table"><X size={14} style={{ color: '#ef4444' }} /></span>}
-                    {tb.status === 'different' && <span title="Modify Table"><ArrowRight size={14} style={{ color: '#f59e0b' }} /></span>}
+                    {tb.status === 'onlySource' && <span title="Create Table"><Plus size={14} style={{ color: 'var(--st-ok)' }} /></span>}
+                    {tb.status === 'onlyTarget' && <span title="Drop Table"><X size={14} style={{ color: 'var(--st-danger)' }} /></span>}
+                    {tb.status === 'different' && <span title="Modify Table"><ArrowRight size={14} style={{ color: 'var(--st-warn)' }} /></span>}
                     {tb.status === 'identical' && <span style={{ color: 'var(--win-text-disabled)', fontSize: '12px' }}>=</span>}
                   </span>
 
@@ -752,7 +752,7 @@ export const DbCompareDialog: React.FC<DbCompareDialogProps> = ({
                           gap: '6px',
                           padding: '4px 12px 4px 44px',
                           borderBottom: '1px solid var(--win-border)',
-                          background: 'rgba(0,0,0,0.03)',
+                          background: 'var(--win-bg-subtle)',
                           fontSize: '10.5px',
                           color: 'var(--win-text-secondary)',
                         }}
@@ -765,11 +765,11 @@ export const DbCompareDialog: React.FC<DbCompareDialogProps> = ({
                         <span style={{ ...mono }}>{c.source ? `${c.name} (${c.source.type})` : '—'}</span>
                         <span style={{ display: 'flex', justifyContent: 'center' }}>
                           {c.status === 'onlySource' ? (
-                            <Plus size={12} style={{ color: '#10b981' }} />
+                            <Plus size={12} style={{ color: 'var(--st-ok)' }} />
                           ) : c.status === 'onlyTarget' ? (
-                            <X size={12} style={{ color: '#ef4444' }} />
+                            <X size={12} style={{ color: 'var(--st-danger)' }} />
                           ) : (
-                            <span style={{ color: '#f59e0b' }}>~</span>
+                            <span style={{ color: 'var(--st-warn)' }}>~</span>
                           )}
                         </span>
                         <span style={{ ...mono }}>{c.target ? `${c.name} (${c.target.type})` : '—'}</span>
@@ -786,7 +786,7 @@ export const DbCompareDialog: React.FC<DbCompareDialogProps> = ({
                           gap: '6px',
                           padding: '4px 12px 4px 44px',
                           borderBottom: '1px solid var(--win-border)',
-                          background: 'rgba(0,0,0,0.03)',
+                          background: 'var(--win-bg-subtle)',
                           fontSize: '10.5px',
                           color: 'var(--win-text-secondary)',
                         }}
@@ -798,7 +798,7 @@ export const DbCompareDialog: React.FC<DbCompareDialogProps> = ({
                         <Hash size={12} style={{ color: 'var(--win-text-disabled)' }} />
                         <span style={{ ...mono }}>{idx.source ? `${idx.name}` : '—'}</span>
                         <span style={{ display: 'flex', justifyContent: 'center' }}>
-                          {idx.status === 'onlySource' ? <Plus size={12} style={{ color: '#10b981' }} /> : <X size={12} style={{ color: '#ef4444' }} />}
+                          {idx.status === 'onlySource' ? <Plus size={12} style={{ color: 'var(--st-ok)' }} /> : <X size={12} style={{ color: 'var(--st-danger)' }} />}
                         </span>
                         <span style={{ ...mono }}>{idx.target ? `${idx.name}` : '—'}</span>
                       </div>
@@ -889,9 +889,9 @@ export const DbCompareDialog: React.FC<DbCompareDialogProps> = ({
               <span>Target Object (Đích B)</span>
             </div>
 
-            {renderTreeGroup('different', 'Objects to be modified', <ArrowRight size={14} style={{ color: '#f59e0b' }} />, groupedTables.different)}
-            {renderTreeGroup('onlySource', 'Objects to be created (Only in Source)', <Plus size={14} style={{ color: '#10b981' }} />, groupedTables.onlySource)}
-            {renderTreeGroup('onlyTarget', 'Objects to be deleted (Only in Target)', <X size={14} style={{ color: '#ef4444' }} />, groupedTables.onlyTarget)}
+            {renderTreeGroup('different', 'Objects to be modified', <ArrowRight size={14} style={{ color: 'var(--st-warn)' }} />, groupedTables.different)}
+            {renderTreeGroup('onlySource', 'Objects to be created (Only in Source)', <Plus size={14} style={{ color: 'var(--st-ok)' }} />, groupedTables.onlySource)}
+            {renderTreeGroup('onlyTarget', 'Objects to be deleted (Only in Target)', <X size={14} style={{ color: 'var(--st-danger)' }} />, groupedTables.onlyTarget)}
             {renderTreeGroup('identical', 'Identical objects', <CheckCircle2 size={14} style={{ color: 'var(--win-text-disabled)' }} />, groupedTables.identical)}
           </div>
 
@@ -1045,9 +1045,9 @@ export const DbCompareDialog: React.FC<DbCompareDialogProps> = ({
 
                     {/* Operation Icon */}
                     <span style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-                      {row.status === 'onlySource' && <span title="Only in Source"><Plus size={14} style={{ color: '#10b981' }} /></span>}
-                      {row.status === 'onlyTarget' && <span title="Only in Target"><X size={14} style={{ color: '#ef4444' }} /></span>}
-                      {row.status === 'differentCount' && <span title="Different Count"><ArrowRight size={14} style={{ color: '#f59e0b' }} /></span>}
+                      {row.status === 'onlySource' && <span title="Only in Source"><Plus size={14} style={{ color: 'var(--st-ok)' }} /></span>}
+                      {row.status === 'onlyTarget' && <span title="Only in Target"><X size={14} style={{ color: 'var(--st-danger)' }} /></span>}
+                      {row.status === 'differentCount' && <span title="Different Count"><ArrowRight size={14} style={{ color: 'var(--st-warn)' }} /></span>}
                       {row.status === 'sameCount' && <span style={{ color: 'var(--win-text-disabled)', fontSize: '12px' }}>=</span>}
                     </span>
 

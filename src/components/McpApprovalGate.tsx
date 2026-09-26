@@ -89,7 +89,7 @@ export const McpApprovalGate: React.FC = () => {
     }
   };
 
-  const danger = 'var(--win-danger, #ef4444)';
+  const danger = 'var(--st-danger, #ef4444)';
 
   return (
     <Modal

@@ -29,10 +29,10 @@ export const LazyModalFallback: React.FC = () => (
     }}
   >
     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" className="loading-spinner">
-      <circle cx="12" cy="12" r="10" stroke="var(--win-border-strong, #383b44)" strokeWidth="3" opacity="0.2" />
+      <circle cx="12" cy="12" r="10" style={{ stroke: 'var(--win-border-strong)' }} strokeWidth="3" opacity="0.2" />
       <path
         d="M12 2C6.47715 2 2 6.47715 2 12C2 13.5683 2.36155 15.0506 3.00769 16.3718"
-        stroke="var(--win-accent)"
+        style={{ stroke: 'var(--win-accent)' }}
         strokeWidth="3"
         strokeLinecap="round"
       />
@@ -47,14 +47,14 @@ export const LazyEditorFallback: React.FC = () => (
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: 'var(--win-bg-editor, var(--win-bg))',
+      background: 'var(--win-bg-window)',
     }}
   >
     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" className="loading-spinner">
-      <circle cx="12" cy="12" r="10" stroke="var(--win-border-strong, #383b44)" strokeWidth="3" opacity="0.2" />
+      <circle cx="12" cy="12" r="10" style={{ stroke: 'var(--win-border-strong)' }} strokeWidth="3" opacity="0.2" />
       <path
         d="M12 2C6.47715 2 2 6.47715 2 12C2 13.5683 2.36155 15.0506 3.00769 16.3718"
-        stroke="var(--win-accent)"
+        style={{ stroke: 'var(--win-accent)' }}
         strokeWidth="3"
         strokeLinecap="round"
       />
