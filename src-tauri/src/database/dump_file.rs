@@ -591,6 +591,24 @@ mod tests {
         }
     }
 
+    /// A CSV-format COPY needs nothing of its own: its data ends at a lone `\.` line exactly as
+    /// psql reads it (a writer has to quote a value that is `\.`), and the CSV itself — quoted
+    /// fields, a newline inside one — is parsed by the server from the bytes passed through.
+    #[test]
+    fn a_csv_copy_block_passes_through_whole() {
+        let sql = "COPY t (a, b) FROM stdin WITH (FORMAT csv);\n1,\"two\nlines, \"\"quoted\"\"\"\n2,\"\\.\"\n\\.\nSELECT 1;\n";
+        let got = merged(items_of(sql.as_bytes()));
+        assert_eq!(
+            got,
+            vec![
+                DumpItem::CopyStart("COPY t (a, b) FROM stdin WITH (FORMAT csv)".into()),
+                DumpItem::CopyData(b"1,\"two\nlines, \"\"quoted\"\"\"\n2,\"\\.\"\n".to_vec()),
+                DumpItem::CopyEnd,
+                DumpItem::Stmt("SELECT 1".into()),
+            ]
+        );
+    }
+
     #[test]
     fn only_copy_from_stdin_is_a_copy_block() {
         assert!(is_copy_from_stdin("COPY public.t (a, b) FROM stdin"));
