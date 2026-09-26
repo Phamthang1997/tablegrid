@@ -121,7 +121,7 @@ export const QueryParamsModal: React.FC<QueryParamsModalProps> = ({
           {params.map((p, idx) => (
             <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
               <label style={{ fontSize: '11.5px', fontWeight: 600, color: 'var(--win-text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <code style={{ background: 'rgba(255,255,255,0.08)', padding: '1px 5px', borderRadius: '3px', fontFamily: 'var(--win-font-mono)', color: 'var(--win-accent)' }}>
+                <code style={{ background: 'var(--win-bg-hover)', padding: '1px 5px', borderRadius: '3px', fontFamily: 'var(--win-font-mono)', color: 'var(--win-accent)' }}>
                   {paramLabel(p)}
                 </code>
               </label>

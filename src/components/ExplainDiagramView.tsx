@@ -1069,7 +1069,7 @@ export const ExplainDiagramView: React.FC<ExplainDiagramViewProps> = ({
                   color: 'var(--win-text-secondary)',
                   marginTop: '3px',
                   wordBreak: 'break-word',
-                  background: 'rgba(0,0,0,0.1)',
+                  background: 'var(--win-bg-code)',
                   padding: '4px 6px',
                   borderRadius: '4px'
                 }}>
@@ -1255,7 +1255,7 @@ export const ExplainDiagramView: React.FC<ExplainDiagramViewProps> = ({
             {/* Index Cond is evaluated inside the index; Filter runs after the heap fetch. Showing
                 them as one field hid which half of the predicate the index actually handles. */}
             {selectedNode.indexCond && (
-              <div style={{ background: 'rgba(0,0,0,0.15)', padding: '8px 10px', borderRadius: '4px', border: '1px solid var(--win-border)' }}>
+              <div style={{ background: 'var(--win-bg-code)', padding: '8px 10px', borderRadius: '4px', border: '1px solid var(--win-border)' }}>
                 <div style={{ fontSize: '10.5px', color: 'var(--win-text-disabled)', display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px' }}>
                   <KeyRound size={12} />
                   <span>{t('explain.nodeIndexCond')}</span>
@@ -1267,7 +1267,7 @@ export const ExplainDiagramView: React.FC<ExplainDiagramViewProps> = ({
             )}
 
             {selectedNode.filter && (
-              <div style={{ background: 'rgba(0,0,0,0.15)', padding: '8px 10px', borderRadius: '4px', border: '1px solid var(--win-border)' }}>
+              <div style={{ background: 'var(--win-bg-code)', padding: '8px 10px', borderRadius: '4px', border: '1px solid var(--win-border)' }}>
                 <div style={{ fontSize: '10.5px', color: 'var(--win-text-disabled)', display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px' }}>
                   <Filter size={12} />
                   <span>{t('explain.nodeFilter')}</span>

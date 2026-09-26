@@ -238,7 +238,7 @@ export const ConnectionInfoPopover: React.FC<ConnectionInfoPopoverProps> = ({
         </div>
 
         {reconnectError !== null && (
-          <div style={{ fontSize: '11px', color: 'var(--st-err, #ef4444)' }}>
+          <div style={{ fontSize: '11px', color: 'var(--st-danger, #ef4444)' }}>
             {t('connInfo.reconnectFailed', { message: reconnectError })}
           </div>
         )}

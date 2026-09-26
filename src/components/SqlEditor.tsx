@@ -71,13 +71,13 @@ const LoadingSpinner: React.FC<{ size?: number; style?: React.CSSProperties }> =
       cx="12"
       cy="12"
       r="10"
-      stroke="var(--win-border-strong, #383b44)"
+      style={{ stroke: 'var(--win-border-strong)' }}
       strokeWidth="3"
       opacity="0.2"
     />
     <path
       d="M12 2C6.47715 2 2 6.47715 2 12C2 13.5683 2.36155 15.0506 3.00769 16.3718"
-      stroke="var(--win-accent)"
+      style={{ stroke: 'var(--win-accent)' }}
       strokeWidth="3"
       strokeLinecap="round"
     />
@@ -4018,7 +4018,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                 </button>
               </div>
             </div>
-            <div style={{ display: 'flex', background: 'rgba(0,0,0,0.02)', width: '100%' }}>
+            <div style={{ display: 'flex', background: 'var(--win-bg-subtle)', width: '100%' }}>
               <button
                 style={{
                   flex: 1,
@@ -4218,7 +4218,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
             )}
           </div>
           {historyTab === 'history' && historyCount > 0 && (
-            <div style={{ padding: '8px', borderTop: '1px solid var(--win-border)', display: 'flex', justifyContent: 'flex-end', background: 'rgba(0, 0, 0, 0.02)' }}>
+            <div style={{ padding: '8px', borderTop: '1px solid var(--win-border)', display: 'flex', justifyContent: 'flex-end', background: 'var(--win-bg-subtle)' }}>
               <button
                 className="btn btn-secondary"
                 onClick={handleClearHistory}

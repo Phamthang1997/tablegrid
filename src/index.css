@@ -95,6 +95,18 @@
 
   --win-border: rgba(255, 255, 255, 0.12);
   --win-border-strong: rgba(255, 255, 255, 0.22);
+  --win-border-light: rgba(255, 255, 255, 0.08);
+
+  /* Surfaces a component needs and the palette above did not name. Every one of these was
+     already referenced — `var(--win-bg-input)` forty times — while nothing defined it, so a
+     reference without a fallback was an invalid declaration (the inputs had NO background) and
+     one with a fallback was that hardcoded colour in both themes. `themeTokens.test.ts` now
+     fails on a `var()` naming a token no stylesheet defines. */
+  --win-bg-input: rgba(10, 12, 16, 0.55);
+  --win-bg-input-focus: rgba(10, 12, 16, 0.75);
+  --win-bg-subtle: rgba(255, 255, 255, 0.04);
+  --win-bg-code: rgba(0, 0, 0, 0.25);
+  --win-accent-subtle: rgba(96, 165, 250, 0.15);
 
   /* The bundled Inter and JetBrains Mono carry no CJK glyphs, so Japanese text
      falls through to the platform CJK faces listed after them. These are OS
@@ -135,6 +147,13 @@
 
   --win-border: rgba(0, 0, 0, 0.10);
   --win-border-strong: rgba(0, 0, 0, 0.18);
+  --win-border-light: rgba(0, 0, 0, 0.06);
+
+  --win-bg-input: rgba(255, 255, 255, 0.85);
+  --win-bg-input-focus: rgba(255, 255, 255, 0.95);
+  --win-bg-subtle: rgba(0, 0, 0, 0.03);
+  --win-bg-code: rgba(0, 0, 0, 0.04);
+  --win-accent-subtle: rgba(37, 99, 235, 0.10);
 
   --win-bg-btn-secondary: #ffffff;
   --win-border-btn-secondary: transparent;
@@ -912,7 +931,7 @@ input[type="number"],
 input[type="password"],
 select,
 textarea {
-  background: rgba(10, 12, 16, 0.55);
+  background: var(--win-bg-input);
   border: 1px solid var(--win-border-strong);
   border-radius: 6px;
   padding: 6px 10px;
@@ -936,7 +955,7 @@ select:focus,
 textarea:focus {
   border-color: var(--win-border-strong);
   box-shadow: none;
-  background: rgba(10, 12, 16, 0.75);
+  background: var(--win-bg-input-focus);
   outline: none;
 }
 
@@ -946,7 +965,7 @@ textarea:focus {
 [data-theme='light'] input[type="password"],
 [data-theme='light'] select,
 [data-theme='light'] textarea {
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--win-bg-input);
   border: 0 solid rgba(0, 0, 0, 0.15);
   color: #0f172a;
 }
@@ -1846,7 +1865,7 @@ select.form-input {
 /* Temporary tables are the session's, not the database's — the amber matches the "TEMP" badge in
    the Properties tab so the two read as one idea. */
 .sidebar-group-icon-temp {
-  color: var(--win-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 /* Icon buttons in a sidebar group heading (create / reload).
@@ -5541,7 +5560,7 @@ select.form-input {
 }
 
 .snippet-transfer-msg.is-error {
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
 }
 
 /* The file pickers behind "Open .sql file…" and the Saved import, opened by .click(). */
@@ -14953,7 +14972,7 @@ input.rename-input {
 
 .doc-params-table td {
   padding: 8px 12px;
-  border-bottom: 1px solid var(--win-border-subtle, rgba(255, 255, 255, 0.05));
+  border-bottom: 1px solid var(--win-border-light, rgba(255, 255, 255, 0.05));
   vertical-align: top;
 }
 
@@ -15402,7 +15421,7 @@ input.rename-input {
 .jobs-row-error {
   font-size: 11px;
   line-height: 1.45;
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
   word-break: break-word;
 }
 
@@ -15413,7 +15432,7 @@ input.rename-input {
 }
 
 .jobs-row-warn {
-  color: var(--win-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 .jobs-row-actions {
@@ -15446,7 +15465,7 @@ input.rename-input {
   padding: 0 4px;
   box-sizing: border-box;
   border-radius: 8px;
-  background: var(--win-danger, #ef4444);
+  background: var(--st-danger, #ef4444);
   color: #fff;
   font-size: 9.5px;
   font-weight: 700;
@@ -15461,7 +15480,7 @@ input.rename-input {
 }
 
 .jobs-icon-error {
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
 }
 
 .jobs-icon-muted {
@@ -16007,8 +16026,8 @@ input.rename-input {
 }
 
 .redis-toast.ok {
-  background: color-mix(in srgb, var(--st-success, #10b981) 12%, transparent);
-  color: var(--st-success, #10b981);
+  background: color-mix(in srgb, var(--st-ok, #10b981) 12%, transparent);
+  color: var(--st-ok, #10b981);
 }
 
 .redis-toast.err {
@@ -16193,8 +16212,8 @@ input.rename-input {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  background: color-mix(in srgb, var(--st-warning, #f59e0b) 12%, transparent);
-  color: var(--st-warning, #f59e0b);
+  background: color-mix(in srgb, var(--st-warn, #f59e0b) 12%, transparent);
+  color: var(--st-warn, #f59e0b);
 }
 
 .redis-keylist-cap-btn {
@@ -16515,7 +16534,7 @@ input.rename-input {
   align-items: center;
   gap: 4px;
   font-size: 10px;
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 .redis-value-btn {
@@ -16564,8 +16583,8 @@ input.rename-input {
 .redis-value-notice {
   padding: 6px 8px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--st-warning, #f59e0b) 12%, transparent);
-  color: var(--st-warning, #f59e0b);
+  background: color-mix(in srgb, var(--st-warn, #f59e0b) 12%, transparent);
+  color: var(--st-warn, #f59e0b);
   font-size: 10px;
   display: flex;
   align-items: center;
@@ -16621,7 +16640,7 @@ input.rename-input {
 }
 
 .redis-unsupported-icon {
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
   flex-shrink: 0;
 }
 
@@ -17096,7 +17115,7 @@ input.rename-input {
 }
 
 .redis-syntax-cost {
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
   font-size: 9px;
 }
 
@@ -17130,7 +17149,7 @@ input.rename-input {
 }
 
 .redis-log-binary {
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 /* ---- Stat tiles (Dashboard, Analysis) ---- */
@@ -17261,7 +17280,7 @@ input.rename-input {
   align-items: flex-start;
   gap: 6px;
   font-size: 10px;
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
   line-height: 1.5;
 }
 
@@ -17289,7 +17308,7 @@ input.rename-input {
 }
 
 .redis-dialog-status.cancelled {
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 /* ---- The keyspace export/import dialog (RedisTransferDialog) ---- */
@@ -18301,7 +18320,7 @@ input.rename-input {
 
 .mcp-tab-badge.warn,
 .mcp-tab-btn.active .mcp-tab-badge.warn {
-  background: var(--win-danger, #ef4444);
+  background: var(--st-danger, #ef4444);
   color: #fff;
 }
 
@@ -18396,7 +18415,7 @@ input.rename-input {
 }
 
 .mcp-port.invalid {
-  border-color: var(--win-danger, #ef4444);
+  border-color: var(--st-danger, #ef4444);
 }
 
 .mcp-endpoint {
@@ -18488,7 +18507,7 @@ input.rename-input {
 .mcp-error {
   margin: 0;
   font-size: 11px;
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
 }
 
 .mcp-error-box {
@@ -18503,7 +18522,7 @@ input.rename-input {
   margin: 0;
   font-size: 11px;
   line-height: 1.45;
-  color: var(--win-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 .mcp-empty {
@@ -18675,8 +18694,8 @@ input.rename-input {
 }
 
 .mcp-dialect-badge.ro {
-  border-color: var(--win-warning, #f59e0b);
-  color: var(--win-warning, #f59e0b);
+  border-color: var(--st-warn, #f59e0b);
+  color: var(--st-warn, #f59e0b);
   background: transparent;
 }
 
@@ -18709,7 +18728,7 @@ input.rename-input {
 }
 
 .mcp-reach {
-  color: var(--win-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 .mcp-reach.ok {
@@ -18777,7 +18796,7 @@ input.rename-input {
 }
 
 .mcp-log-item.denied {
-  box-shadow: inset 3px 0 0 var(--win-danger, #ef4444);
+  box-shadow: inset 3px 0 0 var(--st-danger, #ef4444);
 }
 
 .mcp-log-row {
@@ -18860,7 +18879,7 @@ input.rename-input {
 }
 
 .mcp-log-outcome.denied {
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
   background: var(--win-status-deleted, rgba(239, 68, 68, 0.1));
 }
 
@@ -18887,7 +18906,7 @@ input.rename-input {
 .mcp-log-message {
   margin: 0;
   font-size: 11px;
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
   white-space: pre-wrap;
 }
 
@@ -19095,15 +19114,15 @@ input.rename-input {
 
 .media-dim-badge {
   font-size: 11px;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--win-font-mono, monospace);
   color: var(--win-text-secondary, #94a3b8);
   font-weight: 500;
 }
 
 .media-size-badge {
   font-size: 11px;
-  color: var(--win-text-muted, #64748b);
-  font-family: var(--font-mono, monospace);
+  color: var(--win-text-disabled, #64748b);
+  font-family: var(--win-font-mono, monospace);
 }
 
 /* --- Fullscreen Lightbox Modal --- */
@@ -19312,7 +19331,7 @@ input.rename-input {
 }
 
 .media-zoom-label {
-  font-family: var(--font-mono, monospace);
+  font-family: var(--win-font-mono, monospace);
   font-size: 11px;
   min-width: 48px;
   justify-content: center;
@@ -19449,7 +19468,7 @@ input.rename-input {
   gap: 10px;
   flex-wrap: wrap;
   border-bottom: 1px solid var(--win-border, rgba(255, 255, 255, 0.06));
-  background: var(--win-bg-panel, rgba(20, 24, 33, 0.7));
+  background: var(--win-bg-card, rgba(20, 24, 33, 0.7));
   backdrop-filter: blur(8px);
   flex-shrink: 0;
 }
@@ -19645,7 +19664,7 @@ input.rename-input {
   display: flex;
   flex-direction: column;
   padding: 4px 10px;
-  background: var(--win-bg-panel, rgba(255, 255, 255, 0.03));
+  background: var(--win-bg-card, rgba(255, 255, 255, 0.03));
   border: 1px solid var(--win-border, rgba(255, 255, 255, 0.08));
   border-radius: 6px;
   min-width: 120px;
@@ -19663,7 +19682,7 @@ input.rename-input {
   font-size: 14px;
   font-weight: 700;
   color: var(--win-text-primary, #f1f5f9);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--win-font-mono, monospace);
   margin-top: 1px;
 }
 
@@ -20103,7 +20122,7 @@ input.rename-input {
 }
 
 .db-compare-primary-run-btn:hover:not(:disabled) {
-  background: var(--win-accent-hover, #2563eb);
+  background: var(--win-accent-secondary, #2563eb);
   box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
   transform: translateY(-1px);
 }
@@ -22087,7 +22106,7 @@ input.rename-input {
 }
 
 .tp-state-error {
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
   max-width: 480px;
   text-align: center;
   word-break: break-word;
@@ -22253,7 +22272,7 @@ input.rename-input {
 }
 
 .tp-row+.tp-row {
-  border-top: 1px solid var(--win-border-subtle, var(--win-border-light));
+  border-top: 1px solid var(--win-border-light, var(--win-border-light));
 }
 
 .tp-row-full {
@@ -22484,7 +22503,7 @@ input.rename-input {
   font-size: 11.5px;
   line-height: 1.5;
   text-align: left;
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
 }
 
 .vault-lock-submit {
@@ -22555,8 +22574,8 @@ input.rename-input {
 .vault-warn {
   padding: 8px 11px;
   border-radius: 6px;
-  border-left: 3px solid var(--win-danger, #ef4444);
-  background: color-mix(in srgb, var(--win-danger, #ef4444) 10%, transparent);
+  border-left: 3px solid var(--st-danger, #ef4444);
+  background: color-mix(in srgb, var(--st-danger, #ef4444) 10%, transparent);
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--win-text-secondary);
@@ -22571,7 +22590,7 @@ input.rename-input {
 .vault-error {
   font-size: 11.5px;
   line-height: 1.5;
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
 }
 
 .vault-ok {
@@ -22935,7 +22954,7 @@ input[type="text"].snippet-abbr-input {
 }
 
 .imp-problems {
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
   font-weight: 600;
 }
 
@@ -22975,5 +22994,5 @@ input[type="text"].snippet-abbr-input {
 }
 
 .imp-banner.is-error {
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
 }

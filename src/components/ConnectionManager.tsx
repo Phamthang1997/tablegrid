@@ -51,7 +51,7 @@ const LoadingSpinner: React.FC<{ size?: number; style?: React.CSSProperties; cla
       cx="12"
       cy="12"
       r="10"
-      stroke="var(--win-border-strong, #383b44)"
+      style={{ stroke: 'var(--win-border-strong)' }}
       strokeWidth="3"
       opacity="0.2"
     />
