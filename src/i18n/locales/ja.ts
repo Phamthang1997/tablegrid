@@ -1971,6 +1971,7 @@ const ja: typeof en = {
     changeExists: '片側にのみ存在',
     changePrimaryKey: '主キー',
     changeViewDefinition: 'ビュー定義',
+    changeDefinition: 'インデックス定義',
     changeKind: 'テーブル/ビュー',
     changeOther: 'その他',
   },

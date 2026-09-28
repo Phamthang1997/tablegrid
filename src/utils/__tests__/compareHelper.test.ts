@@ -94,6 +94,7 @@ describe('translation keys', () => {
       'primaryKey',
       'viewDefinition',
       'kind',
+      'definition',
     ];
     for (const c of changes) {
       expect(resolve(columnChangeKey(c)), `missing key for ${c}`).toBeTruthy();
@@ -173,6 +174,8 @@ describe('describeColumn', () => {
 describe('describeIndex / describeForeignKey', () => {
   it('marks uniqueness and keeps the column order', () => {
     expect(describeIndex({ name: 'ix', columns: ['a', 'b'], unique: true })).toBe('UNIQUE (a, b)');
+    // A Postgres index describes itself by its USING tail, so an HNSW index and a btree differ.
+    expect(describeIndex({ name: 'ix', columns: ['e'], unique: false, using: ' USING hnsw (e vector_cosine_ops)' })).toBe('USING hnsw (e vector_cosine_ops)');
     expect(describeIndex({ name: 'ix', columns: ['b', 'a'], unique: false })).toBe('(b, a)');
     expect(describeIndex(null)).toBe('—');
   });

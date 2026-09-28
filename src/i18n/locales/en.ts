@@ -1991,6 +1991,7 @@ const en = {
     changeExists: 'exists on one side only',
     changePrimaryKey: 'primary key',
     changeViewDefinition: 'view definition',
+    changeDefinition: 'index definition',
     changeKind: 'table/view',
     changeOther: 'other',
   },

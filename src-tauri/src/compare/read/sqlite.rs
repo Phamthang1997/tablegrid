@@ -81,6 +81,7 @@ pub(super) async fn read_sqlite(conn: &DbConnection) -> Result<SchemaMeta, Strin
                 name: idx_name,
                 columns: cols,
                 unique,
+                using: None,
             });
         }
 

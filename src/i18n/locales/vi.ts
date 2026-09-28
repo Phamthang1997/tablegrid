@@ -1975,6 +1975,7 @@ const vi: typeof en = {
     changeExists: 'chỉ có ở một phía',
     changePrimaryKey: 'khóa chính',
     changeViewDefinition: 'định nghĩa view',
+    changeDefinition: 'định nghĩa index',
     changeKind: 'bảng/view',
     changeOther: 'khác',
   },
