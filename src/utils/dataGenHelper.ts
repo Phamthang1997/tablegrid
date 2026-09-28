@@ -141,6 +141,7 @@ export const GENERATOR_GROUPS: { groupKey: string; ids: string[] }[] = [
       'uuid',
       'json',
       'blob',
+      'vector',
       'date',
       'time',
       'datetime',
@@ -202,6 +203,7 @@ export const GENERATOR_LABEL_KEYS: Record<string, string> = {
   uuid: 'dataGen.genUuid',
   json: 'dataGen.genJson',
   blob: 'dataGen.genBlob',
+  vector: 'dataGen.genVector',
   date: 'dataGen.genDate',
   time: 'dataGen.genTime',
   datetime: 'dataGen.genDatetime',
@@ -320,6 +322,12 @@ export const OPTION_FIELDS: Record<string, OptionField[]> = {
   text: [{ key: 'maxLength', kind: 'number', labelKey: 'dataGen.optMaxLength' }],
   paragraph: [{ key: 'maxLength', kind: 'number', labelKey: 'dataGen.optMaxLength' }],
   blob: [{ key: 'length', kind: 'number', labelKey: 'dataGen.optByteLength' }],
+  vector: [
+    { key: 'dimensions', kind: 'number', labelKey: 'dataGen.optDimensions' },
+    { key: 'normalize', kind: 'bool', labelKey: 'dataGen.optNormalize' },
+    { key: 'sparse', kind: 'bool', labelKey: 'dataGen.optSparse' },
+    { key: 'nonZero', kind: 'number', labelKey: 'dataGen.optNonZero' },
+  ],
   date: [
     { key: 'min', kind: 'date', labelKey: 'dataGen.optMinDate', placeholderKey: 'dataGen.phDate' },
     { key: 'max', kind: 'date', labelKey: 'dataGen.optMaxDate', placeholderKey: 'dataGen.phDate' },
@@ -383,7 +391,7 @@ export function optionChoiceLabelKey(value: string): string {
 
 /** Generators whose output is text, i.e. where prefix/suffix/case/empty% do anything. */
 export function isTextGenerator(generator: string): boolean {
-  return !['integer', 'bigint', 'decimal', 'float', 'bool', 'sequence', 'year', 'latitude', 'longitude', 'blob', 'expression', 'skip', 'null'].includes(
+  return !['integer', 'bigint', 'decimal', 'float', 'bool', 'sequence', 'year', 'latitude', 'longitude', 'blob', 'vector', 'expression', 'skip', 'null'].includes(
     generator,
   );
 }
@@ -580,6 +588,16 @@ export function validateSpec(spec: GenSpec): GenIssue[] {
       }
       if (col.generator === 'expression' && !String(opts.sql ?? '').trim()) {
         issues.push({ level: 'error', ...where, key: 'dataGen.errExprEmpty', params });
+      }
+      if (col.generator === 'vector') {
+        // Rust clamps these rather than failing, so a typo would quietly generate something else.
+        const dims = Number(opts.dimensions ?? 3);
+        const nonZero = Number(opts.nonZero ?? 10);
+        const badDims = !Number.isInteger(dims) || dims < 1 || dims > 16000;
+        const badNonZero = !!opts.sparse && (!Number.isInteger(nonZero) || nonZero < 1 || nonZero > dims);
+        if (badDims || badNonZero) {
+          issues.push({ level: 'error', ...where, key: 'dataGen.errVectorDims', params });
+        }
       }
       if (col.generator === 'foreignKey' && (!String(opts.refTable ?? '').trim() || !String(opts.refColumn ?? '').trim())) {
         issues.push({ level: 'error', ...where, key: 'dataGen.errFkMissing', params });

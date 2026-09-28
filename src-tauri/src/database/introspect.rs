@@ -324,7 +324,13 @@ pub(crate) async fn get_table_schema_inner(
 
             // The list of Postgres indexes
             let idx_sql = format!(
-                "SELECT i.relname AS index_name, ix.indisunique AS is_unique, ix.indisprimary AS is_primary, am.amname AS index_method, pg_get_indexdef(ix.indexrelid) AS index_def
+                // The key columns are asked for one by one (`pg_get_indexdef(oid, k, true)`) rather
+                // than cut out of the whole definition: the text inside its last parentheses is the
+                // `WITH (m='16')` of an HNSW index, the `WHERE (…)` of a partial one or the
+                // `INCLUDE (…)` list, and the opclass (`embedding vector_cosine_ops`) rides along.
+                "SELECT i.relname AS index_name, ix.indisunique AS is_unique, ix.indisprimary AS is_primary, am.amname AS index_method,
+                        (SELECT string_agg(pg_get_indexdef(ix.indexrelid, k, true), ', ' ORDER BY k)
+                           FROM generate_series(1, ix.indnkeyatts) AS k) AS index_keys
                  FROM pg_class t
                  JOIN pg_index ix ON t.oid = ix.indrelid
                  JOIN pg_class i ON i.oid = ix.indexrelid
@@ -342,17 +348,7 @@ pub(crate) async fn get_table_schema_inner(
                     let unique: bool = r.get(1);
                     let is_primary: bool = r.get(2);
                     let method: String = r.get(3);
-                    let index_def: String = r.get(4);
-
-                    let columns_str = if let Some(start) = index_def.rfind('(') {
-                        if let Some(end) = index_def.rfind(')') {
-                            index_def[start + 1..end].to_string()
-                        } else {
-                            "".to_string()
-                        }
-                    } else {
-                        "".to_string()
-                    };
+                    let columns_str: String = r.get::<Option<String>, _>(4).unwrap_or_default();
 
                     indexes.push(json!({
                         "name": idx_name,

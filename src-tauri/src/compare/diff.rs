@@ -105,6 +105,13 @@ pub(super) fn index_changes(a: &IdxMeta, b: &IdxMeta) -> Vec<&'static str> {
     if a.unique != b.unique {
         ch.push("unique");
     }
+    // Both Postgres: the same columns with another method, opclass or WITH (m=…) is a different
+    // index. Across dialects there is nothing comparable, so only the columns count.
+    if let (Some(x), Some(y)) = (&a.using, &b.using)
+        && x != y
+    {
+        ch.push("definition");
+    }
     ch
 }
 
@@ -219,6 +226,30 @@ pub(super) fn view_def_differs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pg_idx(using: &str) -> IdxMeta {
+        IdxMeta {
+            name: "i".into(),
+            columns: vec!["embedding".into()],
+            unique: false,
+            using: Some(using.into()),
+        }
+    }
+
+    /// Same column, another opclass or build parameter: a different index on Postgres.
+    #[test]
+    fn a_postgres_index_definition_change_is_a_difference() {
+        let a = pg_idx(" USING hnsw (embedding vector_cosine_ops)");
+        let b = pg_idx(" USING hnsw (embedding vector_l2_ops)");
+        assert_eq!(index_changes(&a, &b), vec!["definition"]);
+        assert!(index_changes(&a, &a.clone()).is_empty());
+        // Across dialects one side has no definition: only the columns are comparable.
+        let mysql = IdxMeta {
+            using: None,
+            ..a.clone()
+        };
+        assert!(index_changes(&a, &mysql).is_empty());
+    }
 
     /// MySQL 8 dropped the display width, so the same column reads `int(11)` on 5.7 and `int` on
     /// 8. Reporting that as a difference is pure noise.

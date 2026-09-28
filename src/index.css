@@ -1335,6 +1335,189 @@ select.form-input {
   color: var(--st-danger, #ef4444);
 }
 
+/* ─── pgvector: inspector + k-NN playground (VectorDialogs.tsx) ─── */
+.vec-title-col {
+  color: var(--win-accent);
+  font-family: var(--win-font-mono);
+}
+
+.vec-section {
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+.vec-components {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow: auto;
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+}
+
+.vec-comp {
+  display: grid;
+  grid-template-columns: 48px 1fr 110px;
+  align-items: center;
+  gap: 8px;
+}
+
+.vec-comp-idx {
+  color: var(--win-text-disabled);
+  text-align: right;
+}
+
+.vec-comp-val {
+  color: var(--win-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A centre line with positive values growing right of it and negative ones left. */
+.vec-comp-bar {
+  position: relative;
+  height: 8px;
+  background: var(--win-bg-subtle);
+  border-radius: 2px;
+}
+
+.vec-comp-bar::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--win-border);
+}
+
+.vec-comp-bar > span {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 2px;
+}
+
+.vec-comp-bar > .pos {
+  left: 50%;
+  background: var(--win-accent);
+}
+
+.vec-comp-bar > .neg {
+  right: 50%;
+  background: var(--st-warn);
+}
+
+/* The operators are the content here: Inter and JetBrains Mono both ligate `<=>` into ⇔ and `->`
+   into →, which reads as a different operator (and `<->` is L2, not an arrow). */
+.vec-form,
+.vec-form select,
+.vec-form option,
+.vec-query,
+.vec-sql,
+.vec-plan,
+.vec-index {
+  font-variant-ligatures: none;
+  font-feature-settings: 'calt' 0, 'liga' 0;
+}
+
+.vec-form {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.vec-form label,
+.vec-query {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--win-text-secondary);
+  flex: 1;
+  min-width: 180px;
+}
+
+.vec-form .vec-form-k {
+  flex: 0 0 110px;
+  min-width: 0;
+}
+
+.vec-query-input.gt-editor {
+  min-height: 72px;
+  flex: none;
+  height: 72px;
+  resize: vertical;
+}
+
+.vec-index,
+.vec-warn {
+  font-size: 11.5px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--win-border);
+  color: var(--win-text-primary);
+}
+
+.vec-index.ok {
+  border-color: color-mix(in srgb, var(--st-ok) 45%, transparent);
+  background: color-mix(in srgb, var(--st-ok) 10%, transparent);
+}
+
+.vec-index.warn,
+.vec-warn {
+  border-color: color-mix(in srgb, var(--st-warn) 45%, transparent);
+  background: color-mix(in srgb, var(--st-warn) 10%, transparent);
+}
+
+.vec-sql summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--win-text-secondary);
+}
+
+.vec-sql pre,
+.vec-plan pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+  background: var(--win-bg-code);
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  color: var(--win-text-primary);
+}
+
+.vec-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vec-results {
+  flex: 1;
+  min-height: 160px;
+}
+
+.vec-results td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vec-tuning {
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-text-primary);
+}
+
+.vec-results .vec-score {
+  color: var(--win-accent);
+  font-weight: 600;
+}
+
 /* TablePlus Premium Disabled Button Styling */
 .btn:disabled,
 .btn-primary:disabled,

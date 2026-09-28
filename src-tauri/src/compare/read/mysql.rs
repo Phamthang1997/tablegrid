@@ -82,6 +82,7 @@ pub(super) async fn read_mysql(conn: &DbConnection, schema: &str) -> Result<Sche
                     name: idx_name,
                     columns: vec![col],
                     unique,
+                    using: None,
                 }),
             }
         }

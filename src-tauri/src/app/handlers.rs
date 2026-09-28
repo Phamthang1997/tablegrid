@@ -28,6 +28,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         crate::database::execute_query,
         crate::database::execute_multi_query,
         crate::database::execute_query_stream,
+        crate::database::pg_vector_search,
         crate::database::cancel_query,
         crate::database::get_process_list,
         crate::database::kill_process_query,

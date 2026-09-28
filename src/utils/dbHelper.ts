@@ -1053,8 +1053,9 @@ export const dbHelper = {
     constraints: string[];
     comments: string[];
     sequenceValues: string[];
+    extensions: string[];
   }> {
-    const empty = { sequences: [], indexes: [], constraints: [], comments: [], sequenceValues: [] };
+    const empty = { sequences: [], indexes: [], constraints: [], comments: [], sequenceValues: [], extensions: [] };
     try {
       const res: any = await invoke('get_table_ddl_extras', { connId, tableName });
       return {
@@ -1063,6 +1064,7 @@ export const dbHelper = {
         constraints: res.constraints || [],
         comments: res.comments || [],
         sequenceValues: res.sequenceValues || [],
+        extensions: res.extensions || [],
       };
     } catch (err) {
       console.warn('[dbHelper] get_table_ddl_extras failed:', err);
@@ -1176,6 +1178,26 @@ export const dbHelper = {
         };
       }
       return { success: false, error: i18n.t('db.errNoQueryData') };
+    } catch (err: any) {
+      return { success: false, error: i18n.t('db.errQuery', { message: String(err) }) };
+    }
+  },
+
+  /**
+   * A k-NN query with `hnsw.ef_search` / `ivfflat.probes` applied to it alone (`SET LOCAL` inside a
+   * transaction that is always rolled back — see `vector_search.rs`). Same result shape as
+   * `executeQuery`. Settings left undefined keep the server's values.
+   */
+  async vectorSearch(
+    connId: string,
+    sql: string,
+    params: any[],
+    settings: { efSearch?: number; probes?: number } = {},
+  ): Promise<{ success: boolean; data?: any[]; columns?: string[]; error?: string }> {
+    try {
+      const res: any = await invoke('pg_vector_search', { connId, sql, params, settings });
+      const first = res?.results?.[0];
+      return { success: true, data: first?.data || [], columns: first?.columns || [] };
     } catch (err: any) {
       return { success: false, error: i18n.t('db.errQuery', { message: String(err) }) };
     }

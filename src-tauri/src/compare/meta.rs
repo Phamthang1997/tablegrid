@@ -23,6 +23,10 @@ pub(super) struct IdxMeta {
     pub(super) name: String,
     pub(super) columns: Vec<String>,
     pub(super) unique: bool,
+    /// Postgres only: the ` USING <method> (<keys with opclass>) [INCLUDE …] [WITH (…)] [WHERE …]` tail of
+    /// `pg_get_indexdef`. A column list cannot carry an HNSW index's method, opclass or build
+    /// parameters, so a Postgres-to-Postgres script rebuilds the index from this instead.
+    pub(super) using: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -70,7 +74,7 @@ pub(super) fn col_json(c: &ColMeta) -> Value {
 }
 
 pub(super) fn idx_json(i: &IdxMeta) -> Value {
-    json!({ "name": i.name, "columns": i.columns, "unique": i.unique })
+    json!({ "name": i.name, "columns": i.columns, "unique": i.unique, "using": i.using })
 }
 
 pub(super) fn fk_json(f: &FkMeta) -> Value {

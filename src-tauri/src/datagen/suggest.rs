@@ -8,7 +8,9 @@ use super::meta::{ColMeta, FkMeta};
 
 pub(super) fn type_family(data_type: &str) -> &'static str {
     let t = data_type.to_lowercase();
-    let base = t.split(['(', ' ']).next().unwrap_or("").to_string();
+    let base = t.split(['(', ' ']).next().unwrap_or("");
+    // `ext.vector(3)`: an extension type in another schema keeps its qualifier.
+    let base = base.rsplit('.').next().unwrap_or(base).to_string();
     match base.as_str() {
         "tinyint" if t.starts_with("tinyint(1)") => "bool",
         "bool" | "boolean" | "bit" => "bool",
@@ -27,6 +29,9 @@ pub(super) fn type_family(data_type: &str) -> &'static str {
             "blob"
         }
         "enum" | "set" => "enum",
+        // pgvector. Checked on the last segment too: the type may come back schema-qualified.
+        "vector" | "halfvec" => "vector",
+        "sparsevec" => "sparsevec",
         "text" | "mediumtext" | "longtext" | "tinytext" | "clob" => "text",
         "char" | "varchar" | "character" | "nchar" | "nvarchar" | "citext" => "string",
         _ => {
@@ -39,6 +44,13 @@ pub(super) fn type_family(data_type: &str) -> &'static str {
             }
         }
     }
+}
+
+/// `vector(1536)` -> 1536.
+pub(super) fn declared_dims(data_type: &str) -> Option<usize> {
+    let open = data_type.rfind('(')?;
+    let close = data_type.rfind(')')?;
+    data_type.get(open + 1..close)?.trim().parse().ok()
 }
 
 /// Best-effort default generator for a column. Order matters: FK beats everything (it is the
@@ -199,6 +211,22 @@ pub fn suggest_generator(col: &ColMeta, fk: Option<&FkMeta>) -> (String, Value) 
         "json" => return ("json".to_string(), json!({})),
         "uuid" => return ("uuid".to_string(), json!({})),
         "blob" => return ("blob".to_string(), json!({ "length": 16 })),
+        "vector" | "sparsevec" => {
+            // The declared dimension is part of the type (`vector(1536)`); an unconstrained column
+            // accepts any, so pick a small one the user can see in the preview.
+            let dims = declared_dims(&col.data_type).unwrap_or(3);
+            return if family == "sparsevec" {
+                (
+                    "vector".to_string(),
+                    json!({ "dimensions": dims, "sparse": true, "nonZero": dims.min(10), "normalize": true }),
+                )
+            } else {
+                (
+                    "vector".to_string(),
+                    json!({ "dimensions": dims, "normalize": true }),
+                )
+            };
+        }
         "text" => {
             return ("paragraph".to_string(), json!({ "maxLength": 500 }));
         }
@@ -255,4 +283,57 @@ pub fn suggest_generator(col: &ColMeta, fk: Option<&FkMeta>) -> (String, Value) 
         "string".to_string(),
         json!({ "minLength": (max / 2).max(1), "maxLength": max, "charset": "alnum" }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn col(name: &str, data_type: &str) -> ColMeta {
+        ColMeta {
+            name: name.into(),
+            data_type: data_type.into(),
+            nullable: true,
+            is_pk: false,
+            auto_inc: false,
+            has_default: false,
+            max_len: None,
+            scale: None,
+            enum_values: Vec::new(),
+        }
+    }
+
+    /// A vector column used to fall through to `string` and fail every INSERT with
+    /// "invalid input syntax for type vector".
+    #[test]
+    fn pgvector_columns_get_the_vector_generator_with_their_dimension() {
+        let (g, o) = suggest_generator(&col("embedding", "vector(1536)"), None);
+        assert_eq!(g, "vector");
+        assert_eq!(o["dimensions"], 1536);
+        assert!(o.get("sparse").is_none());
+
+        let (g, o) = suggest_generator(&col("h", "ext.halfvec(3)"), None);
+        assert_eq!((g.as_str(), o["dimensions"].as_u64()), ("vector", Some(3)));
+
+        let (g, o) = suggest_generator(&col("s", "sparsevec(30000)"), None);
+        assert_eq!(g, "vector");
+        assert_eq!(
+            (o["sparse"].as_bool(), o["nonZero"].as_u64()),
+            (Some(true), Some(10))
+        );
+
+        // Unconstrained: any dimension is accepted, so a small visible default.
+        assert_eq!(
+            suggest_generator(&col("e", "vector"), None).1["dimensions"],
+            3
+        );
+    }
+
+    #[test]
+    fn look_alike_types_are_not_vectors() {
+        assert_eq!(type_family("tsvector"), "string");
+        assert_eq!(type_family("int2vector"), "int");
+        assert_eq!(declared_dims("numeric(10,2)"), None);
+        assert_eq!(declared_dims("vector(8)"), Some(8));
+    }
 }

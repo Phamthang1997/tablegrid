@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { GridContextMenu, MenuHeading, MenuItem, MenuSeparator, MenuSub } from './GridContextMenu';
 import { ColumnStatsDialog, TransposeDialog, ValueEditorDialog } from './GridToolDialogs';
+import { VectorInspectorDialog, VectorSearchDialog } from './VectorDialogs';
+import { vectorKindOf } from '../utils/pgvector';
 import { resolveRowClick, resolveRowContextMenu } from '../utils/rowSelection';
 import { countKey, nextCountMode, seekColumn, seekViewKey } from '../utils/gridPaging';
 import { getCommitPreviewForKey, setCommitPreviewForKey } from '../utils/commitPreview';
@@ -334,6 +336,8 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   // same entry point, but it formats JSON and can write the value back into the edit buffer.
   const [valueEditor, setValueEditor] = useState<{ rowId: any; colName: string; value: any; editable: boolean; reason?: string } | null>(null);
   const [statsTarget, setStatsTarget] = useState<{ column: string; values: unknown[]; scope: string; note?: string } | null>(null);
+  /** pgvector tools from the cell menu. `value` is the clicked cell, in pgvector's text form. */
+  const [vectorTarget, setVectorTarget] = useState<{ mode: 'inspect' | 'search'; column: string; value?: string } | null>(null);
   const [transposeTarget, setTransposeTarget] = useState<any[] | null>(null);
   const [mediaViewerTarget, setMediaViewerTarget] = useState<{ media: MediaInfo; colName: string; tableName: string } | null>(null);
 
@@ -2640,6 +2644,8 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         // would have nothing to put in its WHERE — so the value editor opens read-only there.
         const hasKey = String(cm.rowId).startsWith('temp_') || !String(cm.rowId).startsWith('__idx_');
         const statsOnSelection = nSel > 1;
+        const isVectorCell = dbType === 'postgres' && !!vectorKindOf(columns.find(c => c.name === cm.colName)?.type);
+        const vectorValue = isVectorCell && typeof cm.cellValue === 'string' ? cm.cellValue : undefined;
         return (
           <GridContextMenu x={cm.x} y={cm.y} onClose={() => setContextMenu(null)}>
             <MenuHeading>{t('dataGrid.ctxCell', { col: cm.colName })}</MenuHeading>
@@ -2678,6 +2684,12 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
                 label={t('dataGrid.ctxViewImage', 'Xem ảnh (Media Viewer)')}
                 onSelect={() => setMediaViewerTarget({ media, colName: cm.colName, tableName })}
               />
+            )}
+            {vectorValue !== undefined && (
+              <MenuItem icon="📐" label={t('pgvector.ctxInspect')} onSelect={() => setVectorTarget({ mode: 'inspect', column: cm.colName, value: vectorValue })} />
+            )}
+            {isVectorCell && (
+              <MenuItem icon="🧭" label={t('pgvector.ctxSearch')} onSelect={() => setVectorTarget({ mode: 'search', column: cm.colName, value: vectorValue })} />
             )}
 
             <MenuHeading>{t('gridTools.columnHeading', { col: cm.colName })}</MenuHeading>
@@ -2768,6 +2780,26 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
           scope={statsTarget.scope}
           note={statsTarget.note}
           onClose={() => setStatsTarget(null)}
+        />
+      )}
+      {vectorTarget?.mode === 'inspect' && vectorTarget.value !== undefined && (
+        <VectorInspectorDialog
+          column={vectorTarget.column}
+          colType={columns.find(c => c.name === vectorTarget.column)?.type ?? ''}
+          value={vectorTarget.value}
+          onSearch={() => setVectorTarget({ ...vectorTarget, mode: 'search' })}
+          onClose={() => setVectorTarget(null)}
+        />
+      )}
+      {vectorTarget?.mode === 'search' && (
+        <VectorSearchDialog
+          connId={connId}
+          table={tableName}
+          tableSchema={tableSchema}
+          vectorColumns={columns.filter(c => vectorKindOf(c.type)).map(c => ({ name: c.name, type: c.type }))}
+          initialColumn={vectorTarget.column}
+          initialVector={vectorTarget.value}
+          onClose={() => setVectorTarget(null)}
         />
       )}
       {transposeTarget && (

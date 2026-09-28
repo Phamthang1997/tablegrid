@@ -239,6 +239,20 @@ pub(super) fn create_table_sql(
 }
 
 pub(super) fn create_index_sql(idx: &IdxMeta, table: &str, tgt: &str, schema: &str) -> String {
+    let unique = if idx.unique { "UNIQUE " } else { "" };
+    // Postgres to Postgres: Postgres' own tail keeps the method, opclass, INCLUDE, WITH and WHERE
+    // that the column list below would drop (an HNSW index would come back as a btree).
+    if tgt == "postgres"
+        && let Some(using) = idx.using.as_deref().filter(|u| !u.trim().is_empty())
+    {
+        return format!(
+            "CREATE {}INDEX {} ON {} {};",
+            unique,
+            q_ident(tgt, &idx.name),
+            qualified(tgt, schema, table),
+            using.trim()
+        );
+    }
     let cols: Vec<String> = idx
         .columns
         .iter()
@@ -251,7 +265,6 @@ pub(super) fn create_index_sql(idx: &IdxMeta, table: &str, tgt: &str, schema: &s
             }
         })
         .collect();
-    let unique = if idx.unique { "UNIQUE " } else { "" };
     format!(
         "CREATE {}INDEX {} ON {} ({});",
         unique,
@@ -407,4 +420,45 @@ pub(super) fn alter_column_stmts(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hnsw() -> IdxMeta {
+        IdxMeta {
+            name: "items_l2".into(),
+            columns: vec!["embedding".into()],
+            unique: false,
+            using: Some(" USING hnsw (embedding vector_l2_ops) WITH (m='8')".into()),
+        }
+    }
+
+    /// Built from the column list, an HNSW index came back as a plain btree on the column, and
+    /// before the key fix as `CREATE INDEX … (m='8')` — not SQL at all.
+    #[test]
+    fn a_postgres_target_keeps_method_opclass_and_parameters() {
+        assert_eq!(
+            create_index_sql(&hnsw(), "items", "postgres", "app"),
+            "CREATE INDEX \"items_l2\" ON \"app\".\"items\" USING hnsw (embedding vector_l2_ops) WITH (m='8');"
+        );
+    }
+
+    #[test]
+    fn other_targets_still_build_from_the_columns() {
+        assert_eq!(
+            create_index_sql(&hnsw(), "items", "mysql", ""),
+            "CREATE INDEX `items_l2` ON `items` (`embedding`);"
+        );
+        let plain = IdxMeta {
+            using: None,
+            unique: true,
+            ..hnsw()
+        };
+        assert!(
+            create_index_sql(&plain, "items", "postgres", "public")
+                .starts_with("CREATE UNIQUE INDEX")
+        );
+    }
 }
