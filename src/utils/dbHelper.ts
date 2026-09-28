@@ -1053,8 +1053,9 @@ export const dbHelper = {
     constraints: string[];
     comments: string[];
     sequenceValues: string[];
+    extensions: string[];
   }> {
-    const empty = { sequences: [], indexes: [], constraints: [], comments: [], sequenceValues: [] };
+    const empty = { sequences: [], indexes: [], constraints: [], comments: [], sequenceValues: [], extensions: [] };
     try {
       const res: any = await invoke('get_table_ddl_extras', { connId, tableName });
       return {
@@ -1063,6 +1064,7 @@ export const dbHelper = {
         constraints: res.constraints || [],
         comments: res.comments || [],
         sequenceValues: res.sequenceValues || [],
+        extensions: res.extensions || [],
       };
     } catch (err) {
       console.warn('[dbHelper] get_table_ddl_extras failed:', err);

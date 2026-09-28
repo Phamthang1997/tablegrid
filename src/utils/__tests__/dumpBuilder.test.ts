@@ -355,6 +355,25 @@ describe('buildDump — phần đi kèm bảng', () => {
     expect(dump).not.toContain('-- Sequence values');
   });
 
+  it('extension is written once, before the first table whose columns need it', async () => {
+    const dump = await buildDump(
+      spec({ dbType: 'postgres', tables: ['a_tbl', 'b_tbl', 'c_tbl'], views: [], routines: [], triggers: [] }),
+      fakeReader({
+        getTableDdlExtras: async (table) => ({
+          sequences: [], indexes: [], constraints: [], comments: [], sequenceValues: [],
+          extensions: table === 'a_tbl' ? [] : ['CREATE EXTENSION IF NOT EXISTS vector;'],
+        }),
+      })
+    );
+    const ext = 'CREATE EXTENSION IF NOT EXISTS vector;';
+    expect(dump.split(ext).length - 1).toBe(1);
+    expect(at(dump, 'CREATE TABLE `a_tbl`')).toBeLessThan(at(dump, ext));
+    expect(at(dump, ext)).toBeLessThan(at(dump, 'CREATE TABLE `b_tbl`'));
+    // Before the overwrite option's DROP of the same table too, not just its CREATE.
+    expect(at(dump, 'DROP TABLE IF EXISTS "b_tbl"')).toBeGreaterThan(-1);
+    expect(at(dump, ext)).toBeLessThan(at(dump, 'DROP TABLE IF EXISTS "b_tbl"'));
+  });
+
   it('MySQL/SQLite không có phần nào thì dump không thừa tiêu đề rỗng', async () => {
     const dump = await buildDump(spec({ triggers: [] }), fakeReader());
     expect(dump).not.toContain('-- Constraints');

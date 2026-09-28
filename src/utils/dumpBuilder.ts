@@ -36,6 +36,11 @@ export interface DumpReader {
     constraints: string[];
     comments: string[];
     sequenceValues: string[];
+    /**
+     * Postgres: `CREATE EXTENSION IF NOT EXISTS …` for each extension a column type comes from
+     * (pgvector, citext, hstore…). Optional so a reader without it still builds a dump.
+     */
+    extensions?: string[];
   }>;
 }
 
@@ -56,6 +61,7 @@ export function dumpReaderFor(
     getAllTriggers(connId: string): Promise<{ name: string; table: string; statement: string }[]>;
     getTableDdlExtras(connId: string, tableName: string): Promise<{
       sequences: string[]; indexes: string[]; constraints: string[]; comments: string[]; sequenceValues: string[];
+      extensions?: string[];
     }>;
   },
   connId: string,
@@ -315,6 +321,9 @@ export async function writeDump(
   const deferredConstraints: string[] = [];
   // A sequence's setval(): has to run after the data is in, because it reads the table's MAX().
   const deferredSequenceValues: string[] = [];
+  // Each extension statement is written once, before the first table whose columns need it. Without
+  // it a dump restored into a fresh database dies on `type "vector" does not exist`.
+  const extensionsWritten = new Set<string>();
 
   const schemaFailed = (name: string, message?: string) =>
     i18n.t('app.exportSchemaFailed', {
@@ -339,6 +348,11 @@ export async function writeDump(
     // Foreign keys can only be added once EVERY table exists — tables are exported alphabetically,
     // so `city` referencing `country` would fail if the FK were attached in place.
     deferredConstraints.push(...extras.constraints);
+    for (const ext of extras.extensions ?? []) {
+      if (extensionsWritten.has(ext)) continue;
+      extensionsWritten.add(ext);
+      parts.push(ext);
+    }
 
     if (sqlOptions.dropTable) {
       parts.push(`DROP TABLE IF EXISTS ${q}${table}${q};`);

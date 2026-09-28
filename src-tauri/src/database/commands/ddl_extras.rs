@@ -17,7 +17,8 @@ use crate::database::{DbConnection, DbKind, all_string_values, execute_raw_sql_g
 ///   - `sequences`  before its CREATE TABLE (the column DEFAULT references it),
 ///   - `indexes` / `comments`  right after CREATE TABLE,
 ///   - `constraints`  after EVERY table (a foreign key points at another table),
-///   - `sequence_values`  after the data (setval reads MAX() of the rows just inserted).
+///   - `sequence_values`  after the data (setval reads MAX() of the rows just inserted),
+///   - `extensions`  before the first table needing one (a column typed `vector` or `citext`).
 #[tauri::command]
 pub async fn get_table_ddl_extras(conn_id: String, table_name: String) -> Result<Value, String> {
     Box::pin(async move {
@@ -47,6 +48,7 @@ pub async fn get_table_ddl_extras(conn_id: String, table_name: String) -> Result
     let mut constraints: Vec<String> = Vec::new();
     let mut comments: Vec<String> = Vec::new();
     let mut sequence_values: Vec<String> = Vec::new();
+    let mut extensions: Vec<String> = Vec::new();
 
     match &conn_type.kind {
         DbKind::Mysql(_) => {}
@@ -110,6 +112,29 @@ pub async fn get_table_ddl_extras(conn_id: String, table_name: String) -> Result
                  JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid \
                  JOIN pg_namespace n ON n.oid = t.relnamespace \
                  WHERE s.relkind = 'S' AND n.nspname = '{sch}' AND t.relname = '{esc}'")).await;
+
+            // The extensions a column type belongs to (`deptype = 'e'` on the type, or on the element
+            // type of an array like `vector[]`). The hand-built CREATE TABLE names `vector(1536)`, which a
+            // fresh database does not know until the extension is created. One statement per row, the
+            // schema first when the extension lives outside `public`, so the order survives the list.
+            extensions = ddl_list(&conn_type, format!(
+                "SELECT stmt FROM ( \
+                   SELECT DISTINCT e.extname, en.nspname FROM pg_class c \
+                   JOIN pg_namespace n ON n.oid = c.relnamespace \
+                   JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+                   JOIN pg_type ty ON ty.oid = a.atttypid \
+                   JOIN pg_depend d ON d.classid = 'pg_type'::regclass AND d.deptype = 'e' \
+                     AND d.objid IN (ty.oid, NULLIF(ty.typelem, 0)) \
+                   JOIN pg_extension e ON e.oid = d.refobjid \
+                   JOIN pg_namespace en ON en.oid = e.extnamespace \
+                   WHERE n.nspname = '{sch}' AND c.relname = '{esc}') x \
+                 CROSS JOIN LATERAL (VALUES \
+                   (0, CASE WHEN x.nspname NOT IN ('public', 'pg_catalog') \
+                            THEN 'CREATE SCHEMA IF NOT EXISTS ' || quote_ident(x.nspname) || ';' END), \
+                   (1, 'CREATE EXTENSION IF NOT EXISTS ' || quote_ident(x.extname) \
+                       || CASE WHEN x.nspname NOT IN ('public', 'pg_catalog') \
+                               THEN ' WITH SCHEMA ' || quote_ident(x.nspname) ELSE '' END || ';')) v(ord, stmt) \
+                 WHERE stmt IS NOT NULL ORDER BY x.extname, v.ord")).await;
         }
     }
 
@@ -120,6 +145,7 @@ pub async fn get_table_ddl_extras(conn_id: String, table_name: String) -> Result
         "constraints": constraints,
         "comments": comments,
         "sequenceValues": sequence_values,
+        "extensions": extensions,
     }))
 }).await
 }
