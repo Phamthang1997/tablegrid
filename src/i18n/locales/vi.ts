@@ -2133,6 +2133,7 @@ const vi: typeof en = {
     genMimeType: 'Kiểu MIME',
     genFileName: 'Tên tệp',
 
+    genVector: 'Vector (pgvector)',
     optMin: 'Nhỏ nhất',
     optMax: 'Lớn nhất',
     optMinDate: 'Từ ngày',
@@ -2147,6 +2148,10 @@ const vi: typeof en = {
     optLength: 'Độ dài',
     optByteLength: 'Số byte',
     optCharset: 'Bộ ký tự',
+    optDimensions: 'Số chiều',
+    optNormalize: 'Độ dài đơn vị',
+    optSparse: 'Thưa (sparsevec)',
+    optNonZero: 'Số giá trị khác 0',
     optPattern: 'Mẫu',
     optRegex: 'Biểu thức chính quy',
     optValues: 'Giá trị (mỗi dòng một giá trị)',
@@ -2193,6 +2198,7 @@ const vi: typeof en = {
     errExprEmpty: '{{table}}.{{column}}: chưa nhập biểu thức SQL.',
     errFkMissing: '{{table}}.{{column}}: hãy chọn bảng cha và cột tham chiếu.',
     warnUniqueSpace:
+    errVectorDims: '{{table}}.{{column}}: số chiều phải là số nguyên từ 1 đến 16.000, và số giá trị khác 0 từ 1 đến số chiều.',
       '{{table}}.{{column}}: chỉ sinh được khoảng {{n}} giá trị khác nhau nhưng cần {{rows}} dòng — có thể cạn giá trị duy nhất.',
   },
 

@@ -2149,6 +2149,7 @@ const en = {
     genMimeType: 'MIME type',
     genFileName: 'File name',
 
+    genVector: 'Vector (pgvector)',
     optMin: 'Min',
     optMax: 'Max',
     optMinDate: 'From',
@@ -2163,6 +2164,10 @@ const en = {
     optLength: 'Length',
     optByteLength: 'Bytes',
     optCharset: 'Characters',
+    optDimensions: 'Dimensions',
+    optNormalize: 'Unit length',
+    optSparse: 'Sparse (sparsevec)',
+    optNonZero: 'Non-zero values',
     optPattern: 'Pattern',
     optRegex: 'Regular expression',
     optValues: 'Values (one per line)',
@@ -2209,6 +2214,7 @@ const en = {
     errExprEmpty: '{{table}}.{{column}}: the SQL expression is empty.',
     errFkMissing: '{{table}}.{{column}}: pick the parent table and column.',
     warnUniqueSpace:
+    errVectorDims: '{{table}}.{{column}}: dimensions must be a whole number from 1 to 16,000, and non-zero values from 1 to the dimensions.',
       '{{table}}.{{column}}: only about {{n}} distinct values are possible but {{rows}} rows are requested — unique may run out.',
   },
 

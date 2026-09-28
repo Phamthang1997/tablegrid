@@ -38,6 +38,7 @@ mod spec;
 mod suggest;
 mod template;
 mod text;
+mod vector;
 mod writer;
 
 pub use commands::*;

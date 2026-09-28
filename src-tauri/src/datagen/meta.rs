@@ -208,12 +208,17 @@ pub async fn collect_meta(
             for r in query_rows(
                 conn,
                 &format!(
-                    "SELECT table_name AS tname, column_name AS cname, data_type AS dtype, \
-                            udt_name AS udt, is_nullable AS nullable, column_default AS cdefault, \
-                            is_identity AS identity, character_maximum_length AS maxlen, \
-                            numeric_scale AS nscale \
-                     FROM information_schema.columns WHERE table_schema = '{sch}' \
-                     ORDER BY table_name, ordinal_position"
+                    // `ftype` is `format_type()`: for an extension type `udt_name` says `vector`
+                    // and drops the dimension (`vector(1536)`), which the generator needs.
+                    "SELECT c.table_name AS tname, c.column_name AS cname, c.data_type AS dtype, \
+                            c.udt_name AS udt, c.is_nullable AS nullable, c.column_default AS cdefault, \
+                            c.is_identity AS identity, c.character_maximum_length AS maxlen, \
+                            c.numeric_scale AS nscale, \
+                            (SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
+                              WHERE a.attrelid = format('%I.%I', c.table_schema, c.table_name)::regclass \
+                                AND a.attname = c.column_name) AS ftype \
+                     FROM information_schema.columns c WHERE c.table_schema = '{sch}' \
+                     ORDER BY c.table_name, c.ordinal_position"
                 ),
             )
             .await?
@@ -234,7 +239,11 @@ pub async fn collect_meta(
                     .unwrap_or(false);
                 cols.entry(tname).or_default().push(ColMeta {
                     name: cname,
-                    data_type: if dtype == "USER-DEFINED" { udt } else { dtype },
+                    data_type: if dtype == "USER-DEFINED" {
+                        Some(s(&r, "ftype")).filter(|f| !f.is_empty()).unwrap_or(udt)
+                    } else {
+                        dtype
+                    },
                     nullable: s(&r, "nullable").eq_ignore_ascii_case("YES"),
                     is_pk,
                     auto_inc: default.contains("nextval")

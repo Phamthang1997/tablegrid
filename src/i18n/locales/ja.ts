@@ -2128,6 +2128,7 @@ const ja: typeof en = {
     genMimeType: 'MIME タイプ',
     genFileName: 'ファイル名',
 
+    genVector: 'ベクトル (pgvector)',
     optMin: '最小',
     optMax: '最大',
     optMinDate: '開始日',
@@ -2142,6 +2143,10 @@ const ja: typeof en = {
     optLength: '長さ',
     optByteLength: 'バイト数',
     optCharset: '文字種',
+    optDimensions: '次元数',
+    optNormalize: '単位長に正規化',
+    optSparse: 'スパース (sparsevec)',
+    optNonZero: '非ゼロの数',
     optPattern: 'パターン',
     optRegex: '正規表現',
     optValues: '値 (1行に1つ)',
@@ -2188,6 +2193,7 @@ const ja: typeof en = {
     errExprEmpty: '{{table}}.{{column}}: SQL 式が未入力です。',
     errFkMissing: '{{table}}.{{column}}: 親テーブルとカラムを選んでください。',
     warnUniqueSpace:
+    errVectorDims: '{{table}}.{{column}}: 次元数は 1〜16,000 の整数、非ゼロの数は 1〜次元数で指定してください。',
       '{{table}}.{{column}}: 異なる値は約 {{n}} 個しか作れませんが {{rows}} 行が必要です — 一意の値が足りなくなる可能性があります。',
   },
 
