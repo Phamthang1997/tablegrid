@@ -2128,8 +2128,8 @@ const ja: typeof en = {
     genHexColor: '16進カラー',
     genMimeType: 'MIME タイプ',
     genFileName: 'ファイル名',
-
     genVector: 'ベクトル (pgvector)',
+
     optMin: '最小',
     optMax: '最大',
     optMinDate: '開始日',
@@ -2143,11 +2143,11 @@ const ja: typeof en = {
     optMaxLength: '最大長',
     optLength: '長さ',
     optByteLength: 'バイト数',
-    optCharset: '文字種',
     optDimensions: '次元数',
     optNormalize: '単位長に正規化',
     optSparse: 'スパース (sparsevec)',
     optNonZero: '非ゼロの数',
+    optCharset: '文字種',
     optPattern: 'パターン',
     optRegex: '正規表現',
     optValues: '値 (1行に1つ)',
@@ -2193,8 +2193,8 @@ const ja: typeof en = {
     errPatternEmpty: '{{table}}.{{column}}: パターンが未入力です。',
     errExprEmpty: '{{table}}.{{column}}: SQL 式が未入力です。',
     errFkMissing: '{{table}}.{{column}}: 親テーブルとカラムを選んでください。',
-    warnUniqueSpace:
     errVectorDims: '{{table}}.{{column}}: 次元数は 1〜16,000 の整数、非ゼロの数は 1〜次元数で指定してください。',
+    warnUniqueSpace:
       '{{table}}.{{column}}: 異なる値は約 {{n}} 個しか作れませんが {{rows}} 行が必要です — 一意の値が足りなくなる可能性があります。',
   },
 
@@ -3459,6 +3459,10 @@ const ja: typeof en = {
     sqlSummary: '生成された SQL',
     runHint: '検索 (Ctrl+Enter)',
     optionLabel: '{{name}} — {{type}}',
+    compareExact: '厳密検索と比較',
+    compareExactHint: '同じクエリをインデックスなしで実行し（全行を比較するフルスキャン）、真の近傍行のうちインデックスが返した数を数えます。',
+    recallAll: '再現率 {{found}}/{{total}}: インデックスは厳密な近傍行をすべて返しました。厳密検索には {{ms}} ms かかりました。',
+    recallSome: '再現率 {{found}}/{{total}} ({{pct}}%): インデックスは厳密な近傍行の一部を取りこぼしました。厳密検索には {{ms}} ms かかりました。このクエリを実行するセッションで hnsw.ef_search（または ivfflat.probes）を上げてください。',
   },
   gridTools: {
     columnHeading: '列 "{{col}}"',

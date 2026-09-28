@@ -2133,8 +2133,8 @@ const vi: typeof en = {
     genHexColor: 'Màu hex',
     genMimeType: 'Kiểu MIME',
     genFileName: 'Tên tệp',
-
     genVector: 'Vector (pgvector)',
+
     optMin: 'Nhỏ nhất',
     optMax: 'Lớn nhất',
     optMinDate: 'Từ ngày',
@@ -2148,11 +2148,11 @@ const vi: typeof en = {
     optMaxLength: 'Độ dài lớn nhất',
     optLength: 'Độ dài',
     optByteLength: 'Số byte',
-    optCharset: 'Bộ ký tự',
     optDimensions: 'Số chiều',
     optNormalize: 'Độ dài đơn vị',
     optSparse: 'Thưa (sparsevec)',
     optNonZero: 'Số giá trị khác 0',
+    optCharset: 'Bộ ký tự',
     optPattern: 'Mẫu',
     optRegex: 'Biểu thức chính quy',
     optValues: 'Giá trị (mỗi dòng một giá trị)',
@@ -2198,8 +2198,8 @@ const vi: typeof en = {
     errPatternEmpty: '{{table}}.{{column}}: chưa nhập mẫu.',
     errExprEmpty: '{{table}}.{{column}}: chưa nhập biểu thức SQL.',
     errFkMissing: '{{table}}.{{column}}: hãy chọn bảng cha và cột tham chiếu.',
-    warnUniqueSpace:
     errVectorDims: '{{table}}.{{column}}: số chiều phải là số nguyên từ 1 đến 16.000, và số giá trị khác 0 từ 1 đến số chiều.',
+    warnUniqueSpace:
       '{{table}}.{{column}}: chỉ sinh được khoảng {{n}} giá trị khác nhau nhưng cần {{rows}} dòng — có thể cạn giá trị duy nhất.',
   },
 
@@ -3465,6 +3465,10 @@ const vi: typeof en = {
     sqlSummary: 'SQL được sinh ra',
     runHint: 'Tìm (Ctrl+Enter)',
     optionLabel: '{{name}} — {{type}}',
+    compareExact: 'So với tìm kiếm chính xác',
+    compareExactHint: 'Chạy cùng truy vấn nhưng không qua index — quét toàn bảng, so với mọi dòng — rồi đếm xem index trả về được bao nhiêu dòng gần nhất thật sự.',
+    recallAll: 'Recall {{found}}/{{total}}: index trả về đủ mọi dòng gần nhất chính xác. Tìm chính xác mất {{ms}} ms.',
+    recallSome: 'Recall {{found}}/{{total}} ({{pct}}%): index đã bỏ sót một số dòng gần nhất chính xác. Tìm chính xác mất {{ms}} ms. Hãy tăng hnsw.ef_search (hoặc ivfflat.probes) trong session chạy truy vấn này.',
   },
   gridTools: {
     columnHeading: 'Cột "{{col}}"',

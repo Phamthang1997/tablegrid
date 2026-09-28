@@ -149,6 +149,11 @@ export function buildKnnSql(o: {
   kind: VectorKind;
   metric: VectorMetric;
   k: number;
+  /**
+   * Order by `(expr) + 0`: the same distances, but no longer the operator expression an index can
+   * serve, so the planner scans every row. The ground truth `recallOf` compares the index against.
+   */
+  exact?: boolean;
 }): string {
   const tbl = (o.schema ? `${quoteIdent(o.schema, 'postgres')}.` : '') + quoteIdent(o.table, 'postgres');
   const col = quoteIdent(o.column, 'postgres');
@@ -157,7 +162,38 @@ export function buildKnnSql(o: {
     ? `(${expr}) * -1 AS ${quoteIdent(KNN_SIMILARITY_COLUMN, 'postgres')}`
     : `${expr} AS ${quoteIdent(KNN_SCORE_COLUMN, 'postgres')}`;
   const k = Math.max(1, Math.min(1000, Math.floor(o.k) || 1));
-  return `SELECT ${score}, *\nFROM ${tbl}\nWHERE ${col} IS NOT NULL\nORDER BY ${expr}\nLIMIT ${k}`;
+  const order = o.exact ? `(${expr}) + 0` : expr;
+  return `SELECT ${score}, *\nFROM ${tbl}\nWHERE ${col} IS NOT NULL\nORDER BY ${order}\nLIMIT ${k}`;
+}
+
+/** How many of the exact nearest rows the index returned. */
+export interface Recall {
+  found: number;
+  total: number;
+  /** Positions (in the exact result) of the rows the index missed. */
+  missed: number[];
+}
+
+/**
+ * Recall@k of an index scan against the exact answer. Rows are compared by every column EXCEPT the
+ * score (column 0), so no primary key is needed, and a score that differs in the last float digit
+ * between the two plans cannot count as a miss. Duplicates are matched one for one.
+ */
+export function recallOf(columns: string[], approx: Record<string, unknown>[], exact: Record<string, unknown>[]): Recall {
+  const keyOf = (r: Record<string, unknown>) => JSON.stringify(columns.slice(1).map((c) => r[c] ?? null));
+  const pool = new Map<string, number>();
+  for (const r of approx) {
+    const k = keyOf(r);
+    pool.set(k, (pool.get(k) ?? 0) + 1);
+  }
+  const missed: number[] = [];
+  exact.forEach((r, i) => {
+    const k = keyOf(r);
+    const n = pool.get(k) ?? 0;
+    if (n > 0) pool.set(k, n - 1);
+    else missed.push(i);
+  });
+  return { found: exact.length - missed.length, total: exact.length, missed };
 }
 
 /** Qualified name as text, for `to_regclass($1)`. */

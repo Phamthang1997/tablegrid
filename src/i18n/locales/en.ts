@@ -2149,8 +2149,8 @@ const en = {
     genHexColor: 'Hex colour',
     genMimeType: 'MIME type',
     genFileName: 'File name',
-
     genVector: 'Vector (pgvector)',
+
     optMin: 'Min',
     optMax: 'Max',
     optMinDate: 'From',
@@ -2164,11 +2164,11 @@ const en = {
     optMaxLength: 'Max length',
     optLength: 'Length',
     optByteLength: 'Bytes',
-    optCharset: 'Characters',
     optDimensions: 'Dimensions',
     optNormalize: 'Unit length',
     optSparse: 'Sparse (sparsevec)',
     optNonZero: 'Non-zero values',
+    optCharset: 'Characters',
     optPattern: 'Pattern',
     optRegex: 'Regular expression',
     optValues: 'Values (one per line)',
@@ -2214,8 +2214,8 @@ const en = {
     errPatternEmpty: '{{table}}.{{column}}: the pattern is empty.',
     errExprEmpty: '{{table}}.{{column}}: the SQL expression is empty.',
     errFkMissing: '{{table}}.{{column}}: pick the parent table and column.',
-    warnUniqueSpace:
     errVectorDims: '{{table}}.{{column}}: dimensions must be a whole number from 1 to 16,000, and non-zero values from 1 to the dimensions.',
+    warnUniqueSpace:
       '{{table}}.{{column}}: only about {{n}} distinct values are possible but {{rows}} rows are requested — unique may run out.',
   },
 
@@ -3495,6 +3495,10 @@ const en = {
     sqlSummary: 'Generated SQL',
     runHint: 'Search (Ctrl+Enter)',
     optionLabel: '{{name}} — {{type}}',
+    compareExact: 'Compare with exact search',
+    compareExactHint: 'Runs the same query without the index — a full scan that compares every row — and counts how many of the true nearest rows the index returned.',
+    recallAll: 'Recall {{found}}/{{total}}: the index returned every one of the exact nearest rows. The exact search took {{ms}} ms.',
+    recallSome: 'Recall {{found}}/{{total}} ({{pct}}%): the index missed some of the exact nearest rows. The exact search took {{ms}} ms. Raise hnsw.ef_search (or ivfflat.probes) in the session that runs this query.',
   },
   gridTools: {
     columnHeading: 'Column "{{col}}"',

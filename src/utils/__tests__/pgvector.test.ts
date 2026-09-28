@@ -5,6 +5,7 @@ import {
   indexFor,
   parseVectorText,
   planUsesIndex,
+  recallOf,
   toVectorText,
   vectorKindOf,
   vectorStats,
@@ -120,5 +121,30 @@ describe('indexFor / planUsesIndex', () => {
     expect(planUsesIndex(plan, 'items_embedding_idx')).toBe(true);
     expect(planUsesIndex(plan, 'items_l2')).toBe(false);
     expect(planUsesIndex('Limit\n  ->  Sort\n        ->  Seq Scan on items', 'items_embedding_idx')).toBe(false);
+  });
+});
+
+describe('exact search and recall', () => {
+  it('orders by an expression no index can serve', () => {
+    const sql = buildKnnSql({ table: 't', column: 'e', kind: 'vector', metric: 'cosine', k: 10, exact: true });
+    expect(sql).toContain('ORDER BY ("e" <=> $1::vector) + 0\n');
+    // The score column is the same expression either way.
+    expect(sql).toContain('SELECT "e" <=> $1::vector AS "_distance"');
+  });
+
+  it('counts the exact rows the index returned, ignoring the score column', () => {
+    const cols = ['_distance', 'id', 'label'];
+    const exact = [{ _distance: 0, id: 2, label: 'b' }, { _distance: 0.6, id: 7, label: 'x' }, { _distance: 0.7, id: 9, label: 'y' }];
+    // Same rows, the score off in the last digit: still a hit.
+    const approx = [{ _distance: 0.6000001, id: 7, label: 'x' }, { _distance: 0.7, id: 9, label: 'y' }, { _distance: 0.8, id: 4, label: 'z' }];
+    expect(recallOf(cols, approx, exact)).toEqual({ found: 2, total: 3, missed: [0] });
+    expect(recallOf(cols, exact, exact)).toEqual({ found: 3, total: 3, missed: [] });
+    expect(recallOf(cols, [], [])).toEqual({ found: 0, total: 0, missed: [] });
+  });
+
+  it('matches duplicate rows one for one', () => {
+    const cols = ['_distance', 'v'];
+    const exact = [{ _distance: 0, v: 1 }, { _distance: 0, v: 1 }];
+    expect(recallOf(cols, [{ _distance: 0, v: 1 }], exact)).toEqual({ found: 1, total: 2, missed: [1] });
   });
 });

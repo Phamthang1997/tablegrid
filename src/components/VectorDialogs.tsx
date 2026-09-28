@@ -10,10 +10,12 @@ import {
   indexFor,
   parseVectorText,
   planUsesIndex,
+  recallOf,
   regclassName,
   toVectorText,
   vectorKindOf,
   vectorStats,
+  type Recall,
   type VectorIndex,
   type VectorMetric,
 } from '../utils/pgvector';
@@ -165,7 +167,10 @@ export const VectorSearchDialog: React.FC<{
   const [indexes, setIndexes] = useState<VectorIndex[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ columns: string[]; data: any[]; ms: number } | null>(null);
+  // The SQL and parameter a result came from, so the exact comparison asks the same question even
+  // after the form has been edited.
+  const [result, setResult] = useState<{ columns: string[]; data: any[]; ms: number; sql: string; param: string; exactSql: string } | null>(null);
+  const [recall, setRecall] = useState<{ r: Recall; ms: number } | null>(null);
   const [plan, setPlan] = useState<string | null>(null);
 
   const colType = vectorColumns.find((c) => c.name === column)?.type ?? '';
@@ -214,10 +219,23 @@ export const VectorSearchDialog: React.FC<{
     setBusy(true);
     setError(null);
     setPlan(null);
+    setRecall(null);
     const [res, ms] = await timed(() => dbHelper.executeQuery(connId, sql, [param]));
     setBusy(false);
     if (!res.success) { setError(res.error ?? ''); setResult(null); return; }
-    setResult({ columns: res.columns ?? [], data: res.data ?? [], ms });
+    const exactSql = buildKnnSql({ schema, table, column, kind, metric, k, exact: true });
+    setResult({ columns: res.columns ?? [], data: res.data ?? [], ms, sql, param, exactSql });
+  };
+
+  /** The same query as a full scan: the ground truth an approximate index is measured against. */
+  const compareExact = async () => {
+    if (!result || busy) return;
+    setBusy(true);
+    setError(null);
+    const [res, ms] = await timed(() => dbHelper.executeQuery(connId, result.exactSql, [result.param]));
+    setBusy(false);
+    if (!res.success) { setError(res.error ?? ''); return; }
+    setRecall({ r: recallOf(result.columns, result.data, res.data ?? []), ms });
   };
 
   const explain = async () => {
@@ -248,13 +266,13 @@ export const VectorSearchDialog: React.FC<{
         <div className="vec-form">
           <label>
             <span>{t('pgvector.column')}</span>
-            <select className="form-input" value={column} onChange={(e) => { setColumn(e.target.value); setResult(null); setPlan(null); }}>
+            <select className="form-input" value={column} onChange={(e) => { setColumn(e.target.value); setResult(null); setPlan(null); setRecall(null); }}>
               {vectorColumns.map((c) => <option key={c.name} value={c.name}>{t('pgvector.optionLabel', { name: c.name, type: c.type })}</option>)}
             </select>
           </label>
           <label>
             <span>{t('pgvector.metric')}</span>
-            <select className="form-input" value={metric} onChange={(e) => { setMetric(e.target.value as VectorMetric); setResult(null); setPlan(null); }}>
+            <select className="form-input" value={metric} onChange={(e) => { setMetric(e.target.value as VectorMetric); setResult(null); setPlan(null); setRecall(null); }}>
               {VECTOR_METRICS.map((m) => <option key={m.id} value={m.id}>{t(METRIC_LABEL_KEY[m.id])}</option>)}
             </select>
           </label>
@@ -323,7 +341,25 @@ export const VectorSearchDialog: React.FC<{
                 {' · '}
                 {scoreIsSimilarity ? t('pgvector.similarityHint') : t('pgvector.distanceHint')}
               </span>
+              <span className="gt-spacer" />
+              {result.data.length > 0 && (
+                <button className="btn btn-secondary" onClick={compareExact} disabled={busy} title={t('pgvector.compareExactHint')}>
+                  {t('pgvector.compareExact')}
+                </button>
+              )}
             </div>
+            {recall && (
+              <div className={recall.r.missed.length === 0 ? 'vec-index ok' : 'vec-index warn'}>
+                {recall.r.missed.length === 0
+                  ? t('pgvector.recallAll', { found: recall.r.found, total: recall.r.total, ms: recall.ms.toLocaleString(i18n.language) })
+                  : t('pgvector.recallSome', {
+                      found: recall.r.found,
+                      total: recall.r.total,
+                      pct: Math.round((100 * recall.r.found) / Math.max(1, recall.r.total)),
+                      ms: recall.ms.toLocaleString(i18n.language),
+                    })}
+              </div>
+            )}
             {result.data.length === 0 ? (
               <div className="gt-note">{t('pgvector.noRows', { col: column })}</div>
             ) : (
