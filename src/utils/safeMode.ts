@@ -49,6 +49,7 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   execute_query: 'sql',
   execute_multi_query: 'sql',
   execute_query_stream: 'sql',
+  pg_vector_search: 'sql',
 
   // --- Writes whose SQL is built in Rust from a payload ---
   alter_sequence: 'write',

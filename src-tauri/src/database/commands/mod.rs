@@ -17,6 +17,7 @@ mod table_alter;
 mod table_ddl;
 mod table_import;
 mod table_schema;
+mod vector_search;
 
 pub use catalog::*;
 pub use connection::*;
@@ -34,3 +35,4 @@ pub use table_alter::*;
 pub use table_ddl::*;
 pub use table_import::*;
 pub use table_schema::*;
+pub use vector_search::*;

@@ -1507,6 +1507,12 @@ select.form-input {
   text-overflow: ellipsis;
 }
 
+.vec-tuning {
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-text-primary);
+}
+
 .vec-results .vec-score {
   color: var(--win-accent);
   font-weight: 600;

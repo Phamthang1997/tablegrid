@@ -236,3 +236,18 @@ export function planUsesIndex(plan: string, indexName: string): boolean {
   const q = quoteIdent(indexName, 'postgres');
   return plan.split('\n').some((l) => /Index (Only )?Scan using/.test(l) && (l.includes(` ${indexName} `) || l.includes(` ${q} `)));
 }
+
+/** pgvector's bounds for the search-time settings; the Rust side (`vector_search.rs`) checks the same. */
+export const EF_SEARCH_MAX = 1000;
+export const PROBES_MAX = 32768;
+
+/**
+ * A search-time setting typed into the playground. Empty means "the server's value" and sends
+ * nothing; anything else must be a whole number in `1..max`.
+ */
+export function parseTuning(text: string, max: number): { value?: number; bad: boolean } {
+  const s = text.trim();
+  if (s === '') return { bad: false };
+  const n = Number(s);
+  return Number.isInteger(n) && n >= 1 && n <= max ? { value: n, bad: false } : { bad: true };
+}

@@ -6,6 +6,9 @@ import {
   parseVectorText,
   planUsesIndex,
   recallOf,
+  parseTuning,
+  EF_SEARCH_MAX,
+  PROBES_MAX,
   toVectorText,
   vectorKindOf,
   vectorStats,
@@ -146,5 +149,16 @@ describe('exact search and recall', () => {
     const cols = ['_distance', 'v'];
     const exact = [{ _distance: 0, v: 1 }, { _distance: 0, v: 1 }];
     expect(recallOf(cols, [{ _distance: 0, v: 1 }], exact)).toEqual({ found: 1, total: 2, missed: [1] });
+  });
+});
+
+describe('parseTuning', () => {
+  it('empty keeps the server value, a whole number in range is sent, anything else is refused', () => {
+    expect(parseTuning('', EF_SEARCH_MAX)).toEqual({ bad: false });
+    expect(parseTuning('  ', EF_SEARCH_MAX)).toEqual({ bad: false });
+    expect(parseTuning('400', EF_SEARCH_MAX)).toEqual({ value: 400, bad: false });
+    expect(parseTuning('1000', EF_SEARCH_MAX)).toEqual({ value: 1000, bad: false });
+    for (const bad of ['0', '1001', '12.5', 'abc', '-3']) expect(parseTuning(bad, EF_SEARCH_MAX).bad).toBe(true);
+    expect(parseTuning('32768', PROBES_MAX).value).toBe(32768);
   });
 });

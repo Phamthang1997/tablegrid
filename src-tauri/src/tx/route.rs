@@ -185,6 +185,58 @@ pub(crate) async fn run_bound(
     out
 }
 
+/// `run_bound` with `setup` statements (`SET LOCAL …`) scoped to this one query. Postgres only.
+///
+/// Runs inside a savepoint that is always rolled back: `ROLLBACK TO` undoes a `SET LOCAL` as well,
+/// so the user's transaction keeps its own settings, and a failing query cannot leave it aborted
+/// (25P02) either. The query itself is counted like any other read — it opens the transaction if
+/// manual mode has not yet, exactly as a SELECT from the editor would.
+pub(crate) async fn run_bound_scoped(
+    conn: &DbConnection,
+    setup: &[String],
+    sql: String,
+    params: &[Value],
+) -> Result<Vec<Value>, String> {
+    let stripped = database::strip_leading_comments(&sql);
+    let effect = tx_effect(dialect_of(conn), stripped);
+    let is_write = is_write_stmt(stripped);
+    let id = conn_scope_id(conn).ok_or("internal: ad-hoc connection has no transaction session")?;
+    check_not_aborted(id, &effect)?;
+
+    let mut guard = lock_pinned(conn).await?;
+    let pinned = guard.as_mut().ok_or("Phiên transaction không sẵn sàng")?;
+    ensure_begin(pinned, conn, &effect).await?;
+    let Pinned::Postgres(c) = pinned else {
+        return Err("Tìm kiếm vector chỉ hỗ trợ PostgreSQL".to_string());
+    };
+
+    const SP: &str = "tablegrid_vector_search";
+    database::pg_raw(c, &format!("SAVEPOINT {SP}")).await?;
+    let mut out = Ok(Vec::new());
+    for stmt in setup {
+        if let Err(e) = database::pg_raw(c, stmt).await {
+            out = Err(e);
+            break;
+        }
+    }
+    if out.is_ok() {
+        out = database::pg_bound(c, &sql, params).await;
+    }
+    // Both always run. If the rollback itself fails the savepoint is still there; say so rather
+    // than report a result from a transaction whose state is now unknown.
+    let undo = database::pg_raw(c, &format!("ROLLBACK TO SAVEPOINT {SP}")).await;
+    let release = database::pg_raw(c, &format!("RELEASE SAVEPOINT {SP}")).await;
+    drop(guard);
+    undo.and(release)?;
+
+    match &out {
+        Ok(_) => apply_effect(id, &effect, is_write, &sql, None),
+        Err(e) => apply_effect(id, &effect, is_write, &sql, Some(e)),
+    }
+    release_if_closed(id).await;
+    out
+}
+
 /// `stream_one_statement` routed through the session.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_stream(

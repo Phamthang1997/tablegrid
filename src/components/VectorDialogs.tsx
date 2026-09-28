@@ -11,6 +11,9 @@ import {
   parseVectorText,
   planUsesIndex,
   recallOf,
+  parseTuning,
+  EF_SEARCH_MAX,
+  PROBES_MAX,
   regclassName,
   toVectorText,
   vectorKindOf,
@@ -169,7 +172,9 @@ export const VectorSearchDialog: React.FC<{
   const [error, setError] = useState<string | null>(null);
   // The SQL and parameter a result came from, so the exact comparison asks the same question even
   // after the form has been edited.
-  const [result, setResult] = useState<{ columns: string[]; data: any[]; ms: number; sql: string; param: string; exactSql: string } | null>(null);
+  const [result, setResult] = useState<{ columns: string[]; data: any[]; ms: number; sql: string; param: string; exactSql: string; tuning: string | null } | null>(null);
+  // Text of the ef_search / probes box: empty keeps the server's value.
+  const [tuningText, setTuningText] = useState('');
   const [recall, setRecall] = useState<{ r: Recall; ms: number } | null>(null);
   const [plan, setPlan] = useState<string | null>(null);
 
@@ -204,12 +209,19 @@ export const VectorSearchDialog: React.FC<{
         ? t('pgvector.dimMismatch', { declared, n: parsed.dim })
         : null;
   const zeroCosine = !!parsed && metric === 'cosine' && vectorStats(parsed).norm === 0;
-  const ready = !!parsed && !problem && schema !== undefined && !busy;
-
   const sql = buildKnnSql({ schema, table, column, kind, metric, k });
   const param = parsed ? toVectorText(parsed, kind) : '';
 
   const served = indexes ? indexFor(indexes, column, kind, metric) : null;
+  // The knob that matters is the one of the index serving this search: ef_search for HNSW, probes
+  // for IVFFlat. With no index there is nothing approximate to tune.
+  const tuningKind = served?.method === 'hnsw' ? 'efSearch' : served?.method === 'ivfflat' ? 'probes' : null;
+  const tuning = tuningKind ? parseTuning(tuningText, tuningKind === 'efSearch' ? EF_SEARCH_MAX : PROBES_MAX) : { bad: false };
+  const settings = tuningKind && tuning.value !== undefined ? { [tuningKind]: tuning.value } : {};
+  const tuningLabel = tuningKind && tuning.value !== undefined
+    ? `${tuningKind === 'efSearch' ? 'hnsw.ef_search' : 'ivfflat.probes'} = ${tuning.value}`
+    : null;
+  const ready = !!parsed && !problem && !tuning.bad && schema !== undefined && !busy;
   const otherMetrics = indexes
     ? VECTOR_METRICS.filter((m) => m.id !== metric && indexFor(indexes, column, kind, m.id)).map((m) => t(METRIC_LABEL_KEY[m.id]))
     : [];
@@ -220,11 +232,11 @@ export const VectorSearchDialog: React.FC<{
     setError(null);
     setPlan(null);
     setRecall(null);
-    const [res, ms] = await timed(() => dbHelper.executeQuery(connId, sql, [param]));
+    const [res, ms] = await timed(() => dbHelper.vectorSearch(connId, sql, [param], settings));
     setBusy(false);
     if (!res.success) { setError(res.error ?? ''); setResult(null); return; }
     const exactSql = buildKnnSql({ schema, table, column, kind, metric, k, exact: true });
-    setResult({ columns: res.columns ?? [], data: res.data ?? [], ms, sql, param, exactSql });
+    setResult({ columns: res.columns ?? [], data: res.data ?? [], ms, sql, param, exactSql, tuning: tuningLabel });
   };
 
   /** The same query as a full scan: the ground truth an approximate index is measured against. */
@@ -242,7 +254,7 @@ export const VectorSearchDialog: React.FC<{
     if (!ready) return;
     setBusy(true);
     setError(null);
-    const res = await dbHelper.executeQuery(connId, `EXPLAIN ${sql}`, [param]);
+    const res = await dbHelper.vectorSearch(connId, `EXPLAIN ${sql}`, [param], settings);
     setBusy(false);
     if (!res.success) { setError(res.error ?? ''); return; }
     const col = res.columns?.[0] ?? 'QUERY PLAN';
@@ -287,7 +299,22 @@ export const VectorSearchDialog: React.FC<{
               onChange={(e) => setK(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))}
             />
           </label>
+          {tuningKind && (
+            <label className="vec-form-k" title={t('pgvector.tuningNote')}>
+              <span>{tuningKind === 'efSearch' ? t('pgvector.efSearch') : t('pgvector.probes')}</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                className="form-input"
+                value={tuningText}
+                // pgvector's defaults: 40 candidates for HNSW, 1 list for IVFFlat.
+                placeholder={t('pgvector.tuningDefault', { n: tuningKind === 'efSearch' ? 40 : 1 })}
+                onChange={(e) => setTuningText(e.target.value)}
+              />
+            </label>
+          )}
         </div>
+        {tuning.bad && <div className="gt-editor-msg">{t('pgvector.tuningBad')}</div>}
 
         <label className="vec-query">
           <span>{t('pgvector.queryVector')}</span>
@@ -338,6 +365,7 @@ export const VectorSearchDialog: React.FC<{
             <div className="gt-toolbar">
               <span className="gt-note">
                 {t('pgvector.resultCount', { n: result.data.length.toLocaleString(i18n.language), ms: result.ms.toLocaleString(i18n.language) })}
+                {result.tuning && <> · <code className="vec-tuning">{result.tuning}</code></>}
                 {' · '}
                 {scoreIsSimilarity ? t('pgvector.similarityHint') : t('pgvector.distanceHint')}
               </span>
