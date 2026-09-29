@@ -242,4 +242,7 @@ if (typeof window !== 'undefined' && !(window as any).__dbIndexListener) {
   (window as any).__dbIndexListener = true;
   window.addEventListener('table-renamed', onSchemaChanged);
   window.addEventListener('database-restored', onSchemaChanged);
+  // DDL run from the editor, and a DuckDB file attached as a view. Without it the index kept the
+  // tables it had at connect, so a table created a moment ago was underlined as unknown.
+  window.addEventListener('schema-changed', onSchemaChanged);
 }
