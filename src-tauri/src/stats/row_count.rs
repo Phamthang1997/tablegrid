@@ -19,6 +19,15 @@ pub async fn get_exact_table_row_count(
         };
 
         match &conn_clone.kind {
+            DbKind::DuckDb(arc) => {
+                let sql = format!(
+                    "SELECT COUNT(*) AS n FROM \"{}\"",
+                    table_name.replace('"', "\"\"")
+                );
+                let out = crate::database::duck_query(arc, &sql, &[]).await?;
+                let count = out[0]["data"][0]["n"].as_i64().unwrap_or(0);
+                Ok(json!({ "table_name": table_name, "exact_rows": count.max(0) }))
+            }
             DbKind::Sqlite(sqlite_conn) => {
                 let conn = sqlite_conn.lock().map_err(|e| e.to_string())?;
                 let sql = format!(

@@ -37,7 +37,7 @@ export const BackupSchedulesDialog: React.FC<{ onClose: () => void }> = ({ onClo
   const schedules = useSyncExternalStore(subscribeSchedules, listSchedules);
   // Re-rendered when any job moves, so "running" and the last result follow a run as it happens.
   useSyncExternalStore(subscribeJobs, listJobs);
-  const profiles = useMemo(() => loadSavedProfiles().filter((p) => p.type !== 'redis'), []);
+  const profiles = useMemo(() => loadSavedProfiles().filter((p) => p.type !== 'redis' && p.type !== 'duckdb'), []);
   const [editing, setEditing] = useState<BackupSchedule | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<BackupSchedule | null>(null);

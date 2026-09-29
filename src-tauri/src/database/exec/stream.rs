@@ -76,6 +76,9 @@ pub(crate) async fn stream_one_statement(
             let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
             mysql_stream(&mut conn, sql, params, stmt_index, channel, cancel).await
         }
+        DbKind::DuckDb(arc) => {
+            super::super::duck::duck_stream(arc, sql, params, stmt_index, channel, cancel).await
+        }
     }
 }
 

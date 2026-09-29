@@ -7,7 +7,7 @@ import { Plus, Trash2, Save, AlertTriangle, CheckCircle } from 'lucide-react';
 interface CreateRoutineModalProps {
   /** The connection this component acts on. Passed explicitly, never read from the ambient id (§4.1). */
   connId: string;
-  dbType: 'sqlite' | 'postgres' | 'mysql';
+  dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb';
   onClose: () => void;
   onCreated: () => void;
 }

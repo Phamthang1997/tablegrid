@@ -25,7 +25,7 @@ export interface CopyDatabaseOptions extends DumpSelection {
   targetLabel: string;
   /** The target database's own name, for the job's `db` field and its exclusivity key. */
   targetDb: string;
-  dbType: 'sqlite' | 'postgres' | 'mysql';
+  dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb';
   /**
    * The SOURCE connection's Postgres schema, passed on to `buildDump` exactly as the export path
    * does: it is what the dump's header names, and therefore where the objects land.
@@ -285,7 +285,8 @@ export const CopyDatabaseDialog: React.FC<CopyDatabaseDialogProps> = ({
       try {
         const list = await dbHelper.listConnections();
         // Redis is not a SQL dump — it has its own transfer dialog (`RedisTransferDialog`).
-        const sql = list.filter((c) => c.dialect !== 'redis');
+        // DuckDB can be neither side: it is read-mostly here, and restore refuses it.
+        const sql = list.filter((c) => c.dialect !== 'redis' && c.dialect !== 'duckdb');
         // The ref is what `resolveSide` reads to decide whether IT opened a connection. Kept beside
         // the state rather than in the resolve effect's deps, where it would re-resolve — and
         // therefore re-open — the source on every Refresh.
@@ -508,7 +509,7 @@ export const CopyDatabaseDialog: React.FC<CopyDatabaseDialogProps> = ({
         sourceLabel: sideLabel(sourceConn, sourceDb),
         targetLabel: sideLabel(targetConn, targetDb),
         targetDb,
-        dbType: sourceConn.dialect as 'sqlite' | 'postgres' | 'mysql',
+        dbType: sourceConn.dialect as 'sqlite' | 'postgres' | 'mysql' | 'duckdb',
         sourceSchema: resolvedSource.schema,
         ...splitSelection(chosen),
         // `dropTable && includeStructure`, not the raw flag — see the checkbox's comment below.

@@ -169,3 +169,21 @@ describe('tabsStorageKeyCandidates', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 });
+
+describe('connKey — DuckDB', () => {
+  const duck = (sqlitePath?: string): DbConnectionConfig => ({ type: 'duckdb', sqlitePath });
+
+  it('is keyed by its file, like SQLite, and never collides with a SQLite file of the same path', () => {
+    expect(connKey(duck('C:/data/a.duckdb'))).not.toBe(connKey(duck('C:/data/b.duckdb')));
+    expect(connKey(duck('C:/data/a.db'))).not.toBe(connKey({ type: 'sqlite', sqlitePath: 'C:/data/a.db' }));
+  });
+
+  it('gives every in-memory database one scratch key rather than none', () => {
+    expect(connKey(duck(''))).toBe('duckdb::memory:');
+    expect(connKey(duck(undefined))).toBe('duckdb::memory:');
+  });
+
+  it('adds no database level: one file is one database', () => {
+    expect(scopeKey(duck('C:/data/a.duckdb'), 'main')).toBe(connKey(duck('C:/data/a.duckdb')));
+  });
+});

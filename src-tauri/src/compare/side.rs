@@ -57,7 +57,7 @@ impl Resolved {
             DbKind::Postgres(pool) => pool.close().await,
             DbKind::Mysql(pool) => pool.close().await,
             // rusqlite closes itself when the last Arc is dropped.
-            DbKind::Sqlite(_) => {}
+            DbKind::Sqlite(_) | DbKind::DuckDb(_) => {}
         }
     }
 }

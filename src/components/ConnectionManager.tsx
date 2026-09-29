@@ -3,7 +3,8 @@ import { Trans, useTranslation } from 'react-i18next';
 import { dbHelper } from '../utils/dbHelper';
 import type { DbConnectionConfig } from '../utils/dbHelper';
 import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, ArrowRight, Check, Cloud, DatabaseBackup, LogIn, KeyRound, CalendarClock } from 'lucide-react';
-import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './DbIcons';
+import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon, DuckDbIcon } from './DbIcons';
+import { isFileDb } from '../utils/dbCaps';
 import { encryptConnectionExport, decryptConnectionExport, CONNECTION_FILE_EXT, CONNECTION_FILE_ACCEPT } from '../utils/cryptoHelper';
 import { CONN_ENVS, envLabelKey, legacyEnvOfColor, normalizeEnv, type ConnEnv } from '../utils/connEnv';
 import {
@@ -15,7 +16,7 @@ import {
 } from '../utils/dumpPreview';
 import { buildDump, writeDump } from '../utils/dumpBuilder';
 import { planDatabaseBackup } from '../utils/profileBackup';
-import { getLastExportDir, saveDumpToFolder, saveExportFileAtPath, pickOpenFile, pickSaveFilePath, pickSqliteDatabaseFile } from '../utils/fileSave';
+import { getLastExportDir, saveDumpToFolder, saveExportFileAtPath, pickOpenFile, pickSaveFilePath, pickSqliteDatabaseFile, pickDuckDbDatabaseFile } from '../utils/fileSave';
 import { fileBaseFromPath, fileStamp, safeFileBase } from '../utils/exportHelper';
 import { startJob } from '../utils/jobs';
 import { runOnJobConnection } from '../utils/jobConnection';
@@ -112,7 +113,7 @@ const FilePick: React.FC<{ id: string; value: string; label: string; onPick: (pa
 export interface SavedProfile {
   id: string;
   name: string;
-  type: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+  type: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
   config: any;
   /** The colour label, purely decorative. The environment lives in `env` — see `utils/connEnv.ts`. */
   color?: string;
@@ -161,7 +162,7 @@ interface ConnectionManagerProps {
   // tf_connection_profiles.
   onConnect: (
     dbName: string,
-    dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis',
+    dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis',
     color?: string,
     config?: DbConnectionConfig,
     // `env` lives here rather than becoming a seventh positional parameter: it is a property of the
@@ -189,6 +190,7 @@ const TYPE_META: Record<string, { label: string; color: string; Icon: React.FC<{
   postgres: { label: 'PostgreSQL', color: '#336791', Icon: PostgresIcon },
   mysql: { label: 'MySQL', color: '#00758F', Icon: MySqlIcon },
   redis: { label: 'Redis', color: '#DC382D', Icon: RedisIcon },
+  duckdb: { label: 'DuckDB', color: '#FFF000', Icon: DuckDbIcon },
 };
 
 export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, embedded = false, variant = 'manage', onConnect }) => {
@@ -217,7 +219,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     fail: t('connection.ledFail'),
   };
 
-  const [activeType, setActiveType] = useState<'sqlite' | 'postgres' | 'mysql' | 'redis' | 'backup_restore'>('sqlite');
+  const [activeType, setActiveType] = useState<'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis' | 'backup_restore'>('sqlite');
   // Redis form state
   const [redisHost, setRedisHost] = useState('127.0.0.1');
   const [redisPort, setRedisPort] = useState(6379);
@@ -965,7 +967,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     setProfileGroup(profile.group || '');
 
     const config = await configWithSecrets(profile);
-    if (profile.type === 'sqlite') {
+    if (isFileDb(profile.type)) {
       setSqlitePath(config.sqlitePath || '');
     } else if (profile.type === 'redis') {
       setRedisHost(config.host || '127.0.0.1');
@@ -1081,6 +1083,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     let config: any = {};
     if (activeType === 'sqlite') {
       config = { type: 'sqlite', sqlitePath };
+    } else if (activeType === 'duckdb') {
+      config = { type: 'duckdb', sqlitePath };
     } else if (activeType === 'redis') {
       config = buildRedisConfig();
     } else if (activeType === 'postgres') {
@@ -1159,7 +1163,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   };
 
   // A fresh profile for `type` with that engine's usual defaults. Not saved by itself.
-  const blankProfile = (type: 'sqlite' | 'postgres' | 'mysql' | 'redis'): SavedProfile => {
+  const blankProfile = (type: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis'): SavedProfile => {
     // sslMode has to be in the config itself, not only in the state's initial value: selectProfile
     // reads it back from the config, and without the field it falls back to DISABLED and
     // overwrites whatever the form is showing.
@@ -1169,6 +1173,9 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       type,
       config: type === 'sqlite'
         ? { type, sqlitePath: 'new_database.db' }
+        // Empty is an in-memory database: somewhere to attach files without creating one first.
+        : type === 'duckdb'
+        ? { type, sqlitePath: '' }
         : type === 'postgres'
           ? { type, host: 'localhost', port: 5432, user: 'postgres', database: 'postgres', sslMode: 'PREFERRED' }
           : type === 'redis'
@@ -1177,7 +1184,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     };
   };
 
-  const handleCreateNewProfile = async (type: 'sqlite' | 'postgres' | 'mysql' | 'redis') => {
+  const handleCreateNewProfile = async (type: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis') => {
     const newProfile = blankProfile(type);
     // The new-connection dialog keeps it as a draft until Connect succeeds.
     if (!isNew) await persistProfiles([...profiles, newProfile]);
@@ -1240,6 +1247,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
 
     if (activeType === 'sqlite') {
       config = { type: 'sqlite', sqlitePath };
+    } else if (activeType === 'duckdb') {
+      config = { type: 'duckdb', sqlitePath };
     } else if (activeType === 'postgres') {
       config = {
         type: 'postgres',
@@ -1318,7 +1327,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     if (res.success) {
       setSuccessMsg(res.message);
       setIsSuccessConnecting(true);
-      setConnectingDbName(res.database || (config.type === 'sqlite' ? config.sqlitePath : config.database) || 'Database');
+      setConnectingDbName(res.database || (isFileDb(config.type) ? (config.sqlitePath || ':memory:') : config.database) || 'Database');
       let activeProfile = profiles.find(p => p.id === activeProfileId);
       // New-connection dialog: the draft is saved only now that it is known to work.
       if (!activeProfile && isNew && saveToList) activeProfile = (await handleSaveProfile(true)) || undefined;
@@ -1370,6 +1379,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     let config: DbConnectionConfig;
     if (activeType === 'sqlite') {
       config = { type: 'sqlite', sqlitePath };
+    } else if (activeType === 'duckdb') {
+      config = { type: 'duckdb', sqlitePath };
     } else if (activeType === 'postgres') {
       config = {
         type: 'postgres',
@@ -1661,6 +1672,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   // A summarised connection string (no password) — shown in the header for a quick check.
   const connectionUri = (() => {
     if (activeType === 'sqlite') return `sqlite://${sqlitePath}`;
+    if (activeType === 'duckdb') return `duckdb://${sqlitePath || ':memory:'}`;
     if (activeType === 'redis') return `${tlsOn ? 'rediss' : 'redis'}://${redisUser ? redisUser + '@' : ''}${redisHost}:${redisPort}/${redisDbIndex}`;
     if (activeType === 'postgres') return `postgres://${pgUser}@${pgHost}:${pgPort}/${pgDatabase}`;
     return `mysql://${myUser}@${myHost}:${myPort}/${myDatabase || ''}`;
@@ -1677,10 +1689,11 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   const toggleGroup = (name: string) =>
     setCollapsedGroups((prev) => ({ ...prev, [name]: !prev[name] }));
 
-  const NEW_TYPES: { val: 'sqlite' | 'postgres' | 'mysql' | 'redis'; label: string }[] = [
+  const NEW_TYPES: { val: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis'; label: string }[] = [
     { val: 'sqlite', label: 'SQLite' },
     { val: 'postgres', label: 'PostgreSQL' },
     { val: 'mysql', label: 'MySQL' },
+    { val: 'duckdb', label: 'DuckDB' },
     { val: 'redis', label: 'Redis' },
   ];
 
@@ -1885,6 +1898,17 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     }
   };
 
+  const handlePickDuckDbPath = async () => {
+    const file = await pickDuckDbDatabaseFile(sqlitePath || undefined);
+    if (file) {
+      setSqlitePath(file);
+      const filename = file.split(/[\\/]/).pop();
+      if (filename && (!profileNameInput.trim() || profileNameInput.toLowerCase().includes('duckdb'))) {
+        setProfileNameInput(filename.replace(/\.[^/.]+$/, ''));
+      }
+    }
+  };
+
   // ——— The "General" tab, per DB engine ———
   const renderGeneralTab = () => (
     <>
@@ -1919,6 +1943,35 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                 </button>
               </div>
               <span className="cm-hint">{t('connection.sqliteHint')}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeType === 'duckdb' && (
+        <div className="cm-section">
+          <div className="cm-section-title">{t('connection.duckSection')}</div>
+          <div className="cm-section-desc">{t('connection.duckDesc')}</div>
+          <div className="cm-fields">
+            <div className="form-group">
+              <label>{t('connection.duckPathLabel')}</label>
+              <div className="cm-file-row">
+                <div className="input-icon-wrapper">
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={sqlitePath}
+                    onChange={(e) => setSqlitePath(e.target.value)}
+                    placeholder={t('connection.duckPathPlaceholder')}
+                  />
+                  <FolderOpen size={14} className="input-icon" />
+                </div>
+                <button type="button" className="cm-file-btn" onClick={handlePickDuckDbPath} title={t('connection.pickFile')}>
+                  <FolderOpen size={12} />
+                  <span>{t('connection.pickFile')}</span>
+                </button>
+              </div>
+              <span className="cm-hint">{t('connection.duckHint')}</span>
             </div>
           </div>
         </div>
@@ -2469,7 +2522,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                   const profId = e.target.value;
                   setSelectedBrProfileId(profId);
                   const selectedProf = profiles.find(p => p.id === profId);
-                  if (selectedProf) {
+                  if (selectedProf && selectedProf.type !== 'duckdb') {
                     setBrType(selectedProf.type === 'redis' ? 'sqlite' : selectedProf.type);
                     // The password lives in the OS store -> it has to be read back before the backup form can be filled.
                     const c = await configWithSecrets(selectedProf);
@@ -2492,7 +2545,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                 }}
               >
                 <option value="">{t('connection.brManual')}</option>
-                {profiles.map(p => (
+                {/* A DuckDB file is what gets queried, not something this screen backs up or restores into. */}
+                {profiles.filter(p => p.type !== 'duckdb').map(p => (
                   <option key={p.id} value={p.id}>{p.name} ({p.type.toUpperCase()})</option>
                 ))}
               </select>

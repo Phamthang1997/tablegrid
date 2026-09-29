@@ -172,7 +172,8 @@ export function McpServerSettingsModal({ onClose, asTab = false }: Props) {
         setPort(String(readMcpPrefs().port ?? s.port));
       }
       // Redis is out of MCP scope, so listing it here would offer a switch that does nothing.
-      setConnections(conns.filter((c) => c.dialect !== 'redis'));
+      // DuckDB is never offered to an AI client: its read_csv('…') opens any file on the machine.
+      setConnections(conns.filter((c) => c.dialect !== 'redis' && c.dialect !== 'duckdb'));
     } catch (err) {
       setError(String(err));
     }

@@ -79,6 +79,12 @@ pub(crate) async fn get_primary_key_columns(
                 Err(_) => Vec::new(),
             }
         }
+        DbKind::DuckDb(arc) => {
+            let t = table.to_string();
+            super::duck_blocking(arc, move |c| Ok(super::duck_primary_key_on(c, &t)))
+                .await
+                .unwrap_or_default()
+        }
     }
 }
 
@@ -97,6 +103,8 @@ pub(crate) async fn list_databases_inner(
         DbKind::Postgres(_) => "SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname".to_string(),
         DbKind::Mysql(_) => "SHOW DATABASES".to_string(),
         DbKind::Sqlite(_) => return Ok(json!({ "success": true, "databases": [] })), // SQLite: 1 file = 1 DB
+        // Same as SQLite: one file is one database.
+        DbKind::DuckDb(_) => return Ok(json!({ "success": true, "databases": [] })),
     };
     let results = execute_raw_sql_generic(&conn_type, sql).await?;
     let mut databases = all_string_values(&results);
@@ -167,6 +175,7 @@ pub(crate) async fn get_tables_inner(
                 }));
             }
         }
+        DbKind::DuckDb(arc) => tables = super::duck_blocking(&arc, super::duck_tables_on).await?,
     }
 
     Ok(json!({ "success": true, "tables": tables }))
@@ -202,6 +211,9 @@ pub(crate) async fn get_table_schema_inner(
     let pk_cols = get_primary_key_columns(&conn_type, &schema, &name).await;
 
     match &conn_type.kind {
+        DbKind::DuckDb(arc) => {
+            return super::duck_blocking(arc, move |c| super::duck_table_schema_on(c, &name)).await;
+        }
         DbKind::Sqlite(conn_arc) => {
             let conn = conn_arc.lock().map_err(|e| e.to_string())?;
             let sql = format!("PRAGMA table_info(\"{}\")", name);
@@ -546,6 +558,9 @@ pub(crate) async fn get_temporary_tables_inner(
         DbKind::Mysql(_) => "SELECT NAME AS name, 'table' AS type, '' AS `schema` \
              FROM INFORMATION_SCHEMA.INNODB_TEMP_TABLE_INFO"
             .to_string(),
+        // Not listed yet: a DuckDB temp table lives in the `temp` catalog, which every other
+        // DuckDB read here is scoped away from.
+        DbKind::DuckDb(_) => return Ok(json!({ "success": true, "tables": [] })),
         DbKind::Sqlite(_) => "SELECT name, type, 'temp' AS schema FROM sqlite_temp_master \
              WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name ASC"
             .to_string(),

@@ -2,6 +2,11 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallba
 import { Trans, useTranslation } from 'react-i18next';
 import { clampMenu, type MenuRect } from '../utils/menuPosition';
 import { dbHelper } from '../utils/dbHelper';
+import { createPortal } from 'react-dom';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { dbCaps, DUCK_DATA_EXTENSIONS, attachFileSql, viewNameForFile } from '../utils/dbCaps';
+import { pickDataFiles } from '../utils/fileSave';
+import * as catalog from '../sql/catalog';
 import { isMariaDbVersion } from '../utils/serverFlavor';
 import type { TableItem, SchemaInfo, TriggerInfo, CheckConstraintInfo } from '../utils/dbHelper';
 import { Search, Table, TerminalSquare, RefreshCw, Layers, Plus, ChevronDown, ChevronRight, Braces, Cog, Key, Sliders, FileCode, Trash2, CheckCircle2, Copy, AlertTriangle, History, Bookmark, Columns3, ArrowDownAZ, Link2, Zap, Code2, Database, Sparkles, GitCompare, ArrowLeftRight, HardDriveDownload, HardDriveUpload, DatabaseZap, Plug, Network, Activity, Timer } from 'lucide-react';
@@ -584,7 +589,7 @@ interface SidebarProps {
   /** The connection this component acts on. Passed explicitly, never read from the ambient id (§4.1). */
   connId: string;
   dbName: string;
-  dbType: 'sqlite' | 'postgres' | 'mysql';
+  dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb';
   /** Read-only mode: refuses every write the sidebar can issue (drop/truncate/rename/create). */
   readOnly?: boolean;
   /**
@@ -605,8 +610,9 @@ interface SidebarProps {
   activeTable: string | null;
   onImportToTable: (tableName: string) => void;
   onExportTable: (tableName: string) => void;
-  onExportDatabase: () => void;
-  onImportDatabase: () => void;
+  /** Absent for a connection type that cannot be dumped or restored (DuckDB) — hides the entry. */
+  onExportDatabase?: () => void;
+  onImportDatabase?: () => void;
   /** Copy this database into another OPEN connection of the same engine. */
   onCopyDatabase?: () => void;
   /** Imports a CSV/JSON/XLSX file into a NEW table (unlike onImportDatabase, which restores a whole dump). */
@@ -677,11 +683,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // Refuses writes while read-only is on. Called AT the click site, before any confirmation dialog
   // opens, so the user is told immediately rather than after answering one.
+  const caps = dbCaps(dbType);
   const blockedByReadOnly = useCallback((): boolean => {
+    // A connection type with no write support at all (DuckDB) — telling the user to turn off
+    // read-only would send them looking for a switch that changes nothing.
+    if (!caps.write) {
+      alert(t('backend.duckUnsupported'));
+      return true;
+    }
     if (!readOnly) return false;
     alert(t('sidebar.errReadOnly'));
     return true;
-  }, [readOnly, t]);
+  }, [readOnly, caps.write, t]);
 
   const [tables, setTables] = useState<TableItem[]>([]);
   /**
@@ -1115,6 +1128,74 @@ export const Sidebar: React.FC<SidebarProps> = ({
     connIdRef.current = connId;
     fetchTablesRef.current = fetchTables;
   });
+
+  // ─── DuckDB: data files attached as views ───
+  //
+  // A file becomes `CREATE VIEW <name> AS SELECT * FROM read_parquet('<path>')`: DuckDB reads the
+  // file itself on every query, so nothing is imported, a multi-GB file costs nothing to attach,
+  // and the path never crosses IPC as file contents. Picked from a dialog or dropped on the window.
+  const [dropActive, setDropActive] = useState(false);
+  const attachFiles = async (paths?: string[]) => {
+    const files = paths ?? (await pickDataFiles(DUCK_DATA_EXTENSIONS));
+    if (!files.length) return;
+    const taken = new Set(tables.map((x) => x.name));
+    const attached: string[] = [];
+    const skipped: string[] = [];
+    for (const path of files) {
+      const base = path.split(/[\\/]/).pop() || path;
+      const name = viewNameForFile(path, taken);
+      const sql = attachFileSql(name, path);
+      if (!sql) {
+        skipped.push(base);
+        continue;
+      }
+      // One after another, not in parallel: each view name has to be taken before the next file
+      // picks its own, or two `sales.csv` from different folders would both become `sales`.
+      const res = await dbHelper.executeQuery(connId, sql);
+      if (!res.success) {
+        alert(t('sidebar.attachFailed', { name: base, message: res.error || '' }));
+        continue;
+      }
+      taken.add(name);
+      attached.push(name);
+    }
+    if (attached.length) {
+      catalog.invalidateCatalog();
+      window.dispatchEvent(new CustomEvent('schema-changed', { detail: { connId } }));
+    }
+    if (skipped.length) alert(t('sidebar.attachSkipped', { names: skipped.join(', ') }));
+  };
+  const attachRef = useRef(attachFiles);
+  useEffect(() => {
+    attachRef.current = attachFiles;
+  });
+  // The window's native drop event carries PATHS (a browser drop would carry only a File object,
+  // i.e. contents). Only subscribed while a DuckDB connection's sidebar is mounted, so dropping a
+  // file anywhere else does nothing, as before.
+  useEffect(() => {
+    if (!caps.attachFiles) return;
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    getCurrentWebview()
+      .onDragDropEvent((e) => {
+        const p = e.payload;
+        if (p.type === 'enter' || p.type === 'over') setDropActive(true);
+        else if (p.type === 'leave') setDropActive(false);
+        else if (p.type === 'drop') {
+          setDropActive(false);
+          void attachRef.current(p.paths);
+        }
+      })
+      .then((fn) => {
+        if (alive) unlisten = fn;
+        else fn();
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, [caps.attachFiles]);
 
   // The schema list for the picker. Empty on MySQL/SQLite (the backend returns an empty array), so a
   // length check is all it takes to decide whether to show the picker at all.
@@ -1781,7 +1862,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: HardDriveDownload,
           colorClass: 'cyan',
           onClick: onExportDatabase,
-          visible: true,
+          visible: !!onExportDatabase,
         },
         {
           id: 'importDatabase',
@@ -1789,7 +1870,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: HardDriveUpload,
           colorClass: 'teal',
           onClick: onImportDatabase,
-          visible: true,
+          visible: !!onImportDatabase,
         },
         {
           id: 'copyDatabase',
@@ -1807,6 +1888,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <div className="sidebar-navigation" ref={rootRef} style={{ width: `${width}px` }}>
+      {/* Portal: the sidebar sits under a backdrop-filter, which would confine a fixed overlay to it. */}
+      {dropActive && createPortal(
+        <div className="duck-drop-overlay" aria-hidden="true">
+          <div className="duck-drop-card">{t('sidebar.dropFilesHere')}</div>
+        </div>,
+        document.body,
+      )}
       {/* The drag handle on the right edge */}
       <div
         className={`sidebar-resizer${resizing ? ' is-resizing' : ''}`}
@@ -1953,8 +2041,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <button
                     type="button"
                     className={`sidebar-section-btn accent ${showAddMenu ? 'is-active' : ''}`}
-                    title={t('sidebar.createNew')}
-                    onClick={() => setShowAddMenu((v) => !v)}
+                    // DuckDB creates nothing here; the one thing to add is a data file to query.
+                    title={caps.attachFiles ? t('sidebar.attachFilesHint') : t('sidebar.createNew')}
+                    onClick={() => (caps.attachFiles ? void attachFiles() : setShowAddMenu((v) => !v))}
                   >
                     <Plus size={13} />
                   </button>
@@ -1979,9 +2068,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           <Layers size={13} /> {t('sidebar.createView')}
                         </button>
                         <button className="context-menu-item" onClick={() => { setShowAddMenu(false); setShowCreateRoutine(true); }}>
-                          <Cog size={13} /> Tạo Stored Procedure / Function
+                          <Cog size={13} /> {t('sidebar.createRoutine')}
                         </button>
-                        <button className="context-menu-item" onClick={() => { setShowAddMenu(false); (onImportNewTable ?? onImportDatabase)(); }}>
+                        <button className="context-menu-item" onClick={() => { setShowAddMenu(false); (onImportNewTable ?? onImportDatabase)?.(); }}>
                           <HardDriveUpload size={13} /> {t('sidebar.importTableFromFile')}
                         </button>
                       </div>
@@ -2705,17 +2794,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             {/* Opens the table's own tab on the Properties pane rather than a modal, so two tables'
                 properties can be compared side by side instead of one covering the screen. */}
-            <div
-              onClick={(e) => {
-                e.stopPropagation();
-                setContextMenu(null);
-                onSelectTable(contextMenu.tableName, 'properties', undefined, contextMenu.schema);
-              }}
-              style={{ padding: '6px 12px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-              className="sidebar-context-item"
-            >
-              {t('sidebar.ctxProperties')}
-            </div>
+            {caps.properties && (
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setContextMenu(null);
+                  onSelectTable(contextMenu.tableName, 'properties', undefined, contextMenu.schema);
+                }}
+                style={{ padding: '6px 12px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                className="sidebar-context-item"
+              >
+                {t('sidebar.ctxProperties')}
+              </div>
+            )}
             {/* Everything below is dropped for a Temporary row. Import/Export/Generate/Rename/
                 Truncate all build their SQL in Rust from the CONNECTION's schema, so on Postgres
                 they would address `public.<name>` — a different relation, or none. Offering a menu

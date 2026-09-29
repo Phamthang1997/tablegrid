@@ -79,6 +79,7 @@ export function getDialectName(dbType?: string): string {
   if (low.includes('postgres') || low.includes('pg')) return 'PostgreSQL';
   if (low.includes('mysql') || low.includes('mariadb')) return 'MySQL';
   if (low.includes('sqlite')) return 'SQLite';
+  if (low.includes('duckdb')) return 'DuckDB';
   if (low.includes('mssql') || low.includes('sqlserver')) return 'Microsoft SQL Server';
   if (low.includes('redis')) return 'Redis';
   return 'SQL';

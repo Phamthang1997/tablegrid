@@ -38,6 +38,7 @@ export const EXACT: Record<string, string> = {
   // tx_session.rs — transaction manual
   'Không có transaction nào đang mở': 'backend.txNotOpen',
   'Transaction đã bị huỷ do lỗi trước đó, chỉ có thể rollback': 'backend.txAborted',
+  'DuckDB chưa hỗ trợ thao tác này': 'backend.duckUnsupported',
   'hnsw.ef_search phải là số nguyên từ 1 đến 1000': 'backend.vectorEfSearch',
   'ivfflat.probes phải là số nguyên từ 1 đến 32768': 'backend.vectorProbes',
   'Tìm kiếm vector chỉ hỗ trợ PostgreSQL': 'backend.vectorPgOnly',

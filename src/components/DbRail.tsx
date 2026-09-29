@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Database, Lock } from 'lucide-react';
-import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './DbIcons';
+import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon, DuckDbIcon } from './DbIcons';
 import { dbHelper, type OpenConnection } from '../utils/dbHelper';
 import { envLabelKey, type ConnEnv } from '../utils/connEnv';
 
@@ -21,6 +21,7 @@ const DIALECT: Record<string, { label: string; Icon: React.FC<{ size?: number }>
   // a cell of its own, exactly as two databases of one Postgres server are
   // (docs/redis-ui-unification-plan.md §2.1).
   redis: { label: 'Redis', Icon: RedisIcon },
+  duckdb: { label: 'DuckDB', Icon: DuckDbIcon },
 };
 
 interface DbRailProps {

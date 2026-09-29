@@ -7933,6 +7933,19 @@ input.rename-input {
   box-shadow: 0 4px 12px -2px rgba(220, 56, 45, 0.45);
 }
 
+/* DuckDB's brand is yellow, so its mark is drawn dark: white on #FFF000 cannot be read. */
+.cm-badge.duckdb,
+.cm-avatar.duckdb {
+  background: linear-gradient(145deg, #fff34d 0%, #d9c400 100%);
+  box-shadow: 0 4px 12px -2px rgba(160, 145, 0, 0.45);
+}
+
+.cm-badge.duckdb svg,
+.cm-avatar.duckdb svg {
+  color: #1b1b1b;
+  filter: none;
+}
+
 .cm-badge.sm {
   width: 22px;
   height: 22px;
@@ -7955,6 +7968,10 @@ input.rename-input {
 
 .cm-badge.sm.redis {
   box-shadow: 0 2px 6px -1px rgba(220, 56, 45, 0.35);
+}
+
+.cm-badge.sm.duckdb {
+  box-shadow: 0 2px 6px -1px rgba(160, 145, 0, 0.35);
 }
 
 .cm-badge.ghost {
@@ -23310,4 +23327,25 @@ input[type="text"].snippet-abbr-input {
 
 .imp-banner.is-error {
   color: var(--st-danger, #ef4444);
+}
+/* DuckDB: shown while data files are dragged over the window (Sidebar's native drop listener). */
+.duck-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.duck-drop-card {
+  padding: 22px 32px;
+  border: 2px dashed var(--win-accent);
+  border-radius: 12px;
+  background: var(--win-bg-card);
+  color: var(--win-text-primary);
+  font-size: 14px;
+  font-weight: 600;
 }

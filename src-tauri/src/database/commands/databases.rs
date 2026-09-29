@@ -148,6 +148,9 @@ pub async fn open_database(conn_id: String, name: String) -> Result<Value, Strin
         if db_type == "sqlite" {
             return Err("SQLite không hỗ trợ nhiều database trên một kết nối".to_string());
         }
+        if db_type == "duckdb" {
+            return Err(crate::database::DUCK_UNSUPPORTED.to_string());
+        }
 
         if let Some(existing) = state.connections.find(&server.id, &name)? {
             let ctx = state.connections.acquire(&existing)?;
@@ -365,6 +368,7 @@ fn build_create_database_sql(conn: &DbConnection, o: &CreateDbOpts) -> Result<St
         DbKind::Sqlite(_) => {
             Err("SQLite không hỗ trợ tạo database (mỗi tệp là một database)".to_string())
         }
+        DbKind::DuckDb(_) => Err(crate::database::DUCK_UNSUPPORTED.to_string()),
     }
 }
 
@@ -415,6 +419,7 @@ pub async fn drop_database(conn_id: String, name: String) -> Result<Value, Strin
             DbKind::Mysql(_) => format!("DROP DATABASE `{}`", name),
             DbKind::Postgres(_) => format!("DROP DATABASE \"{}\"", name),
             DbKind::Sqlite(_) => return Err("SQLite không hỗ trợ xóa database".to_string()),
+            DbKind::DuckDb(_) => return Err(crate::database::DUCK_UNSUPPORTED.to_string()),
         };
         execute_raw_sql_generic(&conn_type, sql).await?;
         Ok(json!({ "success": true }))
@@ -443,6 +448,7 @@ pub async fn rename_database(
             }
             DbKind::Mysql(_) => return Err("MySQL không hỗ trợ đổi tên database.".to_string()),
             DbKind::Sqlite(_) => return Err("SQLite không hỗ trợ đổi tên database.".to_string()),
+            DbKind::DuckDb(_) => return Err(crate::database::DUCK_UNSUPPORTED.to_string()),
         };
         execute_raw_sql_generic(&conn_type, sql).await?;
         Ok(json!({ "success": true }))
@@ -525,7 +531,7 @@ pub async fn get_db_charsets(conn_id: String) -> Result<Value, String> {
             Ok(json!({ "success": true, "encodings": encodings, "collations": collations,
                        "ctypes": ctypes, "templates": templates, "owners": owners }))
         }
-        DbKind::Sqlite(_) => {
+        DbKind::Sqlite(_) | DbKind::DuckDb(_) => {
             Ok(json!({ "success": true, "encodings": [], "collations": [] }))
         }
     }

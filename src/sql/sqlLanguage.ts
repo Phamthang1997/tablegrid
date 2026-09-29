@@ -38,7 +38,9 @@ const bumpCommand = (name: string) => ({ id: BUMP_CMD, title: '', arguments: [na
 export function langIdForDbType(dbType: string): string {
   if (dbType === 'postgres') return LanguageIdEnum.PG;
   if (dbType === 'mysql') return LanguageIdEnum.MYSQL;
-  return LanguageIdEnum.GENERIC; // sqlite: uses generic SQL grammar
+  // SQLite and DuckDB: the generic grammar. DuckDB reads close to Postgres, but its own syntax
+  // (`FROM t` first, `SELECT * EXCLUDE (…)`, PIVOT) would be underlined by the pgsql worker.
+  return LanguageIdEnum.GENERIC;
 }
 
 // Supported language IDs registered for hover/formatting providers.

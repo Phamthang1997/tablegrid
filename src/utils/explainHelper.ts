@@ -134,7 +134,9 @@ export function buildExplainQuery(sql: string, dbType: string, variant: 'explain
  * `EXPLAIN QUERY PLAN`, so the menu entry has nothing to offer there.
  */
 export function supportsJsonExplain(dbType: string): boolean {
-  return !(dbType || '').toLowerCase().includes('sqlite');
+  const db = (dbType || '').toLowerCase();
+  // DuckDB has `EXPLAIN (FORMAT json)`, but not in either spelling the label below offers.
+  return !db.includes('sqlite') && !db.includes('duckdb');
 }
 
 /**

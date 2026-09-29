@@ -795,6 +795,8 @@ pub async fn restore_backup(
     };
 
     match &conn_type.kind {
+        // A DuckDB file is the data being queried, not a target to replay a dump into.
+        DbKind::DuckDb(_) => return Err(crate::database::DUCK_UNSUPPORTED.to_string()),
         DbKind::Mysql(pool) => {
             let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
 

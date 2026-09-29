@@ -80,6 +80,7 @@ import type { DbConnectionConfig } from './utils/dbHelper';
 import { invalidateCatalog } from './sql/catalog';
 import { splitStatements } from './sql/statements';
 import { connKey, scopeKey, tabsStorageKey, tabsStorageKeyCandidates } from './utils/connKey';
+import { dbCaps, isFileDb } from './utils/dbCaps';
 import { connectSavedProfile } from './utils/connectProfile';
 import { readMcpPrefs } from './utils/mcpPrefs';
 import type { SavedProfile } from './components/ConnectionManager';
@@ -246,12 +247,14 @@ export const App: React.FC = () => {
      */
     connId: string;
     dbName: string;
-    dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+    dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
     // Postgres only: the schema every command reads and writes through. Comes from the backend
     // (`current_schema()` on connect, the picker afterwards), never guessed here — it is part of
     // the localStorage scope, so a value the backend disagrees with would key tabs wrongly.
     schema?: string | null;
   } | null>(null);
+  /** What the connection on screen can do — gates the tools offered for it (utils/dbCaps.ts). */
+  const connCaps = dbCaps(connection?.dbType);
   // The active connection config (SSH included) for the Terminal to inherit -> a shell on the right host/VM
   const [activeConnConfig, setActiveConnConfig] = useState<DbConnectionConfig | null>(null);
   /** The `conn_id` of the connection on screen. Minted by the backend, caught by `dbHelper` from `connect()`. */
@@ -296,7 +299,7 @@ export const App: React.FC = () => {
     {
       connId: string;
       config: DbConnectionConfig | null;
-      dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+      dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
       profileName: string;
       /** The colour label, purely decorative. */
       color: string;
@@ -792,7 +795,7 @@ export const App: React.FC = () => {
   ): Promise<boolean> => {
     try {
       const wantDb = targetDb.trim();
-      const canManageDb = !!connection && connection.dbType !== 'sqlite';
+      const canManageDb = !!connection && !isFileDb(connection.dbType) && connection.dbType !== 'redis';
 
       // Safe Mode asks NOW, while the user is in front of the dialog, and before anything is created:
       // the job may sit in the queue, and a question popping up when it finally starts would be about
@@ -1364,7 +1367,7 @@ export const App: React.FC = () => {
   // Handle successful database connection
   const handleConnect = (
     dbName: string,
-    dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis',
+    dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis',
     color?: string,
     config?: DbConnectionConfig,
     profile?: { id: string; name: string; env?: ConnEnv },
@@ -2369,15 +2372,15 @@ export const App: React.FC = () => {
       onNewConnection={handleNewConnection}
       onDisconnect={handleDisconnect}
       onNewQuery={handleNewQueryTab}
-      onExportDatabase={handleOpenExportDb}
-      onImportDatabase={handleOpenImportDb}
+      onExportDatabase={connCaps.dump ? handleOpenExportDb : undefined}
+      onImportDatabase={connCaps.dump ? handleOpenImportDb : undefined}
       onToggleSidebar={() => setShowSidebar(prev => !prev)}
       onToggleTheme={toggleTheme}
       onShowShortcuts={() => setShowShortcuts(true)}
       onShowAbout={() => setShowAbout(true)}
       onShowWhatsNew={() => setShowWhatsNew(true)}
       onScheduledBackups={() => setShowBackupSchedules(true)}
-      onOpenCompare={handleOpenDbCompare}
+      onOpenCompare={connCaps.compare ? handleOpenDbCompare : undefined}
       onToggleTerminal={handleOpenTerminal}
       aiOpen={showAi}
       onToggleAiAssistant={() => setShowAi(prev => !prev)}
@@ -2498,18 +2501,20 @@ export const App: React.FC = () => {
                 activeTable={activeTable}
                 onImportToTable={handleImportToTableTrigger}
                 onExportTable={handleExportTableTrigger}
-                onExportDatabase={handleOpenExportDb}
-                onImportDatabase={handleOpenImportDb}
-                onCopyDatabase={handleOpenCopyDb}
-                onImportNewTable={() => { setGlobalImportTargetTable(null); setShowGlobalImportPicker(true); }}
-                onOpenDbInfo={() => handleOpenDbInfo('current')}
-                onOpenProcessMonitor={handleOpenProcessMonitor}
-                onOpenAllDbStats={() => handleOpenDbInfo('all')}
-                onSchemaMigration={handleOpenSchemaMigration}
-                onCompareDatabases={handleOpenDbCompare}
+                // What a connection type cannot do is not offered (utils/dbCaps.ts): an absent handler
+                // hides its entry, rather than showing one that can only answer "not supported".
+                onExportDatabase={connCaps.dump ? handleOpenExportDb : undefined}
+                onImportDatabase={connCaps.dump ? handleOpenImportDb : undefined}
+                onCopyDatabase={connCaps.dump ? handleOpenCopyDb : undefined}
+                onImportNewTable={connCaps.write ? () => { setGlobalImportTargetTable(null); setShowGlobalImportPicker(true); } : undefined}
+                onOpenDbInfo={connCaps.properties ? () => handleOpenDbInfo('current') : undefined}
+                onOpenProcessMonitor={connCaps.processMonitor ? handleOpenProcessMonitor : undefined}
+                onOpenAllDbStats={connCaps.properties ? () => handleOpenDbInfo('all') : undefined}
+                onSchemaMigration={connCaps.compare ? handleOpenSchemaMigration : undefined}
+                onCompareDatabases={connCaps.compare ? handleOpenDbCompare : undefined}
                 onOpenErDiagram={handleOpenErDiagram}
-                onMcpSettings={handleOpenMcpServer}
-                onGenerateData={handleOpenDataGen}
+                onMcpSettings={connCaps.mcp ? handleOpenMcpServer : undefined}
+                onGenerateData={connCaps.dataGen ? handleOpenDataGen : undefined}
                 onTableRenamed={(oldName, newName) => handleTableRenamed(activeConnIdState, oldName, newName)}
                 onTableDropped={handleTableDropped}
                 schema={connection.schema}
@@ -2582,7 +2587,8 @@ export const App: React.FC = () => {
                         initialViewMode={(activeTab as any).initialViewMode || 'data'}
                         initialFilter={(activeTab as any).initialFilter}
                         tableSchema={(activeTab as any).tableSchema}
-                        readOnly={readOnly}
+                        // DuckDB is read-mostly by design: no grid edits and a read-only structure view.
+                        readOnly={readOnly || !connCaps.write}
                         // The flag is only set for the mounted tab; DataGrid's cleanup always reports
                         // false, which clears the flag rather than leaving a mark on the wrong tab.
                         onDirtyChange={(dirty) => setDirtyTabId(dirty ? activeTab.id : null)}
@@ -2696,7 +2702,7 @@ export const App: React.FC = () => {
                       <ImportDatabaseDialog
                         key={activeConnIdState + '|' + activeTab.id}
                         currentDb={connection?.dbName}
-                        canManageDatabases={!!connection && connection.dbType !== 'sqlite'}
+                        canManageDatabases={!!connection && !isFileDb(connection.dbType)}
                         dbType={connection?.dbType}
                         asTab={true}
                         onClose={() => handleCloseTab(activeTab.id)}

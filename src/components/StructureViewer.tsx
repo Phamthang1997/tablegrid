@@ -20,7 +20,7 @@ interface StructureViewerProps {
   connId: string;
   tableName: string;
   schema: SchemaInfo;
-  dbType: 'sqlite' | 'postgres' | 'mysql';
+  dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb';
   onSchemaChanged: () => void;
   readOnly?: boolean;
   activeSection?: StructureSection;

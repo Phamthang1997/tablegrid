@@ -51,7 +51,8 @@ pub async fn get_table_ddl_extras(conn_id: String, table_name: String) -> Result
     let mut extensions: Vec<String> = Vec::new();
 
     match &conn_type.kind {
-        DbKind::Mysql(_) => {}
+        // DuckDB keeps a table's whole definition in its own CREATE (duckdb_tables().sql).
+        DbKind::Mysql(_) | DbKind::DuckDb(_) => {}
         DbKind::Sqlite(_) => {
             // sql IS NULL for the indexes SQLite creates itself (UNIQUE / AUTOINCREMENT):
             // they come back with the table and must not be replayed.
