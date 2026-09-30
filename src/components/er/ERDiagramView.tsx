@@ -50,7 +50,8 @@ import {
   generateFullDiagramSvg,
   exportDiagramToPng,
 } from './erExportHelper';
-import { exportToMarkdownDoc } from './erDocExport';
+import { exportToMarkdownDoc, type ErDocLabels } from './erDocExport';
+import { exportToHtmlDictionary } from './erHtmlDictionary';
 import { pickSaveFilePath, saveExportFileAtPath } from '../../utils/fileSave';
 import { dbHelper } from '../../utils/dbHelper';
 import { ERToolbar } from './ERToolbar';
@@ -1428,12 +1429,12 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
           await navigator.clipboard.writeText(text);
           return { tooLarge: mermaidTooLarge(text) };
         }
-        case 'markdown': {
-          const targetPath = await pickSaveFilePath(
-            `${database || 'database'}_schema`,
-            'md',
-            'Markdown (*.md)'
-          );
+        case 'markdown':
+        case 'html': {
+          const html = format === 'html';
+          const targetPath = html
+            ? await pickSaveFilePath(`${database || 'database'}_dictionary`, 'html', 'HTML (*.html)')
+            : await pickSaveFilePath(`${database || 'database'}_schema`, 'md', 'Markdown (*.md)');
           if (!targetPath) return;
           const date = new Date().toLocaleDateString(i18n.language);
           // Indexes are not in the ER catalog, so they are read here — one table after another,
@@ -1446,7 +1447,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
             const info = await dbHelper.getTableSchema(connId, tb.name, tb.schema);
             indexes[tb.name] = info.indexes;
           }
-          const doc = exportToMarkdownDoc(visibleTables, relationships, {
+          const labels: ErDocLabels = {
             title: t('er.docTitle', { db: database || 'database' }),
             generated: (tableCount, relationCount) =>
               t('er.docGenerated', { date, tables: tableCount, relations: relationCount }),
@@ -1466,8 +1467,23 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
             diagramTrimmed: (n) => t('er.docDiagramTrimmed', { n }),
             indexes: t('er.docIndexes'),
             unique: t('er.docUnique'),
-          }, indexes);
-          await saveExportFileAtPath(targetPath, doc, 'text/markdown');
+          };
+          if (html) {
+            const page = exportToHtmlDictionary(visibleTables, relationships, {
+              ...labels,
+              search: t('er.docSearch'),
+              noMatches: t('er.docNoMatches'),
+              shown: (n, total) => t('er.docShown', { n, total }),
+              all: t('er.docAll'),
+              tables: t('er.docTables'),
+              views: t('er.docViews'),
+              columns: t('er.docColumns'),
+              theme: t('er.docTheme'),
+            }, indexes, i18n.language);
+            await saveExportFileAtPath(targetPath, page, 'text/html');
+          } else {
+            await saveExportFileAtPath(targetPath, exportToMarkdownDoc(visibleTables, relationships, labels, indexes), 'text/markdown');
+          }
           break;
         }
         case 'dbml': {

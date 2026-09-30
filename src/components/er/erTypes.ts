@@ -98,6 +98,8 @@ export type ERExportFormat =
   | 'dbml'
   /** The schema as a Markdown document with one Mermaid diagram per table (`erDocExport.ts`). */
   | 'markdown'
+  /** The schema as one self-contained, searchable HTML page (`erHtmlDictionary.ts`). */
+  | 'html'
   | 'sql';
 
 /** What an export reports back to the toolbar. */
