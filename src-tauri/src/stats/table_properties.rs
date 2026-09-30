@@ -111,6 +111,7 @@ pub async fn get_table_properties(
         };
 
         match &conn.kind {
+            DbKind::DuckDb(_) => Err(crate::database::DUCK_UNSUPPORTED.to_string()),
             DbKind::Sqlite(_) => sqlite_properties(&conn, &dialect, &table_name).await,
             DbKind::Mysql(_) => mysql_properties(&conn, &dialect, &table_name).await,
             DbKind::Postgres(_) => {

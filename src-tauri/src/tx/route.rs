@@ -33,6 +33,11 @@ pub fn should_route(conn: &DbConnection, sql: &str) -> bool {
     let Some(id) = conn_scope_id(conn) else {
         return false;
     };
+    // DuckDB has no manual-transaction mode here: nothing pins it, and a typed BEGIN simply runs on
+    // its one shared handle, as it would in the DuckDB CLI.
+    if matches!(conn.kind, DbKind::DuckDb(_)) {
+        return false;
+    }
     // `get_session`, not `session_for`: this runs on EVERY statement, including each of the 50k in a
     // restore, and the check path must not write to the map. No session yet == auto-commit, which is
     // the right answer for a connection never switched to manual mode.
@@ -73,6 +78,7 @@ pub(super) async fn lock_pinned(
                 Pinned::Postgres(pool.acquire().await.map_err(|e| e.to_string())?)
             }
             DbKind::Mysql(pool) => Pinned::Mysql(pool.acquire().await.map_err(|e| e.to_string())?),
+            DbKind::DuckDb(_) => return Err(database::DUCK_UNSUPPORTED.to_string()),
         });
     }
     Ok(guard)

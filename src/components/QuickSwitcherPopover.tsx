@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { BarChart3, Check, Database, Lock, Plus, Search, Trash2, X } from 'lucide-react';
-import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './DbIcons';
+import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon, DuckDbIcon } from './DbIcons';
+import { isFileDb } from '../utils/dbCaps';
 import { dbHelper } from '../utils/dbHelper';
 import type { DbConnectionConfig } from '../utils/dbHelper';
 import { loadSavedProfiles } from '../utils/connectProfile';
@@ -33,6 +34,7 @@ const DIALECT_ICON: Record<string, React.FC<{ size?: number }>> = {
   postgres: PostgresIcon,
   mysql: MySqlIcon,
   redis: RedisIcon,
+  duckdb: DuckDbIcon,
 };
 
 /**
@@ -51,7 +53,7 @@ function fileName(path: string): string {
 export interface SwitcherConn {
   connId: string;
   db: string;
-  dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+  dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
   profileName: string;
   color: string;
   env: ConnEnv;
@@ -284,7 +286,7 @@ export const QuickSwitcherPopover: React.FC<QuickSwitcherPopoverProps> = ({
               {conns.map((c) => {
                 const isActive = c.connId === activeConnId;
                 const env = normalizeEnv(c.env);
-                const sub = c.dbType === 'sqlite' ? fileName(c.db) : c.db;
+                const sub = isFileDb(c.dbType) ? fileName(c.db) : c.db;
                 const ping = pings.get(c.connId);
                 return (
                   <button
@@ -355,7 +357,7 @@ export const QuickSwitcherPopover: React.FC<QuickSwitcherPopoverProps> = ({
                     {renderBadge(p.type)}
                     <span className="qs-label">
                       <span className="qs-name">{p.name}</span>
-                      <span className="qs-sub">{p.type === 'sqlite' ? fileName(raw) : raw}</span>
+                      <span className="qs-sub">{isFileDb(p.type) ? fileName(raw) : raw}</span>
                     </span>
                     {env !== 'none' ? (
                       <span className={`qs-env-chip qs-env-${env}`}>{t(envLabelKey(env))}</span>

@@ -75,6 +75,9 @@ pub async fn run_read(
     // Same belt as the pooled funnel: a connection the user marked read-only stays read-only.
     reject_if_read_only(conn, &sql)?;
     match &conn.kind {
+        // Not for an AI client: DuckDB's read_csv('…') / read_parquet('…') open ANY file on this
+        // machine, so a query over MCP could read far past the database it was granted.
+        DbKind::DuckDb(_) => Err(crate::database::DUCK_UNSUPPORTED.to_string()),
         DbKind::Sqlite(handle) => {
             sqlite_timed(
                 handle.clone(),
@@ -149,6 +152,9 @@ pub async fn run_write(
 ) -> Result<Vec<Value>, String> {
     reject_if_read_only(conn, &sql)?;
     match &conn.kind {
+        // Not for an AI client: DuckDB's read_csv('…') / read_parquet('…') open ANY file on this
+        // machine, so a query over MCP could read far past the database it was granted.
+        DbKind::DuckDb(_) => Err(crate::database::DUCK_UNSUPPORTED.to_string()),
         DbKind::Sqlite(handle) => {
             // An interrupted SQLite statement is rolled back, so this outcome is known too.
             sqlite_timed(

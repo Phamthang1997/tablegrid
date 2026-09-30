@@ -44,6 +44,12 @@ export function connKey(config?: DbConnectionConfig | null): string {
     const path = config.sqlitePath?.trim();
     return path ? `sqlite:${normalizePath(path)}` : '';
   }
+  // A DuckDB file is keyed like a SQLite one. Without a path it is an in-memory database, and every
+  // in-memory session shares one scratch key: there is no other identity to tell two apart.
+  if (config.type === 'duckdb') {
+    const path = config.sqlitePath?.trim();
+    return `duckdb:${path ? normalizePath(path) : ':memory:'}`;
+  }
   const host = (config.host || 'localhost').trim().toLowerCase();
   const port = config.port || DEFAULT_PORTS[config.type] || 0;
   return `${config.type}:${host}:${port}`;
@@ -66,7 +72,7 @@ export function scopeKey(
   schema?: string | null,
 ): string {
   const base = connKey(config);
-  if (!base || config?.type === 'sqlite') return base;
+  if (!base || config?.type === 'sqlite' || config?.type === 'duckdb') return base;
   const db = (database ?? config?.database ?? '').trim();
   const withDb = db ? `${base}/${db}` : base;
   if (config?.type !== 'postgres') return withDb;

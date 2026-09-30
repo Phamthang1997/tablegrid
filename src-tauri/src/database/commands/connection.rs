@@ -125,10 +125,12 @@ pub async fn connect_db(
         // Opening the same SQLite file twice would be two `rusqlite::Connection`s on one file, i.e.
         // `SQLITE_BUSY` as soon as both write. Hand back the connection that is already open instead.
         // Postgres/MySQL are deliberately not deduplicated — see `ConnRegistry::find_sqlite`.
-        if db_type == "sqlite"
+        // DuckDB goes further than SQLite here: a second open of the same file in one process is
+        // refused by DuckDB itself, so handing back the open one is the only way to connect at all.
+        if (db_type == "sqlite" || db_type == "duckdb")
             && purpose == crate::state::ConnPurpose::User
             && let Some(path) = config.get("filePath").and_then(|v| v.as_str())
-            && let Some(existing) = state.connections.find_sqlite(path)?
+            && let Some(existing) = state.connections.find_file_db(path, db_type == "duckdb")?
         {
             let ctx = state.connections.acquire(&existing)?;
             return Ok(json!({
@@ -155,6 +157,15 @@ pub async fn connect_db(
                     job_busy_timeout(&conn)?;
                 }
                 DbKind::Sqlite(Arc::new(Mutex::new(conn)))
+            }
+            "duckdb" => {
+                // An empty path is an in-memory database: somewhere to attach files to without
+                // creating a .duckdb file first.
+                let path = config
+                    .get("filePath")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                DbKind::DuckDb(Arc::new(Mutex::new(crate::database::open_duckdb(path)?)))
             }
             "postgres" => {
                 let (mut conn_config, tunnel) = apply_ssh_tunnel(&config, 5432).await?;
@@ -184,7 +195,7 @@ pub async fn connect_db(
         // `open_database`'s job in Phase 3, not this command's.
         {
             // The connection's database name; on SQLite it is the file path.
-            let db_name = if db_type == "sqlite" {
+            let db_name = if db_type == "sqlite" || db_type == "duckdb" {
                 config
                     .get("filePath")
                     .and_then(|v| v.as_str())

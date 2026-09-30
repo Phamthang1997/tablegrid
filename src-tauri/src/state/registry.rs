@@ -196,6 +196,17 @@ impl ConnRegistry {
     /// case. A path that cannot be canonicalized (the file is gone) falls back to a raw compare, so
     /// a missing file never *matches* something it should not.
     pub fn find_sqlite(&self, path: &str) -> Result<Option<ConnScopeId>, String> {
+        self.find_file_db(path, false)
+    }
+
+    /// `find_sqlite` for either file engine. DuckDB needs it for a stronger reason than SQLite's
+    /// `SQLITE_BUSY`: a second open of the same file in one process is refused outright, because
+    /// DuckDB holds the file lock itself. An in-memory database (empty path) never matches — each
+    /// one is its own database.
+    pub fn find_file_db(&self, path: &str, duck: bool) -> Result<Option<ConnScopeId>, String> {
+        if duck && path.trim().is_empty() {
+            return Ok(None);
+        }
         let want = std::fs::canonicalize(path).ok();
         let map = self.inner.lock().map_err(|e| e.to_string())?;
         Ok(map
@@ -209,7 +220,12 @@ impl ConnRegistry {
                 let Some(conn) = e.conn.sql() else {
                     return false;
                 };
-                if !matches!(conn.kind, crate::database::DbKind::Sqlite(_)) {
+                let same_engine = match conn.kind {
+                    crate::database::DbKind::Sqlite(_) => !duck,
+                    crate::database::DbKind::DuckDb(_) => duck,
+                    _ => false,
+                };
+                if !same_engine {
                     return false;
                 }
                 match (&want, std::fs::canonicalize(&e.db).ok()) {

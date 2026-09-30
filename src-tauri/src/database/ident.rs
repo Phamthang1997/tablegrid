@@ -70,6 +70,9 @@ pub(crate) fn fk_checks_sql(conn: &DbConnection, on: bool) -> &'static str {
                 "PRAGMA foreign_keys = OFF"
             }
         }
+        // Unreachable in practice: the callers run these on an `Exec`, which refuses DuckDB. A
+        // no-op rather than a panic keeps it that way if one day it is reached.
+        DbKind::DuckDb(_) => "SELECT 1",
     }
 }
 

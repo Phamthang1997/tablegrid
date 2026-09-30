@@ -318,6 +318,7 @@ pub async fn alter_table_schema(
             DbKind::Sqlite(_) => "sqlite",
             DbKind::Postgres(_) => "postgres",
             DbKind::Mysql(_) => "mysql",
+            DbKind::DuckDb(_) => return Err(crate::database::DUCK_UNSUPPORTED.to_string()),
         };
 
         let sqls = generate_alter_sqls(&name, &payload, db_type, &schema);
@@ -348,6 +349,7 @@ pub async fn preview_alter_schema(
             DbKind::Sqlite(_) => "sqlite",
             DbKind::Postgres(_) => "postgres",
             DbKind::Mysql(_) => "mysql",
+            DbKind::DuckDb(_) => return Err(crate::database::DUCK_UNSUPPORTED.to_string()),
         };
 
         // The same SQL as alter_table_schema — the user previews exactly the statements that will run.

@@ -58,7 +58,7 @@ export interface OpenConnection {
   connId: string;
   db: string;
   /** `redis` since Redis shares the registry — the rail draws both from one list (§2.3). */
-  dialect: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+  dialect: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
   serverId: string;
   schema: string | null;
   /** WRITE statements waiting to be committed on this connection — the rail's badge (§4.2b). */
@@ -278,7 +278,8 @@ export interface CheckConstraintInfo {
 }
 
 export interface DbConnectionConfig {
-  type: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+  type: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
+  /** The file of a file database: SQLite, or DuckDB (where an empty path is an in-memory database). */
   sqlitePath?: string;
   host?: string;
   port?: number;
@@ -1621,7 +1622,7 @@ export const dbHelper = {
   //
   // Each dialect uses exactly ONE statement; nothing here relies on driver multi-statement support.
   async detectLogPaths(connId: string, 
-    dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis'
+    dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis'
   ): Promise<{ paths: { label: string; path: string }[]; error?: string }> {
     const isAbs = (s: string) => /^([/~]|[A-Za-z]:[\\/])/.test(s);
     const paths: { label: string; path: string }[] = [];
@@ -1674,7 +1675,7 @@ export const dbHelper = {
   // (SUPER/superuser). kind: mysql 'general'|'slow'; postgres 'statements'|'collector'.
   // needsRestart = true means it takes effect only after restarting the server by hand.
   async enableLogging(connId: string, 
-    dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis',
+    dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis',
     kind: string
   ): Promise<{ success: boolean; message: string; needsRestart: boolean }> {
     let sql = '';
@@ -1692,7 +1693,7 @@ export const dbHelper = {
     return { success: res.success, message: res.error || '', needsRestart };
   },
 
-  async disableLogging(connId: string, dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis', kind: string): Promise<{ success: boolean; message: string }> {
+  async disableLogging(connId: string, dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis', kind: string): Promise<{ success: boolean; message: string }> {
     let sql = '';
     if (dbType === 'mysql') {
       sql = kind === 'general' ? "SET GLOBAL general_log='OFF';" : "SET GLOBAL slow_query_log='OFF';";

@@ -30,7 +30,7 @@ interface FkInfo {
 interface CreateTableModalProps {
   isOpen: boolean;
   onClose: () => void;
-  dbType: 'sqlite' | 'postgres' | 'mysql';
+  dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb';
   onTableCreated: (tableName: string) => void;
 }
 

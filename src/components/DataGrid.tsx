@@ -38,6 +38,7 @@ import { DataVisualizer } from './chart';
 import { TablePropertiesView } from './TablePropertiesView';
 import { SearchHighlight } from './SearchHighlight';
 import { rowMatchesQuery } from '../utils/gridSearch';
+import { dbCaps } from '../utils/dbCaps';
 
 // Lazy because `RowDocumentModal` has a JSON tab built on `@monaco-editor/react`: a static import
 // here is a static path from the entry to Monaco, and it undoes the `React.lazy` of `SqlEditor` and
@@ -129,7 +130,7 @@ interface DataGridProps {
   /** The connection this component acts on. Passed explicitly, never read from the ambient id (§4.1). */
   connId: string;
   tableName: string;
-  dbType: 'sqlite' | 'postgres' | 'mysql';
+  dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb';
   initialViewMode?: GridViewMode;
   initialFilter?: { column: string; value: any };
   readOnly?: boolean;
@@ -2137,14 +2138,17 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
             <span>{t('dataGrid.chartTab', 'Chart')}</span>
           </button>
 
-          <button
-            className={`gp-btn ${viewMode === 'properties' ? 'on' : ''}`}
-            onClick={() => setViewMode('properties')}
-            title={t('dataGrid.propertiesViewTitle')}
-          >
-            <Sliders size={12} />
-            <span>{t('dataGrid.propertiesTab')}</span>
-          </button>
+          {/* Sizes and engine statistics come from dialect-specific catalogs DuckDB lacks. */}
+          {dbCaps(dbType).properties && (
+            <button
+              className={`gp-btn ${viewMode === 'properties' ? 'on' : ''}`}
+              onClick={() => setViewMode('properties')}
+              title={t('dataGrid.propertiesViewTitle')}
+            >
+              <Sliders size={12} />
+              <span>{t('dataGrid.propertiesTab')}</span>
+            </button>
+          )}
 
           {viewMode === 'structure' && (
             <>

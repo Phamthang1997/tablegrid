@@ -35,6 +35,7 @@ pub(crate) async fn run_bound_query(
             let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
             mysql_bound(&mut conn, &sql, params).await
         }
+        DbKind::DuckDb(arc) => super::super::duck::duck_query(arc, &sql, params).await,
     }
 }
 

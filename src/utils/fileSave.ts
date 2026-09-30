@@ -55,6 +55,42 @@ export async function pickOpenFile(options?: {
   }
 }
 
+/** Picks a DuckDB database file. */
+export async function pickDuckDbDatabaseFile(defaultPath?: string): Promise<string | null> {
+  return pickOpenFile({
+    title: i18n.t('fileDialog.pickDuckDbTitle'),
+    defaultPath,
+    filters: [
+      { name: i18n.t('fileDialog.duckDbFilter'), extensions: ['duckdb', 'ddb', 'db'] },
+      { name: i18n.t('fileDialog.allFilesFilter'), extensions: ['*'] },
+    ],
+  });
+}
+
+/**
+ * Picks one or more data files for DuckDB to read in place (Parquet / CSV / JSON). Returns the
+ * paths, never the contents: DuckDB reads the file itself, which is what lets it be many GB.
+ */
+export async function pickDataFiles(extensions: readonly string[]): Promise<string[]> {
+  try {
+    const res = await invoke<string | string[] | null>('plugin:dialog|open', {
+      options: {
+        directory: false,
+        multiple: true,
+        title: i18n.t('fileDialog.pickDataFilesTitle'),
+        filters: [
+          { name: i18n.t('fileDialog.dataFilesFilter'), extensions: [...extensions] },
+          { name: i18n.t('fileDialog.allFilesFilter'), extensions: ['*'] },
+        ],
+      },
+    });
+    if (!res) return [];
+    return Array.isArray(res) ? res : [res];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Picks a SQLite database file (.db, .sqlite, .sqlite3, .db3, .s3db).
  */

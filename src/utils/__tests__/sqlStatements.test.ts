@@ -252,6 +252,16 @@ describe('collectTableRefs', () => {
     expect(refs.map(r => r.table)).toEqual(['a', 'b', 'c']);
   });
 
+  it('does not report a table function as a table', () => {
+    // DuckDB over a file: `read_parquet` is not in the catalog, and underlining it was wrong.
+    expect(collectTableRefs("SELECT * FROM read_parquet('s.parquet') s JOIN users u ON u.id = s.uid")).toEqual([
+      { table: 'users', alias: 'u' },
+    ]);
+    expect(collectTableRefs('SELECT * FROM generate_series (1, 3)')).toEqual([]);
+    // A real table next to one is still found.
+    expect(collectTableRefs("SELECT * FROM orders o JOIN read_csv_auto('a.csv') c ON c.id = o.id").map((r) => r.table)).toEqual(['orders']);
+  });
+
   it('tách được alias, và không nhận từ khoá làm alias', () => {
     const refs = collectTableRefs('SELECT * FROM orders o JOIN users AS u ON u.id = o.user_id');
     expect(refs).toEqual([

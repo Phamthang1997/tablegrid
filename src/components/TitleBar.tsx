@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { dbCaps } from '../utils/dbCaps';
 import { SUPPORTED_LANGUAGES, currentLanguage } from '../i18n';
 import { DbConnectionStatusPill } from './DbConnectionStatusPill';
 import { TxControl } from './TxControl';
@@ -376,8 +377,8 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       title: t('titlebar.menuDatabase'),
       items: [
         { label: t('titlebar.newQuery'), Icon: FileCode, onClick: onNewQuery, shortcut: 'Ctrl+T', disabled: !hasConnection },
-        { label: t('titlebar.exportDatabase'), Icon: HardDriveDownload, onClick: onExportDatabase, disabled: !hasConnection, separatorBefore: true },
-        { label: t('titlebar.importDatabase'), Icon: HardDriveUpload, onClick: onImportDatabase, disabled: !hasConnection },
+        { label: t('titlebar.exportDatabase'), Icon: HardDriveDownload, onClick: onExportDatabase, disabled: !hasConnection || !onExportDatabase, separatorBefore: true },
+        { label: t('titlebar.importDatabase'), Icon: HardDriveUpload, onClick: onImportDatabase, disabled: !hasConnection || !onImportDatabase },
         { label: t('titlebar.scheduledBackups'), Icon: CalendarClock, onClick: onScheduledBackups, separatorBefore: true },
       ],
     },
@@ -633,7 +634,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         el: (
           <button
             className="tb-capsule-btn"
-            disabled={!hasConnection}
+            disabled={!hasConnection || !onOpenCompare}
             onClick={onOpenCompare}
             title={t('titlebar.schemaCompare')}
           >
@@ -762,11 +763,15 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             toolbar. See TxControl.tsx. */}
         {/* Background jobs: placed here for the same reason as TxControl. See JobsTray.tsx. */}
         <JobsTray />
-        <TxControl
-          connected={hasConnection}
-          connId={connId || ""}
-          dbType={(connStatus?.dbType || activeConnectionInfo?.dbType || "").toLowerCase()}
-        />
+        {/* DuckDB has no manual-transaction mode: the backend never pins it, so the switch
+            would show "manual" while every statement still committed on its own. */}
+        {dbCaps((connStatus?.dbType || activeConnectionInfo?.dbType || '').toLowerCase()).tx && (
+          <TxControl
+            connected={hasConnection}
+            connId={connId || ""}
+            dbType={(connStatus?.dbType || activeConnectionInfo?.dbType || "").toLowerCase()}
+          />
+        )}
         {renderCapsuleGroups(rightToolGroups)}
 
         {!isMac && (

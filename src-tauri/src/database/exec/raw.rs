@@ -69,6 +69,7 @@ pub(crate) async fn execute_raw_sql_pooled(
             let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
             mysql_raw(&mut conn, &sql).await
         }
+        DbKind::DuckDb(arc) => super::super::duck::duck_query(arc, &sql, &[]).await,
     }
 }
 

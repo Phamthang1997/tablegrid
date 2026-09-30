@@ -8,7 +8,7 @@ import { Modal, ModalBody, ModalFooter } from './Modal';
 import { CLOSE_PRIORITY_TX, registerCloseBlocker } from '../utils/closeGuard';
 
 interface TxControlProps {
-  /** 'sqlite' | 'postgres' | 'mysql' — decides which isolation levels are listed. */
+  /** 'sqlite' | 'postgres' | 'mysql' | 'duckdb' — decides which isolation levels are listed. */
   dbType: string;
   /** Hidden entirely while nothing is connected. */
   connected: boolean;

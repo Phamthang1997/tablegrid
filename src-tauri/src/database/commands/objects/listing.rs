@@ -51,6 +51,13 @@ pub async fn get_database_objects(conn_id: String) -> Result<Value, String> {
             }
             // SQLite has no user-defined functions/procedures
         }
+        DbKind::DuckDb(arc) => {
+            // Macros are DuckDB's only routines, and the app has no editor for them.
+            for t in crate::database::duck_blocking(arc, crate::database::duck_tables_on).await? {
+                let name = t["name"].as_str().unwrap_or("").to_string();
+                if t["type"] == "view" { views.push(name); } else { tables.push(name); }
+            }
+        }
         DbKind::Postgres(_) => {
             // Materialized views: see the note in get_tables — information_schema has none.
             let tv = execute_raw_sql_generic(&conn_type,
@@ -184,6 +191,10 @@ pub async fn get_object_definition(
             } else {
                 return Err("Không tìm thấy định nghĩa".to_string());
             }
+        }
+        DbKind::DuckDb(arc) => {
+            let n = name.clone();
+            crate::database::duck_blocking(arc, move |c| crate::database::duck_definition_on(c, &n)).await?
         }
     };
 

@@ -28,6 +28,8 @@ pub async fn get_table_triggers(conn_id: String, table_name: String) -> Result<V
             "SELECT name, 'BEFORE' as timing, 'MANIPULATION' as event, sql as statement FROM sqlite_master WHERE type = 'trigger' AND tbl_name = '{}'",
             table_name.replace('\'', "''")
         ),
+        // DuckDB has no triggers: the same columns, no rows.
+        DbKind::DuckDb(_) => "SELECT NULL AS name, NULL AS timing, NULL AS event, NULL AS statement WHERE false".to_string(),
     };
 
     let results = execute_raw_sql_generic(&conn_type, sql).await?;
@@ -85,6 +87,7 @@ pub async fn get_all_triggers(conn_id: String) -> Result<Value, String> {
         DbKind::Postgres(_) => format!("SELECT tr.tgname AS name, c.relname AS tbl, '' AS timing, '' AS event, pg_get_triggerdef(tr.oid) AS statement FROM pg_trigger tr JOIN pg_class c ON c.oid = tr.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '{sch}' AND NOT tr.tgisinternal ORDER BY c.relname, tr.tgname"),
         // sql IS NULL for objects SQLite creates itself; those cannot be replayed anyway.
         DbKind::Sqlite(_) => "SELECT name, tbl_name AS tbl, '' AS timing, '' AS event, sql AS statement FROM sqlite_master WHERE type = 'trigger' AND sql IS NOT NULL ORDER BY tbl_name, name".to_string(),
+        DbKind::DuckDb(_) => "SELECT NULL AS name, NULL AS tbl, NULL AS timing, NULL AS event, NULL AS statement WHERE false".to_string(),
     };
 
     let results = execute_raw_sql_generic(&conn_type, sql).await?;

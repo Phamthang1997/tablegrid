@@ -27,6 +27,7 @@ pub async fn get_all_databases_stats(conn_id: String) -> Result<Value, String> {
         };
 
         match &conn_clone.kind {
+            DbKind::DuckDb(_) => Err(crate::database::DUCK_UNSUPPORTED.to_string()),
             DbKind::Sqlite(sqlite_conn) => {
                 // SQLite: "every database" = the main database + the ATTACHed ones.
                 let conn = sqlite_conn.lock().map_err(|e| e.to_string())?;
