@@ -667,8 +667,12 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     [
       // "Lock now" lived only inside the Master Password dialog, which is only reachable from the
       // Connection Manager — so the one moment locking is worth a click, while connected and about to
-      // step away, was the one moment it could not be done without disconnecting first. `offline` so
-      // the button does not disappear the moment the user goes back to the connection screen.
+      // step away, was the one moment it could not be done without disconnecting first.
+      //
+      // Deliberately NOT `offline`: the connection screen already has a KeyRound button (the
+      // Master Password settings, next to import/export), and a second, identical key here that
+      // does something else — lock at once — was two look-alike buttons with different meanings on
+      // one screen. There, locking is one more click, through that dialog's own "Lock now".
       //
       // `KeyRound`, the dialog's own icon, rather than a padlock: the padlock in the LEFT cluster is
       // Safe Mode / read-only, and two padlocks in one bar is exactly the confusion SafeModeControl
@@ -677,7 +681,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       ...(vault.enabled && !isVaultLocked(vault)
         ? [{
             key: 'vault-lock',
-            offline: true,
             el: (
               <button className="tb-capsule-btn" onClick={() => void lockVault()} title={t('vault.lockNow')}>
                 <KeyRound size={13} />
