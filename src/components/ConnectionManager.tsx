@@ -1713,12 +1713,22 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     return (
       <div className="form-group">
         <label>{t('connection.databaseLabel')}</label>
-        <div className="input-icon-wrapper cm-combo two-btn">
+        <div className={`input-icon-wrapper cm-combo two-btn${showDbList ? ' open' : ''}`}>
+          {/* Clicking anywhere in the field opens the list, not only the chevron; the field stays
+              editable, and typing narrows the list it opened. */}
           <input
             type="text"
             className="form-input"
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onClick={() => {
+              if (showDbList) return;
+              setShowDbList(true);
+              if (!availableDatabases.length && !loadingDbs) fetchDatabases(fetchTarget);
+            }}
+            onChange={(e) => {
+              setValue(e.target.value);
+              if (availableDatabases.length) setShowDbList(true);
+            }}
             onKeyDown={(e) => { if (e.key === 'Escape') setShowDbList(false); }}
             placeholder={placeholder}
           />
@@ -1792,11 +1802,13 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
             <label>{t('connection.group')}</label>
             {/* A hand-built combobox instead of <datalist>: the native one adds an arrow of its own
                 and its popup cannot follow the app's theme. */}
-            <div className="cm-combo">
+            <div className={`cm-combo${showGroupList ? ' open' : ''}`}>
               <input
                 type="text"
                 className="form-input"
                 value={profileGroup}
+                // Like the Database field: a click in the field opens the list, typing keeps working.
+                onClick={() => { if (existingGroups.length) setShowGroupList(true); }}
                 onChange={(e) => setProfileGroup(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Escape') setShowGroupList(false); }}
                 placeholder={existingGroups.length ? t('connection.groupPlaceholderPick') : t('connection.groupPlaceholderNew')}

@@ -8441,6 +8441,20 @@ input.rename-input {
   padding-right: 54px;
 }
 
+/* While the list is open its click-away backdrop (.cm-pop-backdrop, z-index 40) covers the page —
+   the field included. The field opens the list on click, so it is lifted above the backdrop:
+   clicking or typing in it again keeps working instead of closing the list. The popup (41) comes
+   later in the DOM, so it still sits over the field; the icon and buttons go on top of both. */
+.cm-combo.open > .form-input {
+  position: relative;
+  z-index: 41;
+}
+
+.cm-combo.open > .input-icon,
+.cm-combo.open > .cm-combo-btn {
+  z-index: 42;
+}
+
 .cm-combo-btn.second {
   right: 32px;
 }
