@@ -2864,6 +2864,15 @@ export const dbHelper = {
     return translateWarnings(await invoke<GenTargets>('get_generation_targets'));
   },
 
+  /**
+   * Masks one page of rows about to be exported (`datagen/mask.rs`). `columns` maps a column to
+   * its rule; columns without one come back untouched. Throws rather than returning a row it could
+   * not mask — the caller's export must stop, not write the original value.
+   */
+  async maskRows(key: string, columns: Record<string, { kind: string; options?: Record<string, unknown> }>, rows: any[]): Promise<any[]> {
+    return invoke<any[]>('mask_rows', { key, columns, rows });
+  },
+
   /** Generates `limit` sample rows of ONE table without writing to the database. */
   async previewGeneratedData(spec: GenSpec, table: string, limit = 100): Promise<GenPreview> {
     return translateWarnings(

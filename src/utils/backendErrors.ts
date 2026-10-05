@@ -21,6 +21,8 @@ import i18n from '../i18n';
 
 /** Backend messages with no interpolation — matched whole, after trimming. */
 export const EXACT: Record<string, string> = {
+  // datagen/mask.rs
+  'Thiếu khoá che dữ liệu': 'backend.maskKeyEmpty',
   'Chưa kết nối CSDL': 'backend.notConnected',
   // terminal/docker.rs — neither CLI is installed, so container discovery has nothing to ask.
   'Không tìm thấy lệnh docker hoặc nerdctl trên máy': 'backend.dockerCliMissing',
@@ -286,6 +288,10 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
     key: 'backend.dataGenFkEstimated',
   },
   { re: /^Bảng '([^']*)' không có cột nào để sinh dữ liệu$/, key: 'backend.dataGenAllSkipped' },
+  // datagen/mask.rs — masking an export. Each one stops the export rather than letting a value through.
+  { re: /^Quy tắc che dữ liệu của cột '([^']*)' không hợp lệ: ([\s\S]*)$/, key: 'backend.maskRuleInvalid' },
+  { re: /^Không che được cột nhị phân '([^']*)'$/, key: 'backend.maskBinary' },
+  { re: /^Cột '([^']*)' không phải ngày tháng \(YYYY-MM-DD…\), không dịch ngày được$/, key: 'backend.maskNotDate' },
   { re: /^Không có cấu hình sinh dữ liệu cho bảng '([^']*)'$/, key: 'backend.dataGenNoSpec' },
   {
     re: /^Các bảng tham chiếu vòng: ([\s\S]*)\. Hãy bật 'Tắt ràng buộc' khi sinh\.$/,

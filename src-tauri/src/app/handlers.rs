@@ -129,6 +129,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         crate::datagen::get_generation_targets,
         crate::datagen::preview_generated_data,
         crate::datagen::generate_data,
+        crate::datagen::mask_rows,
         crate::datagen::cancel_data_generation,
         crate::compare::compare_schemas,
         crate::compare::compare_data_overview,

@@ -14,6 +14,9 @@ import { startJob, type JobContext } from '../utils/jobs';
 import { withJobConnection } from '../utils/jobConnection';
 import { connKeyOfConn } from '../utils/safeMode';
 import { Modal, ModalBody, ModalFooter } from './Modal';
+import { MaskingSection } from './masking/MaskingControls';
+import { maskPlanFor, maskThroughBackend, useMasking } from '../utils/useMasking';
+import { activeRules, newMaskKey as newMaskKeyForPreview } from '../utils/masking';
 
 /** The grid's context — present only when opened from a table tab (the bar under DataGrid). */
 export interface ExportGridContext {
@@ -61,7 +64,12 @@ interface ReadOpts {
   sortDir?: 'asc' | 'desc';
   filter?: string;
   knownTotal: number;
+  /** Rewrites each page before it is written (`utils/masking.ts`); absent = export as is. */
+  mask?: (rows: any[]) => Promise<any[]>;
 }
+
+/** A stable empty page, so the preview memo does not rebuild on every render while masking runs. */
+const NO_ROWS: any[] = [];
 
 /** How many sample rows the preview step fetches. */
 const PREVIEW_ROWS = 20;
@@ -103,6 +111,12 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
   const [fetchedTotal, setFetchedTotal] = useState(0);
   const [fetching, setFetching] = useState(false);
   const [dir, setDir] = useState(getLastExportDir());
+  const maskingState = useMasking(connId);
+  const maskCols = maskingState.enabled ? activeRules(maskingState.rules, [tableName])[tableName] : undefined;
+  const maskSig = maskCols ? JSON.stringify(maskCols) : '';
+  // The preview step shows — and "Copy preview" copies — what the FILE will hold, so with masking
+  // on it is masked by the same command, keyed by the rows and rules it was made from.
+  const [maskedPreview, setMaskedPreview] = useState<{ src: any[]; sig: string; rows?: any[]; error?: string } | null>(null);
 
 
   // Each open is a new export pass.
@@ -142,7 +156,24 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
   );
   const rows = pickedPreview ?? fetchedRows;
   const totalRows = pickedRows ? pickedRows.length : fetchedTotal;
-  const loading = pickedRows ? false : fetching;
+  const fetchLoading = pickedRows ? false : fetching;
+  const maskedReady = maskedPreview && maskedPreview.src === rows && maskedPreview.sig === maskSig ? maskedPreview : null;
+  const previewRows = maskCols ? maskedReady?.rows ?? NO_ROWS : rows;
+  const maskError = maskCols ? maskedReady?.error ?? null : null;
+  const loading = fetchLoading || (!!maskCols && !maskedReady);
+
+  useEffect(() => {
+    if (!open || step !== 'preview' || !maskCols || fetchLoading) return;
+    let cancelled = false;
+    const src = rows;
+    void dbHelper
+      .maskRows(newMaskKeyForPreview(), maskCols, src.map((r) => ({ ...r })))
+      .then((masked) => { if (!cancelled) setMaskedPreview({ src, sig: maskSig, rows: masked }); })
+      .catch((e) => { if (!cancelled) setMaskedPreview({ src, sig: maskSig, error: String(e) }); });
+    return () => { cancelled = true; };
+    // maskCols is derived from maskSig, which is what identifies it
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, step, rows, maskSig, fetchLoading]);
 
   const colNames = React.useMemo(() => {
     const all = grid ? grid.columns : schemaCols;
@@ -211,7 +242,9 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
         opts.useView ? opts.sortDir : undefined,
         opts.useView ? opts.filter : undefined
       );
-      const batch = data.rows || [];
+      const read = data.rows || [];
+      // Masked BEFORE it reaches the writer: a failure here stops the export, nothing unmasked is written.
+      const batch = opts.mask && read.length ? await opts.mask(read) : read;
       seen += batch.length;
       // Awaited before the next page is read: when the page is going to a file, a slow disk slows
       // the read down instead of letting unwritten pages pile up in memory.
@@ -237,8 +270,8 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
   const preview = React.useMemo(() => {
     if (!open || step !== 'preview' || loading) return '';
     const cols = colNames.length ? colNames : (rows[0] ? Object.keys(rows[0]) : []);
-    return buildPreview(format, tableName, cols, rows, dbType, PREVIEW_ROWS);
-  }, [open, step, loading, format, rows, colNames, tableName, dbType]);
+    return buildPreview(format, tableName, cols, previewRows, dbType, PREVIEW_ROWS);
+  }, [open, step, loading, format, rows, previewRows, colNames, tableName, dbType]);
 
   useEffect(() => {
     if (!open) return;
@@ -263,12 +296,17 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
    * gone, and nothing it reads may belong to a component that no longer exists.
    */
   const download = () => {
+    const plan = maskPlanFor(maskingState.enabled, maskingState.rules, [tableName]);
+    if (plan === 'empty') return;
+    const planCols = plan?.rules[tableName];
+    const mask = plan && planCols ? (r: any[]) => maskThroughBackend(plan.key, planCols, r) : undefined;
     const opts = {
       useView: !!grid && applyView,
       sortBy: grid?.sortBy,
       sortDir: grid?.sortDir,
       filter: grid?.filter,
       knownTotal: totalRows,
+      mask,
     };
     // A selection is already in memory — no page to read, so no connection is needed at all.
     // `applyView` is irrelevant for it: the rows are in screen order, which is the sorted and
@@ -302,7 +340,7 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
         };
 
         // A selection is already in memory: nothing to read, nothing gained by streaming.
-        if (picked) return buildAndSave(picked);
+        if (picked) return buildAndSave(mask ? await mask(picked) : picked);
 
         // A connection of its own, like every job: a read through the user's id would go through
         // their manual transaction and export rows they have not committed.
@@ -446,6 +484,15 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
                 </div>
               )}
 
+              <MaskingSection
+                connId={connId}
+                tables={[tableName]}
+                enabled={maskingState.enabled}
+                onEnabledChange={maskingState.setEnabled}
+                rules={maskingState.rules}
+                onRulesChange={maskingState.setRules}
+              />
+
               <div style={{ fontSize: '11px', color: 'var(--win-text-secondary)', lineHeight: 1.5, display: onlySelected ? 'none' : undefined }}>
                 {t('exportDialog.exportAllRowsNote')}
                 {grid?.totalCount
@@ -460,6 +507,7 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
               <button
                 className="btn btn-primary"
                 onClick={() => setStep('preview')}
+                disabled={maskingState.enabled && !maskCols}
                 style={{ background: 'var(--win-accent)', color: '#fff', border: 'none' }}
               >
                 {t('exportDialog.previewAndExport')}
@@ -550,6 +598,7 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
               </div>
             </ModalBody>
 
+            {maskError && <div className="mask-error" style={{ margin: '0 16px 12px' }}>{t('masking.failed', { msg: maskError })}</div>}
             <ModalFooter style={{ gap: '12px' }}>
               <button className="btn btn-secondary" onClick={() => setStep('options')} style={{ marginRight: 'auto' }}>
                 {t('exportDialog.backToOptions')}
@@ -557,7 +606,7 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
               <button
                 className="btn btn-secondary"
                 onClick={() => navigator.clipboard.writeText(preview)}
-                disabled={loading || !preview || format === 'xlsx'}
+                disabled={loading || !!maskError || !preview || format === 'xlsx'}
                 title={format === 'xlsx' ? t('exportDialog.copyPreviewDisabled') : undefined}
                 style={{ flexShrink: 0 }}
               >
@@ -566,7 +615,7 @@ export const ExportTableDialog: React.FC<ExportTableDialogProps> = ({
               <button
                 className="btn btn-primary"
                 onClick={download}
-                disabled={loading}
+                disabled={loading || !!maskError}
                 style={{ background: 'var(--win-accent)', color: '#fff', border: 'none', flexShrink: 0 }}
               >
                 {dir ? t('exportDialog.exportToFolder') : t('exportDialog.downloadFile')}

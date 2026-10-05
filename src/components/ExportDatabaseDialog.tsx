@@ -16,6 +16,9 @@ import {
   type DumpObjKind as ExportObjKind,
 } from '../utils/dumpObjects';
 import { Modal, ModalFooter } from './Modal';
+import { MaskingSection } from './masking/MaskingControls';
+import { maskPlanFor, useMasking } from '../utils/useMasking';
+import type { MaskPlan } from '../utils/masking';
 
 export type DatabaseExportFormat = 'sql' | 'json' | 'csv' | 'xlsx';
 
@@ -42,6 +45,8 @@ export interface DatabaseExportOptions {
   compressGzip: boolean;
   /** The directory to save into; null = download through the WebView into the system's downloads folder. */
   dir: string | null;
+  /** Rewrites the sensitive columns of the rows read (`utils/masking.ts`); null = export as is. */
+  masking: MaskPlan | null;
   // There is NO progress parameter any more: the export runs as a background job (utils/jobs.ts) and
   // reports into JobsTray. The dialog closes as soon as the job is queued, so a callback here would
   // only draw for nobody.
@@ -120,6 +125,7 @@ export const ExportDatabaseDialog: React.FC<ExportDatabaseDialogProps> = ({ conn
   const [dir, setDir] = useState(getLastExportDir());
   // Each view's DDL, loaded in the background once the list exists — used only to warn about a missing source table.
   const [viewDefs, setViewDefs] = useState<{ name: string; sql: string }[]>([]);
+  const maskingState = useMasking(connId);
 
   useEffect(() => {
     if (!open) return;
@@ -243,6 +249,14 @@ export const ExportDatabaseDialog: React.FC<ExportDatabaseDialogProps> = ({ conn
       setError(t('exportDialog.errPickTable'));
       return;
     }
+    // Masking on with nothing to mask would export the real values under a dialog saying they
+    // are masked — refused rather than started.
+    const maskTables = chosen.filter((o) => o.kind === 'table').map((o) => o.name);
+    const masking = maskPlanFor(maskingState.enabled, maskingState.rules, maskTables);
+    if (masking === 'empty') {
+      setError(t('masking.none'));
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -254,6 +268,7 @@ export const ExportDatabaseDialog: React.FC<ExportDatabaseDialogProps> = ({ conn
         sqlOptions: { dropTable, includeStructure, includeContent },
         compressGzip,
         dir: dir || null,
+        masking,
       });
       if (ok) onClose();
     } finally {
@@ -382,6 +397,19 @@ export const ExportDatabaseDialog: React.FC<ExportDatabaseDialogProps> = ({ conn
                 </label>
               </div>
             </div>
+          )}
+
+          {/* Rows only: with the SQL format's data unticked there is nothing to mask. */}
+          {(format !== 'sql' || includeContent) && (
+            <MaskingSection
+              connId={connId}
+              tables={chosenNow.filter((o) => o.kind === 'table').map((o) => o.name)}
+              enabled={maskingState.enabled}
+              onEnabledChange={maskingState.setEnabled}
+              rules={maskingState.rules}
+              onRulesChange={maskingState.setRules}
+              disabled={submitting}
+            />
           )}
         </div>
 
