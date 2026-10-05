@@ -94,6 +94,8 @@ import { addExistsHint } from './utils/dumpPreview';
 import { ProgressBar, type ProgressState } from './components/ProgressBar';
 import { buildDatabaseFile, createDatabaseJsonWriter, createTableFileWriter } from './utils/exportHelper';
 import { buildDump, readTablePages, readTableRows, dumpReaderFor, writeDump, type DumpSpec } from './utils/dumpBuilder';
+import { withMasking } from './utils/masking';
+import { maskThroughBackend } from './utils/useMasking';
 import { saveDumpToFolder, saveExportFile, saveStreamedToFolder } from './utils/fileSave';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { Modal, ModalBody, ModalFooter } from './components/Modal';
@@ -583,7 +585,7 @@ export const App: React.FC = () => {
         const streamFormat =
           opts.format === 'json' ? 'json' : opts.format === 'csv' && opts.tables.length === 1 ? 'csv' : null;
         if (streamFormat) {
-          const reader = dumpReaderFor(dbHelper, jobConnId);
+          const reader = withMasking(dumpReaderFor(dbHelper, jobConnId), opts.masking, maskThroughBackend);
           const csv = streamFormat === 'csv';
           // Name and type from the in-memory builder, so both paths name the file the same way.
           const target = buildDatabaseFile(
@@ -643,7 +645,7 @@ export const App: React.FC = () => {
             ctx.throwIfCancelled();
             const table = opts.tables[i];
             const schemaInfo = await dbHelper.getTableSchema(jobConnId, table);
-            const rows = await readTableRows(dumpReaderFor(dbHelper, jobConnId), table, i, totalTables, report);
+            const rows = await readTableRows(withMasking(dumpReaderFor(dbHelper, jobConnId), opts.masking, maskThroughBackend), table, i, totalTables, report);
             const colNames = (schemaInfo.columns || []).map(c => c.name);
             const finalCols = colNames.length ? colNames : (rows[0] ? Object.keys(rows[0]) : []);
             sheets.push({ name: table, colNames: finalCols, rows });
@@ -674,7 +676,8 @@ export const App: React.FC = () => {
           schema,
           onProgress: report,
         };
-        const reader = dumpReaderFor(dbHelper, jobConnId);
+        // Masked when asked: the dump's INSERTs are built from the pages this reader returns.
+        const reader = withMasking(dumpReaderFor(dbHelper, jobConnId), opts.masking, maskThroughBackend);
 
         const ext = opts.compressGzip ? '.sql.gz' : '.sql';
         const base = opts.filename.replace(/\.(sql|sql\.gz|gz)$/i, '');
@@ -1008,7 +1011,7 @@ export const App: React.FC = () => {
                 detail: p.label,
               });
             },
-          }, dumpReaderFor(dbHelper, connId)));
+          }, withMasking(dumpReaderFor(dbHelper, connId), opts.masking, maskThroughBackend)));
           ctx.throwIfCancelled();
 
           // Phase 2 — replay it onto the target. `runAll` with an empty `tables`: this dump was built

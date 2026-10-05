@@ -15,6 +15,9 @@ import {
   type DumpSelection,
 } from '../utils/dumpObjects';
 import { Modal, ModalFooter } from './Modal';
+import { MaskingSection } from './masking/MaskingControls';
+import { maskPlanFor, useMasking } from '../utils/useMasking';
+import type { MaskPlan } from '../utils/masking';
 
 /** What the dialog hands back; `App` turns it into a background job. */
 export interface CopyDatabaseOptions extends DumpSelection {
@@ -33,6 +36,8 @@ export interface CopyDatabaseOptions extends DumpSelection {
   sourceSchema: string | null;
   sqlOptions: { dropTable: boolean; includeStructure: boolean; includeContent: boolean };
   continueOnError: boolean;
+  /** Rewrites the sensitive columns of the copied rows (`utils/masking.ts`); null = copy as is. */
+  masking: MaskPlan | null;
   /**
    * Connections the dialog OPENED for this copy, which the job must close when it is finished.
    *
@@ -349,6 +354,8 @@ export const CopyDatabaseDialog: React.FC<CopyDatabaseDialogProps> = ({
 
   const resolvedSource = sourceResolved?.key === sourceKey ? sourceResolved.side : null;
   const sourceConnId = resolvedSource?.connId || '';
+  // Rules belong to the SOURCE database: they describe its columns, whatever the target is.
+  const maskingState = useMasking(sourceConnId);
 
   useEffect(() => {
     if (!open || !sourceConnId) return;
@@ -477,12 +484,18 @@ export const CopyDatabaseDialog: React.FC<CopyDatabaseDialogProps> = ({
     targetPick.conn,
     targetDb,
     selected.join(','),
-    `${dropTable}${includeStructure}${includeContent}${continueOnError}`,
+    `${dropTable}${includeStructure}${includeContent}${continueOnError}${maskingState.enabled}`,
   ].join('|');
   const queued = queuedSig !== null && queuedSig === formSig;
 
   const submit = async () => {
     if (!sourceConn || !targetConn || !resolvedSource || blockKey) return;
+    // On with nothing to mask would copy the real values while the dialog says otherwise.
+    const masking = maskPlanFor(maskingState.enabled && includeContent, maskingState.rules, chosen.filter((o) => o.kind === 'table').map((o) => o.name));
+    if (masking === 'empty') {
+      setError(t('masking.none'));
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -515,6 +528,7 @@ export const CopyDatabaseDialog: React.FC<CopyDatabaseDialogProps> = ({
         // `dropTable && includeStructure`, not the raw flag — see the checkbox's comment below.
         sqlOptions: { dropTable: dropTable && includeStructure, includeStructure, includeContent },
         continueOnError,
+        masking,
       });
       // Queued, not closed — see `queuedSig`.
       if (ok) setQueuedSig(formSig);
@@ -728,6 +742,17 @@ export const CopyDatabaseDialog: React.FC<CopyDatabaseDialogProps> = ({
             </div>
           </div>
         </div>
+        {includeContent && sourceConnId && (
+          <MaskingSection
+            connId={sourceConnId}
+            tables={chosen.filter((o) => o.kind === 'table').map((o) => o.name)}
+            enabled={maskingState.enabled}
+            onEnabledChange={maskingState.setEnabled}
+            rules={maskingState.rules}
+            onRulesChange={maskingState.setRules}
+            disabled={submitting}
+          />
+        )}
       </div>
 
       <div style={{ flex: 1, minWidth: 0, padding: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
