@@ -9,7 +9,7 @@ import { pickDataFiles } from '../utils/fileSave';
 import * as catalog from '../sql/catalog';
 import { isMariaDbVersion } from '../utils/serverFlavor';
 import type { TableItem, SchemaInfo, TriggerInfo, CheckConstraintInfo } from '../utils/dbHelper';
-import { Search, Table, TerminalSquare, RefreshCw, Layers, Plus, ChevronDown, ChevronRight, Braces, Cog, Key, Sliders, FileCode, Trash2, CheckCircle2, Copy, AlertTriangle, History, Bookmark, Columns3, ArrowDownAZ, Link2, Zap, Code2, Database, Sparkles, GitCompare, ArrowLeftRight, HardDriveDownload, HardDriveUpload, DatabaseZap, Plug, Network, Activity, Timer } from 'lucide-react';
+import { Search, Table, TerminalSquare, RefreshCw, Layers, Plus, ChevronDown, ChevronRight, Braces, Cog, Key, Sliders, FileCode, Trash2, CheckCircle2, Copy, AlertTriangle, History, Bookmark, Columns3, ArrowDownAZ, Link2, Zap, Code2, Database, Sparkles, GitCompare, ArrowLeftRight, HardDriveDownload, HardDriveUpload, DatabaseZap, Plug, Network, Activity, Timer, NotebookPen } from 'lucide-react';
 import { CreateTableModal } from './CreateTableModal';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 import { RoutineEditorModal } from './RoutineEditorModal';
@@ -604,6 +604,8 @@ interface SidebarProps {
     schema?: string
   ) => void;
   onNewQuery: () => void;
+  /** A query notebook tab. Absent for a connection type that runs no SQL (Redis). */
+  onNewNotebook?: () => void;
   onOpenTerminal: () => void;
   terminalConfig?: import('../utils/dbHelper').DbConnectionConfig;
   onDisconnect: () => void;
@@ -653,6 +655,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   readOnly = false,
   onSelectTable,
   onNewQuery,
+  onNewNotebook,
   onOpenTerminal,
   terminalConfig: _terminalConfig,
   onDisconnect: _onDisconnect,
@@ -1778,6 +1781,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           visible: true,
         },
         {
+          id: 'notebook',
+          label: t('notebook.newNotebook'),
+          icon: NotebookPen,
+          colorClass: 'violet',
+          onClick: onNewNotebook,
+          visible: !!onNewNotebook,
+        },
+        {
           id: 'terminal',
           label: t('sidebar.terminal'),
           icon: TerminalSquare,
@@ -1884,7 +1895,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         },
       ],
     },
-  ], [t, onNewQuery, onOpenTerminal, onOpenDbInfo, onOpenProcessMonitor, onSchemaMigration, onCompareDatabases, onOpenErDiagram, onMcpSettings, onGenerateData, onExportDatabase, onImportDatabase, onCopyDatabase, blockedByReadOnly]);
+  ], [t, onNewQuery, onNewNotebook, onOpenTerminal, onOpenDbInfo, onOpenProcessMonitor, onSchemaMigration, onCompareDatabases, onOpenErDiagram, onMcpSettings, onGenerateData, onExportDatabase, onImportDatabase, onCopyDatabase, blockedByReadOnly]);
 
   return (
     <div className="sidebar-navigation" ref={rootRef} style={{ width: `${width}px` }}>

@@ -3,7 +3,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import {
   Minus, Square, X, Plus, Unplug, FileCode, HardDriveDownload, HardDriveUpload,
   PanelLeft, SunMoon, RotateCw, Info, Keyboard, Check, Database,
-  GitBranch, PanelBottom, Bot, ChevronRight, ChevronLeft, BookOpen, Sparkles, KeyRound, CalendarClock,
+  GitBranch, PanelBottom, Bot, ChevronRight, ChevronLeft, BookOpen, Sparkles, KeyRound, CalendarClock, NotebookPen,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -54,6 +54,7 @@ interface TitleBarProps {
   onNewConnection?: () => void;
   onDisconnect?: () => void;
   onNewQuery?: () => void;
+  onNewNotebook?: () => void;
   onExportDatabase?: () => void;
   onImportDatabase?: () => void;
   onToggleSidebar?: () => void;
@@ -100,6 +101,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onNewConnection,
   onDisconnect,
   onNewQuery,
+  onNewNotebook,
   onExportDatabase,
   onImportDatabase,
   onToggleSidebar,
@@ -377,6 +379,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       title: t('titlebar.menuDatabase'),
       items: [
         { label: t('titlebar.newQuery'), Icon: FileCode, onClick: onNewQuery, shortcut: 'Ctrl+T', disabled: !hasConnection },
+        { label: t('notebook.newNotebook'), Icon: NotebookPen, onClick: onNewNotebook, disabled: !hasConnection || !onNewNotebook },
         { label: t('titlebar.exportDatabase'), Icon: HardDriveDownload, onClick: onExportDatabase, disabled: !hasConnection || !onExportDatabase, separatorBefore: true },
         { label: t('titlebar.importDatabase'), Icon: HardDriveUpload, onClick: onImportDatabase, disabled: !hasConnection || !onImportDatabase },
         { label: t('titlebar.scheduledBackups'), Icon: CalendarClock, onClick: onScheduledBackups, separatorBefore: true },
@@ -667,8 +670,12 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     [
       // "Lock now" lived only inside the Master Password dialog, which is only reachable from the
       // Connection Manager — so the one moment locking is worth a click, while connected and about to
-      // step away, was the one moment it could not be done without disconnecting first. `offline` so
-      // the button does not disappear the moment the user goes back to the connection screen.
+      // step away, was the one moment it could not be done without disconnecting first.
+      //
+      // Deliberately NOT `offline`: the connection screen already has a KeyRound button (the
+      // Master Password settings, next to import/export), and a second, identical key here that
+      // does something else — lock at once — was two look-alike buttons with different meanings on
+      // one screen. There, locking is one more click, through that dialog's own "Lock now".
       //
       // `KeyRound`, the dialog's own icon, rather than a padlock: the padlock in the LEFT cluster is
       // Safe Mode / read-only, and two padlocks in one bar is exactly the confusion SafeModeControl
@@ -677,7 +684,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       ...(vault.enabled && !isVaultLocked(vault)
         ? [{
             key: 'vault-lock',
-            offline: true,
             el: (
               <button className="tb-capsule-btn" onClick={() => void lockVault()} title={t('vault.lockNow')}>
                 <KeyRound size={13} />

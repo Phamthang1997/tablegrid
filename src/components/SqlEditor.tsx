@@ -30,8 +30,8 @@ import { registerSqlSignatureHelp } from '../sql/signatureHelp';
 import { registerSqlPeekDefinition } from '../sql/peekDefinition';
 import { registerSqlOutline } from '../sql/outline';
 import {
-  statementAt, analyzeStatements, splitStatements, isSchemaChangingSql, applyLimitToSql,
-  findUnsafeStatements, type UnsafeStatement, type UnsafeStatementKind,
+  statementAt, analyzeStatements, isSchemaChangingSql, applyLimitToSql,
+  findUnsafeStatements, isReadOnlySql, type UnsafeStatement, type UnsafeStatementKind,
 } from '../sql/statements';
 import * as catalog from '../sql/catalog';
 import { willPromptForSql } from '../utils/safeMode';
@@ -182,20 +182,9 @@ const SCOPE_OPTIONS = [
   { scope: 'all', labelKey: 'sqlEditor.scopeAll', titleKey: 'sqlEditor.scopeAllTitle' },
 ] as const;
 
-// The read-only statements allowed to run in read-only mode
 /** Past this a .sql file is a dump rather than something to edit, and Monaco would stall on it. */
 const SQL_FILE_MAX_BYTES = 10 * 1024 * 1024;
 
-const READ_ONLY_PREFIXES = ['SELECT', 'SHOW', 'EXPLAIN', 'DESCRIBE', 'DESC', 'PRAGMA', 'WITH'];
-function isReadOnlySql(text: string): boolean {
-  // Shares the editor's splitter: a ';' inside a string, a comment or a dollar-quoted block, and a
-  // statement terminator changed by DELIMITER, are all handled correctly (a hand-rolled split(';')
-  // would misjudge those scripts).
-  return splitStatements(text).every(stmt => {
-    const first = stmt.text.split(/\s+/)[0].toUpperCase();
-    return READ_ONLY_PREFIXES.includes(first);
-  });
-}
 
 /** Where the caret is, as the toolbar spells it out. */
 interface CaretPos { line: number; column: number }

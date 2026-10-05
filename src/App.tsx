@@ -33,6 +33,8 @@ const SqlEditor = React.lazy(() =>
   import('./components/SqlEditor').then((m) => ({ default: m.SqlEditor })));
 const ERDiagramTab = React.lazy(() =>
   import('./components/er').then((m) => ({ default: m.ERDiagramTab })));
+// Lazy for the same reason as SqlEditor: the notebook's SQL cells are Monaco editors.
+const NotebookTab = React.lazy(() => import('./components/notebook/NotebookTab'));
 import { LazyEditorFallback } from './components/LazyEditorFallback';
 import { AiAssistant } from './components/AiAssistant';
 import { TerminalPanel } from './components/TerminalPanel';
@@ -123,6 +125,8 @@ interface QueryTabPanelProps {
   theme: 'dark' | 'light';
   readOnly: boolean;
   onPatch: (id: string, patch: Partial<TabInfo>) => void;
+  /** A notebook read from a file opens in a tab of its own. */
+  onOpenNotebook: (cells: unknown[], title?: string) => void;
 }
 
 const QueryTabPanel = React.memo(function QueryTabPanel(props: QueryTabPanelProps) {
@@ -148,6 +152,19 @@ const QueryTabPanel = React.memo(function QueryTabPanel(props: QueryTabPanelProp
       }
     >
       <Suspense fallback={<LazyEditorFallback />}>
+        {tab.type === 'notebook' ? (
+          <NotebookTab
+            connId={props.connId}
+            dbType={props.dbType}
+            theme={props.theme}
+            readOnly={props.readOnly}
+            connReadOnly={props.connReadOnly}
+            title={tab.label}
+            initialCells={tab.cells}
+            onCellsChange={(cells) => onPatch(tab.id, { cells })}
+            onOpenNotebook={props.onOpenNotebook}
+          />
+        ) : (
         <SqlEditor
           connId={props.connId}
           isProdConn={props.isProdConn}
@@ -167,6 +184,7 @@ const QueryTabPanel = React.memo(function QueryTabPanel(props: QueryTabPanelProp
           onEditorHeightChange={(val) => onPatch(tab.id, { customEditorHeight: val } as any)}
           historyTabId={tab.id}
         />
+        )}
       </Suspense>
     </div>
   );
@@ -1895,6 +1913,23 @@ export const App: React.FC = () => {
     setQueryCount(queryCount + 1);
   }, [connection?.dbType, handleOpenRedisTool, t, queryCount, tabs, activeConnIdState]);
 
+  // A notebook tab: SQL + note cells (components/notebook). `cells` comes from a .tgnb file when
+  // one is opened; a new notebook starts from the component's own starter cells.
+  const handleNewNotebookTab = React.useCallback((cells?: unknown[], label?: string) => {
+    const tabId = `notebook_${Date.now()}`;
+    const n = tabs.filter((tb) => tb.type === 'notebook').length + 1;
+    const newTab: TabInfo = {
+      id: tabId,
+      type: 'notebook',
+      name: 'Notebook',
+      label: label || t('notebook.tabLabel', { n }),
+      ...(cells ? { cells } : {}),
+    };
+    setTabs([...tabs, { ...newTab, connId: activeConnIdState }]);
+    setActiveTabId(tabId);
+  }, [t, tabs, activeConnIdState]);
+  const handleNewNotebook = React.useCallback(() => handleNewNotebookTab(), [handleNewNotebookTab]);
+
   // Open SQL tab with existing content (e.g. sync script from DB compare dialog)
   const openQueryTabWithSql = React.useCallback((sql: string) => {
     const tabId = `query_${Date.now()}`;
@@ -2311,7 +2346,7 @@ export const App: React.FC = () => {
   React.useEffect(() => {
     queueMicrotask(() => {
       setMountedQueryTabs(prev => {
-        const live = new Set(tabs.filter(tb => tb.type === 'query').map(tb => tb.id));
+        const live = new Set(tabs.filter(tb => tb.type === 'query' || tb.type === 'notebook').map(tb => tb.id));
         const next = new Set<string>();
         for (const id of prev) if (live.has(id)) next.add(id);
         if (activeTabId && live.has(activeTabId)) next.add(activeTabId);
@@ -2372,6 +2407,7 @@ export const App: React.FC = () => {
       onNewConnection={handleNewConnection}
       onDisconnect={handleDisconnect}
       onNewQuery={handleNewQueryTab}
+      onNewNotebook={connection?.dbType === 'redis' ? undefined : handleNewNotebook}
       onExportDatabase={connCaps.dump ? handleOpenExportDb : undefined}
       onImportDatabase={connCaps.dump ? handleOpenImportDb : undefined}
       onToggleSidebar={() => setShowSidebar(prev => !prev)}
@@ -2495,6 +2531,7 @@ export const App: React.FC = () => {
                 readOnly={readOnly}
                 onSelectTable={handleSelectTable}
                 onNewQuery={handleNewQueryTab}
+                onNewNotebook={handleNewNotebook}
                 onOpenTerminal={handleOpenTerminal}
                 terminalConfig={terminalConfig()}
                 onDisconnect={handleDisconnect}
@@ -2565,7 +2602,7 @@ export const App: React.FC = () => {
                       {t('app.terminalFloating')}
                     </div>
                   ) : null
-                ) : activeTab.type === 'query' || REDIS_TOOL_TAB_TYPES.has(activeTab.type) ? (
+                ) : activeTab.type === 'query' || activeTab.type === 'notebook' || REDIS_TOOL_TAB_TYPES.has(activeTab.type) ? (
                   // Query tabs and the six Redis tool tabs are all mounted permanently below (like
                   // the terminal), so nothing is rendered here — rendering would rebuild the tab and
                   // lose its results on every switch.
@@ -2729,7 +2766,7 @@ export const App: React.FC = () => {
                 {/* Query tabs: mounted permanently (shown/hidden with CSS) so their results survive a
                     tab switch. Only tabs that have actually been opened are mounted — see
                     mountedQueryTabs. */}
-                {visibleTabs.filter(qt => qt.type === 'query' && mountedQueryTabs.has(qt.id)).map(qt => (
+                {visibleTabs.filter(qt => (qt.type === 'query' || qt.type === 'notebook') && mountedQueryTabs.has(qt.id)).map(qt => (
                   <QueryTabPanel
                     // The scope goes into the key too: a tab id is `query_<timestamp>`, so two
                     // different databases can still collide, and React would then reuse the old
@@ -2746,6 +2783,7 @@ export const App: React.FC = () => {
                     theme={theme}
                     readOnly={readOnly}
                     onPatch={patchTab}
+                    onOpenNotebook={handleNewNotebookTab}
                   />
                 ))}
 

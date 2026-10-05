@@ -1556,7 +1556,7 @@ select.form-input {
 
 /* Database rail: the narrow column of databases sitting left of the sidebar.
    Fixed width — it is NOT resizable like the sidebar, so a name longer than the
-   cell is clipped by .db-rail-name and the full name stays in the tooltip. */
+   cell wraps to two lines in .db-rail-name and the full name stays in the tooltip. */
 .db-rail {
   flex: 0 0 auto;
   width: 64px;
@@ -1810,36 +1810,48 @@ select.form-input {
   outline-offset: -2px;
 }
 
-/* One line, clipped: two databases whose names differ only at the end are still
-   told apart by the tooltip, and the rail never grows to fit a long name. */
+/* At most two lines. A name that fits is wrapped whole, between words; a longer one is split by
+   railNameParts() in DbRail into its START (first line, cut with an ellipsis) and its END (second
+   line), because the end is where similar names differ — performance_schema / information_schema,
+   sakila_dev / sakila_prod. The old one-line inline-flex centring let a long name overflow BOTH
+   edges, so performance_schema read as "mance_sc" with no sign it was cut. The clamp is only a
+   backstop for a name wider than the character estimate; the full name stays in the tooltip. */
 .db-rail-name {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3.5px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   max-width: 100%;
   padding: 0 2px;
   font-size: 10.5px;
   line-height: 1.2;
+  text-align: center;
   overflow: hidden;
+  overflow-wrap: anywhere;
   letter-spacing: -0.01em;
 }
 
-.db-rail-name-text {
+.db-rail-name.is-split {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.db-rail-name-head,
+.db-rail-name-tail {
+  max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.db-rail-name-lock {
-  flex-shrink: 0;
-  opacity: 0.75;
-  color: var(--win-text-secondary);
+.db-rail-name-head {
+  text-overflow: ellipsis;
 }
 
-.db-rail-item.is-on .db-rail-name-lock {
-  opacity: 1;
-  color: var(--win-text-primary);
+.db-rail-name-tail.is-cut::before {
+  content: '\2026';
 }
 
 .db-rail-status {
@@ -8427,6 +8439,20 @@ input.rename-input {
 
 .cm-combo.two-btn .form-input {
   padding-right: 54px;
+}
+
+/* While the list is open its click-away backdrop (.cm-pop-backdrop, z-index 40) covers the page —
+   the field included. The field opens the list on click, so it is lifted above the backdrop:
+   clicking or typing in it again keeps working instead of closing the list. The popup (41) comes
+   later in the DOM, so it still sits over the field; the icon and buttons go on top of both. */
+.cm-combo.open > .form-input {
+  position: relative;
+  z-index: 41;
+}
+
+.cm-combo.open > .input-icon,
+.cm-combo.open > .cm-combo-btn {
+  z-index: 42;
 }
 
 .cm-combo-btn.second {

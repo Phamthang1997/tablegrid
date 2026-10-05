@@ -24,6 +24,35 @@ const DIALECT: Record<string, { label: string; Icon: React.FC<{ size?: number }>
   duckdb: { label: 'DuckDB', Icon: DuckDbIcon },
 };
 
+/** Characters one line of the 64px cell holds at 10.5px Inter (measured: `customer` fits, `customer_` does not). */
+const RAIL_LINE_CHARS = 8;
+
+/**
+ * How a database name is laid out in its cell: either wrapped whole onto at most two lines, or — when
+ * it cannot fit — its START on the first line (cut by an ellipsis) and its END on the second.
+ *
+ * Plain two-line wrapping lost the end of every long name: `performance_schema` came out as
+ * `performa` / `nce_…`, and the end is exactly where similar names differ (`…_schema`, `_dev`,
+ * `_prod`, a date). The full name is always in the cell's tooltip.
+ */
+function railNameParts(name: string): { whole: string } | { head: string; tail: string; cut: boolean } {
+  const words = name.split(/(?<=[_.-])/);
+  const longestWord = Math.max(...words.map((w) => w.length));
+  if (name.length <= RAIL_LINE_CHARS * 2 - 2 && longestWord <= RAIL_LINE_CHARS) {
+    // A zero-width space after each separator lets the wrap fall between words (`sakila_` / `prod`)
+    // rather than inside one. Only the label gets it; the tooltip and every lookup use the real name.
+    return { whole: name.replace(/([_.-])/g, '$1​') };
+  }
+  const last = words[words.length - 1];
+  // The last word when it fits on a line; otherwise the last few characters, which the CSS prefixes
+  // with an ellipsis (`cut`) so a tail taken from inside a word does not read as a whole word.
+  if (words.length > 1 && last.length <= RAIL_LINE_CHARS - 1) {
+    return { head: name.slice(0, -last.length), tail: last, cut: false };
+  }
+  const n = RAIL_LINE_CHARS - 3; // room for the ellipsis the CSS draws in front
+  return { head: name.slice(0, -n), tail: name.slice(-n), cut: true };
+}
+
 interface DbRailProps {
   /** Connection whose workspace is on screen — its cell is highlighted. */
   activeConnId: string;
@@ -161,7 +190,17 @@ export const DbRail: React.FC<DbRailProps> = ({
               <span className="db-rail-icon">
                 {Icon ? <Icon size={20} /> : <Database size={20} strokeWidth={1.6} />}
               </span>
-              <span className="db-rail-name">{c.db}</span>
+              {(() => {
+                const parts = railNameParts(c.db);
+                return 'whole' in parts ? (
+                  <span className="db-rail-name">{parts.whole}</span>
+                ) : (
+                  <span className="db-rail-name is-split">
+                    <span className="db-rail-name-head">{parts.head}</span>
+                    <span className={`db-rail-name-tail${parts.cut ? ' is-cut' : ''}`}>{parts.tail}</span>
+                  </span>
+                );
+              })()}
               {/* The badge is why the rail exists as more than a switcher: with one control on the
                   title bar the other connections' uncommitted work is invisible, and the user can be
                   holding three open transactions while seeing one. */}

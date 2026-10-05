@@ -492,6 +492,10 @@ const ERToolbarInner: React.FC<ERToolbarProps> = ({
               <FileCode size={13} />
               <span>{t('er.exportMarkdownDoc')}</span>
             </button>
+            <button type="button" className="er-menu-item" onClick={() => handleExportAction('html')}>
+              <FileCode size={13} />
+              <span>{t('er.exportHtmlDoc')}</span>
+            </button>
             <button type="button" className="er-menu-item" onClick={() => handleExportAction('sql')}>
               <FileCode size={13} />
               <span>{t('er.exportSql')}</span>

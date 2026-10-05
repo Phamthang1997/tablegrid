@@ -899,3 +899,15 @@ export function applyLimitToSql(sqlText: string, limitOption: string): string {
   return modified ? newStmts.join('\n\n') : sqlText;
 }
 
+
+/** The statements read-only mode lets through (SQL editor and notebook alike). */
+const READ_ONLY_PREFIXES = ['SELECT', 'SHOW', 'EXPLAIN', 'DESCRIBE', 'DESC', 'PRAGMA', 'WITH'];
+export function isReadOnlySql(text: string): boolean {
+  // Shares the editor's splitter: a ';' inside a string, a comment or a dollar-quoted block, and a
+  // statement terminator changed by DELIMITER, are all handled correctly (a hand-rolled split(';')
+  // would misjudge those scripts).
+  return splitStatements(text).every(stmt => {
+    const first = stmt.text.split(/\s+/)[0].toUpperCase();
+    return READ_ONLY_PREFIXES.includes(first);
+  });
+}

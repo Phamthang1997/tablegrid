@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { Table, Terminal, TerminalSquare, X, Plus, Trash2, XCircle, ArrowRight, ChevronDown, Cog, Braces, Layers, Pencil, Key, Activity, Timer, Radio, BarChart3, GitCompare, ArrowLeftRight, Wand2, Database, Download, Upload, Plug } from 'lucide-react';
+import { Table, Terminal, TerminalSquare, X, Plus, Trash2, XCircle, ArrowRight, ChevronDown, Cog, Braces, Layers, Pencil, Key, Activity, Timer, Radio, BarChart3, GitCompare, ArrowLeftRight, Wand2, Database, Download, Upload, Plug, NotebookPen } from 'lucide-react';
 import { TAB_GROUP_COLORS, type TabGroup } from '../utils/tabGroups';
 
 /** Stable empty default for the `groups` prop: a fresh `[]` each render breaks memoisation downstream. */
@@ -33,6 +33,8 @@ export interface TabInfo {
   type:
     | 'table'
     | 'query'
+    /** SQL + note cells; `cells` holds their source (components/notebook). */
+    | 'notebook'
     | 'terminal'
     | 'routine'
     | 'view'
@@ -57,6 +59,8 @@ export interface TabInfo {
   label: string;
   routineInfo?: { name: string; kind: 'procedure' | 'function'; sql: string };
   viewInfo?: { name: string; sql: string };
+  /** Notebook tabs: the cells' source (`StoredCell[]` of utils/notebookFile.ts), results excluded. */
+  cells?: unknown[];
   dataGenTable?: string | null;
   dbInfoTab?: 'current' | 'all';
   /**
@@ -605,6 +609,8 @@ export const TabManager: React.FC<TabManagerProps> = ({
                     <Download size={12} style={{ color: '#06b6d4', marginRight: '6px' }} />
                   ) : tab.type === 'import-db' ? (
                     <Upload size={12} style={{ color: '#10b981', marginRight: '6px' }} />
+                  ) : tab.type === 'notebook' ? (
+                    <NotebookPen size={12} style={{ color: 'var(--win-accent)', marginRight: '6px' }} />
                   ) : tab.type === 'mcp-server' ? (
                     <Plug size={12} style={{ color: '#10b981', marginRight: '6px' }} />
                   ) : tab.type.startsWith('redis-') ? (
