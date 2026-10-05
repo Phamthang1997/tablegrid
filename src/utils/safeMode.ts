@@ -146,6 +146,9 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   preview_generated_data: 'internal',
   // Rewrites rows already read for an export; touches no database.
   mask_rows: 'internal',
+  // Diagnostics: catalog and statistics reads, nothing is changed.
+  get_lock_graph: 'internal',
+  get_index_facts: 'internal',
   compare_data_overview: 'internal',
   compare_schemas: 'internal',
   compare_table_data: 'internal',

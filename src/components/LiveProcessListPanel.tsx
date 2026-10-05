@@ -25,6 +25,8 @@ import {
   getDurationSeverity,
   isQueryActive,
 } from '../utils/processMonitorTypes';
+import { useTranslation } from 'react-i18next';
+import { LockTreeView } from './diagnostics/LockTreeView';
 
 export interface LiveProcessListPanelProps {
   connId: string;
@@ -56,6 +58,9 @@ export const LiveProcessListPanel: React.FC<LiveProcessListPanelProps> = ({
   const [selectedProcess, setSelectedProcess] = useState<ProcessItem | null>(null);
   const [copiedQuery, setCopiedQuery] = useState<boolean>(false);
   const [actionPending, setActionPending] = useState<string | null>(null);
+  const { t } = useTranslation();
+  // The flat session list, or the lock tree (who blocks whom, with a kill at each root).
+  const [view, setView] = useState<'list' | 'tree'>('list');
 
   // Sorting state
   const [sortField, setSortField] = useState<SortField>('time_seconds');
@@ -384,6 +389,13 @@ export const LiveProcessListPanel: React.FC<LiveProcessListPanelProps> = ({
         </div>
 
         <div className="pm-filter-toggles">
+          <button className={`pm-btn ${view === 'list' ? 'active' : ''}`} onClick={() => setView('list')}>
+            {t('lockTree.viewList')}
+          </button>
+          <button className={`pm-btn ${view === 'tree' ? 'active' : ''}`} onClick={() => setView('tree')}>
+            {t('lockTree.viewTree')}
+          </button>
+          <span className="pm-toggle-sep" />
           <button
             className={`pm-btn ${filterTab === 'all' ? 'active' : ''}`}
             onClick={() => setFilterTab('all')}
@@ -419,7 +431,14 @@ export const LiveProcessListPanel: React.FC<LiveProcessListPanelProps> = ({
         </div>
       )}
 
+      {view === 'tree' && (
+        <div className="pm-tree-container">
+          <LockTreeView connId={connId} intervalMs={autoRefreshInterval} onChanged={() => void fetchProcesses(true)} />
+        </div>
+      )}
+
       {/* Main Table */}
+      {view === 'list' && (
       <div className="pm-table-container">
         <table className="pm-table">
           <thead>
@@ -530,6 +549,7 @@ export const LiveProcessListPanel: React.FC<LiveProcessListPanelProps> = ({
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Selected Query Detail Inspector */}
       {selectedProcess && (
