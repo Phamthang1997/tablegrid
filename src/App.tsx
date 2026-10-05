@@ -2728,6 +2728,7 @@ export const App: React.FC = () => {
                         onClose={() => handleCloseTab(activeTab.id)}
                         onSelectTable={(tableName) => handleSelectTable(tableName)}
                         onDatabaseOpened={handleDatabaseOpened}
+                        onOpenSql={openQueryTabWithSql}
                       />
                     ) : activeTab.type === 'export-db' ? (
                       <ExportDatabaseDialog

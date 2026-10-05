@@ -1,3 +1,5 @@
+import type { LockGraph } from './lockTree';
+import type { IndexFacts } from './indexAnalysis';
 import { invoke as rawInvoke, Channel } from '@tauri-apps/api/core';
 import i18n from '../i18n';
 import { translateBackendError, translateResultErrors } from './backendErrors';
@@ -2911,6 +2913,19 @@ export const dbHelper = {
     } catch {
       // Cancelling is "best effort": an error here leaves the user nothing to act on.
     }
+  },
+
+  /**
+   * Who waits for whom (`database/commands/locks.rs`): the edges, the sessions on them, and on MySQL
+   * the last deadlock InnoDB recorded. The tree is built by `utils/lockTree.ts`.
+   */
+  async getLockGraph(connId: string): Promise<LockGraph> {
+    return invoke<LockGraph>('get_lock_graph', { connId });
+  },
+
+  /** The indexes of the current database/schema with their usage and size (`stats/index_usage.rs`). */
+  async getIndexFacts(connId: string): Promise<IndexFacts> {
+    return invoke<IndexFacts>('get_index_facts', { connId });
   },
 
   /** Fetches active database connections, processlist and lock activity. */
