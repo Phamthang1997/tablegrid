@@ -85,7 +85,7 @@ describe('COMMAND_KINDS is the twin of dbHelper', () => {
       'restore_backup',
       'generate_data',
       'rename_table',
-      'import_chunk',
+      'import_step',
     ]) {
       expect(COMMAND_KINDS[cmd]).toBe('write');
     }

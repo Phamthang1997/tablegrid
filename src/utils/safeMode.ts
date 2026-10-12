@@ -62,10 +62,10 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   drop_table: 'write',
   drop_trigger: 'write',
   generate_data: 'write',
-  import_new_table: 'write',
-  // The chunked import (table_import.rs). Only the chunk writes; begin/finish/abort open and close its
-  // transaction, and the whole import is approved once at submit through pproveJob.
-  import_chunk: 'write',
+  // The streamed import (table_import.rs). Only a step writes; begin/finish/abort open and close its
+  // transaction — begin also runs the CREATE TABLE of an import into a new table — and the whole
+  // import is approved once, at submit, through `approveJob` (whose detail says a table is created).
+  import_step: 'write',
   rename_database: 'write',
   rename_table: 'write',
   restore_backup: 'write',
@@ -173,6 +173,11 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   cancel_restore: 'internal',
   // Reads a dump file from disk; touches no database.
   scan_dump_file: 'internal',
+  // Reading the file to import: no database is touched.
+  import_file_detect: 'internal',
+  import_file_probe: 'internal',
+  import_file_check: 'internal',
+  import_file_check_cancel: 'internal',
   import_begin: 'internal',
   import_finish: 'internal',
   import_abort: 'internal',

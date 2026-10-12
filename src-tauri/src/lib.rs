@@ -28,6 +28,7 @@ pub mod credentials;
 pub mod database;
 pub mod datagen;
 pub mod export_sink;
+pub mod import_file;
 pub mod mcp;
 pub mod redis_db;
 pub mod ssh;

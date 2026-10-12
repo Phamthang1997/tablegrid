@@ -71,7 +71,11 @@ export const EXACT: Record<string, string> = {
   'Chưa có cấu hình kết nối để quét sâu': 'backend.noConnConfigDeepScan',
   'Hệ quản trị CSDL không được hỗ trợ': 'backend.unsupportedDbms',
   'Dữ liệu import không có cột nào': 'backend.importNoColumns',
-  'Không có dữ liệu để tạo bảng': 'backend.noDataForTable',
+  // import_file/source.rs + xlsx.rs — what a file to import is, before any row is read.
+  'Tệp .xls (Excel 97-2003) không được hỗ trợ — hãy lưu lại thành .xlsx hoặc CSV': 'backend.importXlsUnsupported',
+  'Tệp nén .zip không chứa tệp CSV/JSON nào': 'backend.importZipEmpty',
+  'Định dạng tệp không được hỗ trợ': 'backend.importUnsupported',
+  'Tệp Excel không có trang tính nào': 'backend.xlsxNoSheet',
   'Không lấy được định nghĩa đối tượng': 'backend.noObjectDefinition',
   'Không tìm thấy định nghĩa': 'backend.definitionNotFound',
   'Không tìm thấy định nghĩa bảng': 'backend.tableDefinitionNotFound',
@@ -172,6 +176,13 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   { re: /^Không đọc được tệp dump: ([\s\S]*)$/, key: 'backend.dumpReadFailed' },
   // database/pg_archive.rs — the payload is pg_restore's own stderr, in its own words.
   { re: /^pg_restore báo lỗi: ([\s\S]*)$/, key: 'backend.pgRestoreFailed' },
+  // import_file/ — reading a CSV / JSON / Excel file to import. The payload is the OS, zip or XML
+  // parser's error in its own words; a JSON one names the element's position first.
+  { re: /^Không mở được tệp: ([\s\S]*)$/, key: 'backend.importOpenFailed' },
+  { re: /^Không đọc được tệp: ([\s\S]*)$/, key: 'backend.importReadFailed' },
+  { re: /^Tệp Excel không hợp lệ: ([\s\S]*)$/, key: 'backend.xlsxInvalid' },
+  { re: /^JSON không hợp lệ ở phần tử thứ (\d+): ([\s\S]*)$/, key: 'backend.jsonInvalidElement' },
+  { re: /^Bảng mã không được hỗ trợ: ([\s\S]*)$/, key: 'backend.encodingUnsupported' },
   // terminal/docker.rs — the payload is the OS spawn error or docker's own stderr, which stays
   // in its own words the way `failed[].error` does for a Redis RESTORE.
   { re: /^Không chạy được ([^:]+): ([\s\S]*)$/, key: 'backend.dockerRunFailed' },
