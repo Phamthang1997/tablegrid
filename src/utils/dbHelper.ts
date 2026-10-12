@@ -26,6 +26,15 @@ import type {
 } from './dataGenHelper';
 import type { ProcessListSummary, KillResult } from './processMonitorTypes';
 import type { DumpScan } from './dumpPreview';
+import type {
+  CoerceOptions,
+  FileCheck,
+  FileDetect,
+  FileProbe,
+  ImportStepResult,
+  MappedColumn,
+  SourceOptions,
+} from './tableImport';
 
 /**
  * Which backend connection commands act on. Set from `connect()`'s response, cleared by
@@ -1778,15 +1787,6 @@ export const dbHelper = {
     }
   },
 
-  async importNewTable(tableName: string, rows: any[]): Promise<{ success: boolean; error?: string }> {
-    try {
-      const res: any = await invoke('import_new_table', { tableName, rows });
-      return { success: !!res.success, error: res.message };
-    } catch (err: any) {
-      return { success: false, error: err.toString() };
-    }
-  },
-
   async renameTable(connId: string, oldName: string, newName: string): Promise<{ success: boolean; error?: string }> {
     try {
       const res: any = await invoke('rename_table', { connId, oldName, newName });
@@ -2084,31 +2084,87 @@ export const dbHelper = {
   },
 
   /**
-   * Starts a one-transaction import into an existing table (`table_import.rs`). Run on a job
-   * connection. `columns` fixes the order every chunk's row arrays use. Throws on failure.
+   * What a file to import is — CSV / JSON / Excel / a SQL dump, plain, gzipped or inside a zip —
+   * from its bytes first and its name second (`import_file/source.rs`). Throws on failure.
+   */
+  async importFileDetect(path: string): Promise<FileDetect> {
+    return (await invoke('import_file_detect', { path })) as FileDetect;
+  },
+
+  /**
+   * The file's header and first rows, read in Rust from its PATH — the file never enters the
+   * webview. For a SQL dump only the `FileDetect` part comes back. Throws on failure.
+   */
+  async importFileProbe(path: string, options: SourceOptions): Promise<FileProbe> {
+    return (await invoke('import_file_probe', { path, options })) as FileProbe;
+  },
+
+  /**
+   * A dry run over the whole file. Resolves to null when `importFileCheckCancel(checkId)` stopped
+   * it. Throws on failure.
+   */
+  async importFileCheck(
+    checkId: string,
+    path: string,
+    options: SourceOptions,
+    spec: { columns: MappedColumn[]; coerce: CoerceOptions; infer?: boolean },
+    onProgress?: (p: { bytesDone: number; bytesTotal: number; rows: number }) => void,
+  ): Promise<FileCheck | null> {
+    const channel = new Channel<any>();
+    if (onProgress) channel.onmessage = onProgress;
+    const res: any = await invoke('import_file_check', { checkId, path, options, spec, onProgress: channel });
+    return res?.cancelled ? null : (res as FileCheck);
+  },
+
+  /** Stops a dry run. Best effort: the run itself answers how it ended. */
+  async importFileCheckCancel(checkId: string): Promise<void> {
+    try {
+      await invoke('import_file_check_cancel', { checkId });
+    } catch {
+      // Nothing to stop.
+    }
+  },
+
+  /**
+   * Starts a one-transaction import (`table_import.rs`) that reads its rows from `source` itself.
+   * Run on a job connection. `columns` are the INSERT columns, in `source.columns` order. With
+   * `create`, the import creates the table first (and a rollback removes it). Throws on failure.
    */
   async importBegin(
     connId: string,
     table: string,
     columns: string[],
     mode: 'atomic' | 'skip',
-    schema?: string | null,
-  ): Promise<{ handle: string; batchRows: number }> {
-    const res: any = await invoke('import_begin', { connId, table, columns, mode, schemaOverride: schema || null });
-    return { handle: res.handle, batchRows: res.batchRows };
+    schema: string | null | undefined,
+    source: { path: string; options: SourceOptions; columns: MappedColumn[]; coerce: CoerceOptions },
+    create?: { name: string; type: string }[] | null,
+  ): Promise<{ handle: string }> {
+    const res: any = await invoke('import_begin', {
+      connId,
+      table,
+      columns,
+      mode,
+      schemaOverride: schema || null,
+      source,
+      create: create || null,
+    });
+    return { handle: res.handle };
   },
 
-  /**
-   * Inserts one chunk. `failed[].row` is `firstRow` + the row's position in this chunk, so the
-   * caller passes 0 and maps positions back to file rows itself. Throws on failure.
-   */
-  async importChunk(
-    handle: string,
-    rows: (string | number | boolean | null)[][],
-    firstRow = 0,
-  ): Promise<{ inserted: number; failed: { row: number; error: string }[]; stopped: boolean }> {
-    const res: any = await invoke('import_chunk', { handle, rows, firstRow });
-    return { inserted: res.inserted ?? 0, failed: res.failed || [], stopped: !!res.stopped };
+  /** Reads, converts and inserts the next `maxRows` rows of the import's file. Throws on failure. */
+  async importStep(handle: string, maxRows: number): Promise<ImportStepResult> {
+    const res: any = await invoke('import_step', { handle, maxRows });
+    return {
+      inserted: res.inserted ?? 0,
+      failed: res.failed || [],
+      badRows: res.badRows ?? 0,
+      issues: res.issues || [],
+      stopped: !!res.stopped,
+      done: !!res.done,
+      rowsRead: res.rowsRead ?? 0,
+      bytesDone: res.bytesDone ?? 0,
+      bytesTotal: res.bytesTotal ?? 0,
+    };
   },
 
   /** COMMIT (or ROLLBACK when `commit` is false). Throws on failure. */

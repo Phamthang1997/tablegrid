@@ -23354,6 +23354,102 @@ input[type="text"].snippet-abbr-input {
 .imp-banner.is-error {
   color: var(--st-danger, #ef4444);
 }
+
+/* A new table: its name, and each column's (editable) type in the mapping table. */
+.imp-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--win-text-secondary);
+}
+
+.imp-name input[type='text'],
+.imp-map input.imp-type-input {
+  height: 26px;
+  font-size: 11.5px;
+  padding: 0 8px;
+  border-radius: 4px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-input);
+  color: var(--win-text-primary);
+}
+
+.imp-name input[type='text'] {
+  flex: 1;
+  max-width: 320px;
+  font-family: var(--win-font-mono);
+}
+
+.imp-map input.imp-type-input {
+  width: 100%;
+  max-width: 180px;
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+}
+
+/* ---- ImportFilePicker ---- */
+.ifp-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+.ifp-readonly,
+.ifp-path {
+  height: 30px;
+  font-size: 11px;
+  width: 100%;
+}
+
+.ifp-readonly {
+  background: var(--win-bg-hover);
+}
+
+.ifp-path {
+  flex: 1;
+  cursor: pointer;
+}
+
+.ifp-row {
+  display: flex;
+  gap: 8px;
+}
+
+.ifp-row .btn {
+  white-space: nowrap;
+}
+
+.ifp-hint {
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--win-text-secondary);
+  background: var(--win-bg-window);
+  border: 1px solid var(--win-border);
+  border-radius: 4px;
+}
+
+.ifp-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+
+.ifp-meta b {
+  color: var(--win-text-primary);
+}
+
+.ifp-error {
+  padding: 8px 10px;
+  font-size: 11px;
+  border-radius: 4px;
+  color: var(--st-danger);
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px solid rgba(255, 107, 107, 0.35);
+}
 /* DuckDB: shown while data files are dragged over the window (Sidebar's native drop listener). */
 .duck-drop-overlay {
   position: fixed;

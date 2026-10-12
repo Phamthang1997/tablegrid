@@ -26,10 +26,10 @@ import {
   Search, X, ChevronDown, FileUp, FileDown, BarChart2, Sliders
 } from 'lucide-react';
 import { StructureViewer } from './StructureViewer';
-import { ProgressBar, type ProgressState } from './ProgressBar';
 import { ImportFilePicker } from './ImportFilePicker';
 import { ExportTableDialog } from './ExportTableDialog';
 import { ImportTableDataDialog } from './ImportTableDataDialog';
+import type { FileDetect } from '../utils/tableImport';
 import ReactDOM from 'react-dom';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 import { LazyModalFallback } from './LazyEditorFallback';
@@ -378,70 +378,27 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   // Export state — every option and the preview live in ExportTableDialog
   const [showExportDialog, setShowExportDialog] = useState(false);
 
-  // Import Preview State
-  const [importProgress, setImportProgress] = useState<ProgressState | null>(null);
+  // Import: the picker hands over a PATH, read in Rust — the file never enters the webview.
   const [showImportPicker, setShowImportPicker] = useState(false);
-  const [showImportModal, setShowImportModal] = useState(false);
-  const [importFileName, setImportFileName] = useState('');
-  const [importSqlContent, setImportSqlContent] = useState('');
 
   const handleImportClick = () => {
     setShowImportPicker(true);
   };
 
   // A CSV / Excel / JSON file for THIS table goes to the mapping dialog (`ImportTableDataDialog`),
-  // which converts and checks every row and imports in one transaction. A .sql file is statements
-  // rather than rows, so it keeps the run-the-script path below.
-  const [importDialogFile, setImportDialogFile] = useState<File | null>(null);
+  // which converts and checks every row and imports in one transaction. A .sql file or a dump is
+  // statements rather than rows: it opens the Import Database tab on that file (App handles
+  // `open-import-db`), which streams it from disk — it used to be read whole into a textarea here
+  // and sent over IPC as one string, which a large file crashed.
+  const [importDialogPath, setImportDialogPath] = useState<string | null>(null);
 
-  // Takes the file from ImportFilePicker (which already checked the extension) and parses it for the preview.
-  const handleFileImport = async (file: File) => {
+  const handleFileImport = (path: string, detected: FileDetect) => {
     setShowImportPicker(false);
-    if (!file.name.toLowerCase().endsWith('.sql')) {
-      setImportDialogFile(file);
+    if (detected.kind === 'sql') {
+      window.dispatchEvent(new CustomEvent('open-import-db', { detail: { connId, path } }));
       return;
     }
-    setImportFileName(file.name);
-    setErrorMsg(null);
-    setSuccessMsg(null);
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const text = event.target?.result as string;
-
-        setImportSqlContent(text);
-        setShowImportModal(true);
-      } catch (err: any) {
-        setErrorMsg(t('dataGrid.errReadFile', { message: err.message }));
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  const confirmImport = async () => {
-    setShowImportModal(false);
-    setLoading(true);
-    setErrorMsg(null);
-    setSuccessMsg(null);
-    setImportProgress({ label: t('dataGrid.importRunningSql') });
-
-    try {
-      // See the note in App.tsx: a .sql file holds several statements, so it has to go through executeQueryMulti.
-      const res = await dbHelper.executeQueryMulti(connId, importSqlContent);
-      setImportProgress(null);
-      setLoading(false);
-      if (res.success) {
-        setSuccessMsg(t('dataGrid.importSqlSuccess'));
-        refetchAfterWrite();
-      } else {
-        setErrorMsg(t('dataGrid.errImportSql', { message: res.error }));
-      }
-    } catch (err: any) {
-      setImportProgress(null);
-      setLoading(false);
-      setErrorMsg(t('common.connectionError', { message: err.message }));
-    }
+    setImportDialogPath(path);
   };
 
   // Messages
@@ -1689,13 +1646,6 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         </div>
       )}      {/* Commit/Discard buttons removed from here to prevent squeezing */}
 
-      {/* Import progress — the preview modal has closed, so it is reported in the grid's message bar */}
-      {importProgress && (
-        <div className="info-bar info-bar-blue">
-          <ProgressBar progress={importProgress} />
-        </div>
-      )}
-
       {successMsg && (
         <div className="info-bar info-bar-success">
           <div className="info-bar-content">
@@ -2567,73 +2517,24 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         onClose={() => setShowExportDialog(false)}
       />
 
-      {importDialogFile && (
+      {importDialogPath && (
         <ImportTableDataDialog
           connId={connId}
           tableName={tableName}
           tableSchema={tableSchema}
-          file={importDialogFile}
-          onClose={() => setImportDialogFile(null)}
+          dbType={dbType}
+          path={importDialogPath}
+          onClose={() => setImportDialogPath(null)}
         />
       )}
 
-      {/* File picker: states the allowed formats before opening the OS dialog */}
+      {/* File picker: states what is accepted, then opens the OS dialog */}
       <ImportFilePicker
         open={showImportPicker}
         targetTable={tableName}
         onCancel={() => setShowImportPicker(false)}
         onConfirm={handleFileImport}
       />
-
-      {showImportModal && (
-        <Modal
-          title={t('dataGrid.importPreviewTitle', { file: importFileName })}
-          onClose={() => setShowImportModal(false)}
-          width="720px"
-          zIndex={9999}
-        >
-          <ModalBody style={{ gap: '12px' }}>
-            <div style={{ fontSize: '11px', color: 'var(--win-text-secondary)' }}>
-              <span>{t('dataGrid.importSqlNote')}</span>
-            </div>
-
-            <textarea
-              readOnly
-              value={importSqlContent.slice(0, 5000) + (importSqlContent.length > 5000 ? t('dataGrid.importTruncated') : '')}
-              style={{
-                width: '100%',
-                height: '280px',
-                background: 'var(--win-bg-window)',
-                border: '1px solid var(--win-border)',
-                color: 'var(--win-text-primary)',
-                fontFamily: 'monospace',
-                fontSize: '11px',
-                padding: '10px',
-                borderRadius: '4px',
-                resize: 'none',
-                outline: 'none'
-              }}
-            />
-          </ModalBody>
-
-          <ModalFooter>
-            <button
-              className="btn btn-secondary"
-              onClick={() => setShowImportModal(false)}
-              style={{ padding: '0 12px' }}
-            >
-              {t('common.cancel')}
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={confirmImport}
-              style={{ padding: '0 16px', background: 'var(--win-accent)', color: '#fff', border: 'none' }}
-            >
-              {t('dataGrid.confirmImport')}
-            </button>
-          </ModalFooter>
-        </Modal>
-      )}
 
       {/* ─── Right-Click Context Menu ───
           Cell → column → row, most-used first. The ten copy formats sit behind "Copy as ▸": as a

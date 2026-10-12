@@ -60,6 +60,7 @@ import {
 const REDIS_TOOL_TAB_TYPES = new Set<string>(REDIS_TOOL_TABS);
 import { ImportFilePicker } from './components/ImportFilePicker';
 import { ImportTableDataDialog } from './components/ImportTableDataDialog';
+import type { FileDetect } from './utils/tableImport';
 import { ExportTableDialog } from './components/ExportTableDialog';
 import { ExportDatabaseDialog } from './components/ExportDatabaseDialog';
 import type { DatabaseExportOptions } from './components/ExportDatabaseDialog';
@@ -80,7 +81,6 @@ import { makeRestoreReporter, restoreCancelledResult } from './utils/restoreProg
 import { isProduction, normalizeEnv, type ConnEnv } from './utils/connEnv';
 import type { DbConnectionConfig } from './utils/dbHelper';
 import { invalidateCatalog } from './sql/catalog';
-import { splitStatements } from './sql/statements';
 import { connKey, scopeKey, tabsStorageKey, tabsStorageKeyCandidates } from './utils/connKey';
 import { dbCaps, isFileDb } from './utils/dbCaps';
 import { connectSavedProfile } from './utils/connectProfile';
@@ -88,10 +88,8 @@ import { readMcpPrefs } from './utils/mcpPrefs';
 import type { SavedProfile } from './components/ConnectionManager';
 import { updateProfileDisplay } from './utils/connectionProfiles';
 import { applyProgressStyle, getProgressStyle } from './utils/progressStyle';
-import { parseXlsx } from './utils/xlsxReader';
-import { collectColumns, inferColType } from './utils/importPreview';
 import { addExistsHint } from './utils/dumpPreview';
-import { ProgressBar, type ProgressState } from './components/ProgressBar';
+import type { ProgressState } from './components/ProgressBar';
 import { buildDatabaseFile, createDatabaseJsonWriter, createTableFileWriter } from './utils/exportHelper';
 import { buildDump, readTablePages, readTableRows, dumpReaderFor, writeDump, type DumpSpec } from './utils/dumpBuilder';
 import { withMasking } from './utils/masking';
@@ -199,57 +197,6 @@ const QueryTabPanel = React.memo(function QueryTabPanel(props: QueryTabPanelProp
  * dev, and a second `mcp_start` answers "already running" — an error object for a non-event.
  */
 let mcpAutoStarted = false;
-
-function parseCSV(text: string): string[][] {
-  const result: string[][] = [];
-  let row: string[] = [];
-  let cell = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const nextChar = text[i + 1];
-
-    if (inQuotes) {
-      if (char === '"') {
-        if (nextChar === '"') {
-          cell += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        cell += char;
-      }
-    } else {
-      if (char === '"') {
-        inQuotes = true;
-      } else if (char === ',' || char === '\t') {
-        row.push(cell.trim());
-        cell = '';
-      } else if (char === '\n' || char === '\r') {
-        if (char === '\r' && nextChar === '\n') {
-          i++;
-        }
-        row.push(cell.trim());
-        if (row.length > 1 || row[0] !== '') {
-          result.push(row);
-        }
-        row = [];
-        cell = '';
-      } else {
-        cell += char;
-      }
-    }
-  }
-
-  if (cell !== '' || row.length > 0) {
-    row.push(cell.trim());
-    result.push(row);
-  }
-
-  return result;
-}
 
 export const App: React.FC = () => {
   const { t } = useTranslation();
@@ -372,19 +319,8 @@ export const App: React.FC = () => {
   // Exporting one table (from the Sidebar's context menu) — the same dialog as the Export button under the grid
   const [exportTableTarget, setExportTableTarget] = useState<string | null>(null);
 
-  const [globalImportSqlMode, setGlobalImportSqlMode] = useState<'both' | 'structure' | 'data'>('both');
-
-  const [showGlobalImportModal, setShowGlobalImportModal] = useState(false);
-  const [globalImportFileName, setGlobalImportFileName] = useState('');
-  const [globalImportTableName, setGlobalImportTableName] = useState('');
-  const [globalImportFileType, setGlobalImportFileType] = useState<'csv' | 'json' | 'sql'>('csv');
-  const [globalImportPendingRows, setGlobalImportPendingRows] = useState<any[]>([]);
-  const [globalImportSqlContent, setGlobalImportSqlContent] = useState('');
-  const [globalImportLoading, setGlobalImportLoading] = useState(false);
+  // The table the Sidebar's "Import data" targets; null imports into a NEW table.
   const [globalImportTargetTable, setGlobalImportTargetTable] = useState<string | null>(null);
-  const [globalImportTab, setGlobalImportTab] = useState<'structure' | 'data'>('structure');
-  const [globalImportProgress, setGlobalImportProgress] = useState<ProgressState | null>(null);
-  const globalImportCols = React.useMemo(() => collectColumns(globalImportPendingRows), [globalImportPendingRows]);
   const [showSidebar, setShowSidebar] = useState(true);
   const [showAbout, setShowAbout] = useState(false);
   // Reads the real version from tauri.conf.json rather than hardcoding it in JSX, which drifts the
@@ -462,85 +398,20 @@ export const App: React.FC = () => {
     setExportTableTarget(tableName);
   };
 
-  // Rows from a file into an EXISTING table go to the mapping dialog, the same one DataGrid opens.
-  // A new table (no target) and a .sql script keep the flow below.
-  const [importIntoTable, setImportIntoTable] = useState<{ table: string; file: File } | null>(null);
+  // Rows from a file go to the mapping dialog — the same one DataGrid opens — into the target table
+  // or, with none, into a new table it creates. A .sql file or a dump is statements, not rows: it
+  // opens the Import Database tab on that file, which streams it from disk. The file is a PATH in
+  // every case; this used to read it whole into the webview (and the .sql text into a textarea),
+  // which is what a large file crashed.
+  const [importIntoTable, setImportIntoTable] = useState<{ table: string | null; path: string } | null>(null);
 
-  // Takes the file from ImportFilePicker (which already checked the extension) and parses it for the preview.
-  const handleGlobalFileImport = async (file: File) => {
+  const handleGlobalFileImport = (path: string, detected: FileDetect) => {
     setShowGlobalImportPicker(false);
-    if (globalImportTargetTable && !file.name.toLowerCase().endsWith('.sql')) {
-      setImportIntoTable({ table: globalImportTargetTable, file });
+    if (detected.kind === 'sql') {
+      openImportDbWithFile(path);
       return;
     }
-    setGlobalImportTab('structure');
-    setGlobalImportFileName(file.name);
-    const guessedTableName = file.name.split('.')[0].replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
-    setGlobalImportTableName(guessedTableName);
-
-    // XLSX is binary -> read an ArrayBuffer and parse it separately, never through FileReader.readAsText.
-    if (file.name.toLowerCase().endsWith('.xlsx')) {
-      try {
-        const buf = await file.arrayBuffer();
-        const rows = await parseXlsx(buf);
-        if (rows.length === 0) throw new Error(t('dataGrid.errXlsxEmpty'));
-        setGlobalImportFileType('json'); // object-shaped rows, sharing the DB-write branch with CSV/JSON
-        setGlobalImportPendingRows(rows);
-        setShowGlobalImportModal(true);
-      } catch (err: any) {
-        alert(t('dataGrid.errReadFile', { message: err.message }));
-      }
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const text = event.target?.result as string;
-
-        if (file.name.endsWith('.json')) {
-          const parsedJson = JSON.parse(text);
-          if (!Array.isArray(parsedJson)) {
-            throw new Error(t('dataGrid.errJsonArray'));
-          }
-          setGlobalImportFileType('json');
-          setGlobalImportPendingRows(parsedJson);
-          setShowGlobalImportModal(true);
-        } else if (file.name.endsWith('.csv')) {
-          let cleanText = text;
-          if (cleanText.charCodeAt(0) === 0xFEFF) {
-            cleanText = cleanText.substring(1);
-          }
-          const parsedCsv = parseCSV(cleanText);
-          if (parsedCsv.length < 2) {
-            throw new Error(t('dataGrid.errCsvEmpty'));
-          }
-          const headers = parsedCsv[0];
-          const rowsToImport: any[] = [];
-          for (let i = 1; i < parsedCsv.length; i++) {
-            const values = parsedCsv[i];
-            const row: any = {};
-            headers.forEach((h, idx) => {
-              const val = values[idx];
-              row[h] = val === undefined || val === '' ? null : val;
-            });
-            rowsToImport.push(row);
-          }
-          setGlobalImportFileType('csv');
-          setGlobalImportPendingRows(rowsToImport);
-          setShowGlobalImportModal(true);
-        } else if (file.name.endsWith('.sql')) {
-          setGlobalImportFileType('sql');
-          setGlobalImportSqlContent(text);
-          setShowGlobalImportModal(true);
-        } else {
-          throw new Error(t('dataGrid.errUnsupportedFile'));
-        }
-      } catch (err: any) {
-        alert(t('dataGrid.errReadFile', { message: err.message }));
-      }
-    };
-    reader.readAsText(file);
+    setImportIntoTable({ table: globalImportTargetTable, path });
   };
 
   /**
@@ -703,106 +574,6 @@ export const App: React.FC = () => {
     });
 
     return true;
-  };
-
-  const extractTableNameFromSql = (sql: string): string | null => {
-    const createMatch = sql.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[`"']?([a-zA-Z0-9_]+)[`"']?)/i);
-    if (createMatch && createMatch[1]) return createMatch[1];
-
-    const dropMatch = sql.match(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:[`"']?([a-zA-Z0-9_]+)[`"']?)/i);
-    if (dropMatch && dropMatch[1]) return dropMatch[1];
-
-    return null;
-  };
-
-  const filterSqlQueries = (sqlText: string, mode: 'both' | 'structure' | 'data'): string => {
-    if (mode === 'both') return sqlText;
-    // splitStatements: the same splitter the SQL editor and Rust's split_sql_statements use (it
-    // knows strings, comments and dollar-quoted blocks). This used to be a third home-made splitter
-    // that only counted quotes, so a comment containing ';' was cut in the wrong place.
-    const queries = splitStatements(sqlText).map((s) => s.text);
-    const filtered = queries.filter(q => {
-      const trimmed = q.trim().toUpperCase();
-      if (!trimmed) return false;
-      const isStructure = trimmed.startsWith('CREATE TABLE') ||
-        trimmed.startsWith('DROP TABLE') ||
-        trimmed.startsWith('ALTER TABLE') ||
-        trimmed.startsWith('CREATE INDEX') ||
-        trimmed.startsWith('CREATE UNIQUE INDEX') ||
-        trimmed.startsWith('DROP INDEX');
-      const isData = trimmed.startsWith('INSERT INTO') ||
-        trimmed.startsWith('UPDATE') ||
-        trimmed.startsWith('DELETE FROM') ||
-        trimmed.startsWith('TRUNCATE TABLE') ||
-        trimmed.startsWith('TRUNCATE') ||
-        trimmed.startsWith('INSERT');
-      if (mode === 'structure') {
-        return isStructure || (!isData && !trimmed.startsWith('REPLACE'));
-      }
-      if (mode === 'data') {
-        return isData || (!isStructure && !trimmed.startsWith('CREATE') && !trimmed.startsWith('DROP') && !trimmed.startsWith('ALTER'));
-      }
-      return true;
-    });
-    return filtered.join(';\n');
-  };
-
-  const confirmGlobalImport = async () => {
-    if (!globalImportTargetTable && !globalImportTableName.trim()) {
-      alert(t('app.errNoTableName'));
-      return;
-    }
-
-    setShowGlobalImportModal(false);
-    setGlobalImportLoading(true);
-    setGlobalImportProgress({
-      label: globalImportFileType === 'sql'
-        ? t('app.importRunningSql')
-        : t('app.importWritingRows', { n: globalImportPendingRows.length }),
-    });
-
-    try {
-      if (globalImportFileType === 'sql') {
-        let filteredSql = filterSqlQueries(globalImportSqlContent, globalImportSqlMode);
-
-        if (globalImportTargetTable) {
-          const originalTable = extractTableNameFromSql(globalImportSqlContent);
-          if (originalTable && originalTable !== globalImportTargetTable) {
-            const escapedOrig = originalTable.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-            const regex = new RegExp(`([\\s\`"'])${escapedOrig}([\\s\`"';(])`, 'gi');
-            filteredSql = filteredSql.replace(regex, `$1${globalImportTargetTable}$2`);
-          }
-        }
-
-        // executeQueryMulti, NOT executeQuery: execute_query sends the whole string to the driver as
-        // ONE statement. A multi-statement .sql file fails with a syntax error at the second
-        // statement on MySQL/Postgres, while SQLite runs only the first and reports success (silent
-        // data loss). executeQueryMulti splits with split_sql_statements and runs them in turn.
-        const res = await dbHelper.executeQueryMulti(activeConnIdState, filteredSql);
-        if (res.success) {
-          alert(t('app.importSqlSuccess'));
-          window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: activeConnIdState } }));
-        } else {
-          alert(t('app.errImportSql', { message: res.error }));
-        }
-      // Rows into an EXISTING table never reach here: handleGlobalFileImport sends them to
-      // ImportTableDataDialog. What is left is a new table (below) and a .sql script (above).
-      } else {
-        // A new table: the backend creates it and inserts in one call -> indeterminate progress.
-        const resData = await dbHelper.importNewTable(globalImportTableName, globalImportPendingRows);
-        if (resData.success) {
-          alert(t('app.createdAndImported', { table: globalImportTableName }));
-          window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: activeConnIdState } }));
-        } else {
-          alert(t('app.errImport', { message: resData.error }));
-        }
-      }
-    } catch (err: any) {
-      alert(t('common.connectionError', { message: err.message }));
-    } finally {
-      setGlobalImportProgress(null);
-      setGlobalImportLoading(false);
-    }
   };
 
   // Returns true when the import finished -> ImportDatabaseDialog closes itself.
@@ -2263,7 +2034,14 @@ export const App: React.FC = () => {
     setActiveTabId(tabId);
   };
 
+  // From a menu: the tab with no file chosen — including when a request from an earlier pick is
+  // still held, which would otherwise load that file again.
   const handleOpenImportDb = () => {
+    setImportDbRequest(null);
+    openImportDbTab();
+  };
+
+  const openImportDbTab = () => {
     const tabId = `import_db_${activeConnIdState}`;
     const existing = visibleTabs.find((tb) => tb.id === tabId);
     if (existing) {
@@ -2281,6 +2059,30 @@ export const App: React.FC = () => {
     setTabs((prev) => [...prev, newTab]);
     setActiveTabId(tabId);
   };
+
+  // A dump picked from a table's Import (Sidebar or DataGrid) opens the same tab with the file
+  // already chosen. Held here rather than in the tab: a tab outlives the session (localStorage), and
+  // reopening the app must not re-read a file picked yesterday. `at` makes picking the same file
+  // twice a new request.
+  const [importDbRequest, setImportDbRequest] = useState<{ connId: string; path: string; at: number } | null>(null);
+  const openImportDbWithFile = (path: string) => {
+    setImportDbRequest({ connId: activeConnIdState, path, at: Date.now() });
+    openImportDbTab();
+  };
+  // DataGrid asks through an event (it has no handle on the tab list). Registered once; the ref
+  // always holds the latest handler.
+  const openImportDbRef = React.useRef(openImportDbWithFile);
+  React.useEffect(() => {
+    openImportDbRef.current = openImportDbWithFile;
+  });
+  React.useEffect(() => {
+    const onOpen = (e: Event) => {
+      const path = (e as CustomEvent).detail?.path;
+      if (typeof path === 'string' && path) openImportDbRef.current(path);
+    };
+    window.addEventListener('open-import-db', onOpen);
+    return () => window.removeEventListener('open-import-db', onOpen);
+  }, []);
 
   const handleOpenCopyDb = () => {
     const tabId = `copy_db_${activeConnIdState}`;
@@ -2746,6 +2548,7 @@ export const App: React.FC = () => {
                         canManageDatabases={!!connection && !isFileDb(connection.dbType)}
                         dbType={connection?.dbType}
                         asTab={true}
+                        fileRequest={importDbRequest?.connId === activeConnIdState ? importDbRequest : null}
                         onClose={() => handleCloseTab(activeTab.id)}
                         onSubmit={handleImportDatabase}
                       />
@@ -2884,30 +2687,10 @@ export const App: React.FC = () => {
         <ImportTableDataDialog
           connId={activeConnIdState}
           tableName={importIntoTable.table}
-          file={importIntoTable.file}
+          dbType={connection?.dbType}
+          path={importIntoTable.path}
           onClose={() => setImportIntoTable(null)}
         />
-      )}
-
-      {/* Progress of importing data into a table (the preview modal has closed) */}
-      {globalImportProgress && (
-        <div style={{
-          position: 'fixed',
-          bottom: '16px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 10002,
-          width: '420px',
-          maxWidth: '90vw',
-          display: 'flex',
-          background: 'var(--win-bg-card)',
-          border: '1px solid var(--win-border-strong, var(--win-border))',
-          borderRadius: '6px',
-          boxShadow: '0 12px 30px rgba(0,0,0,0.4)',
-          padding: '10px 12px'
-        }}>
-          <ProgressBar progress={globalImportProgress} />
-        </div>
       )}
 
       {/* Export one table — from the Sidebar's context menu, the same dialog as the Export button under the grid */}
@@ -2919,214 +2702,6 @@ export const App: React.FC = () => {
           dbType={connection.dbType}
           onClose={() => setExportTableTarget(null)}
         />
-      )}
-
-      {/* Global Import Table Modal (Import New Table) */}
-      {showGlobalImportModal && (
-        <Modal
-          title={globalImportTargetTable
-            ? t('app.importModalTitleExisting', { table: globalImportTargetTable, file: globalImportFileName })
-            : t('app.importModalTitleNew', { file: globalImportFileName })}
-          onClose={() => setShowGlobalImportModal(false)}
-          width="640px"
-          zIndex={9999}
-        >
-          <ModalBody>
-            <div className="form-group">
-              <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--win-text-secondary)' }}>
-                {globalImportTargetTable ? t('app.importTargetExisting') : t('app.importTargetNew')}
-              </label>
-              <input
-                type="text"
-                className="form-input"
-                value={globalImportTargetTable || globalImportTableName}
-                onChange={(e) => !globalImportTargetTable && setGlobalImportTableName(e.target.value)}
-                disabled={!!globalImportTargetTable}
-                placeholder={t('createTable.tableNamePlaceholder')}
-                style={{ height: '30px', fontSize: '11px', background: globalImportTargetTable ? 'var(--win-bg-hover)' : undefined }}
-              />
-            </div>
-
-            {globalImportFileType === 'sql' && (
-              <div className="form-group">
-                <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--win-text-secondary)', marginBottom: '6px', display: 'block' }}>
-                  {t('app.importSqlPick')}
-                </label>
-                <div style={{ display: 'flex', gap: '16px' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="sqlImportMode"
-                      checked={globalImportSqlMode === 'both'}
-                      onChange={() => setGlobalImportSqlMode('both')}
-                    />
-                    <span>{t('app.importSqlBoth')}</span>
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="sqlImportMode"
-                      checked={globalImportSqlMode === 'structure'}
-                      onChange={() => setGlobalImportSqlMode('structure')}
-                    />
-                    <span>{t('app.importSqlStructure')}</span>
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="sqlImportMode"
-                      checked={globalImportSqlMode === 'data'}
-                      onChange={() => setGlobalImportSqlMode('data')}
-                    />
-                    <span>{t('app.importSqlData')}</span>
-                  </label>
-                </div>
-              </div>
-            )}
-
-            <div>
-              <span style={{ fontSize: '11px', color: 'var(--win-text-secondary)' }}>
-                {globalImportFileType === 'sql' ? (
-                  <span>{t('app.importSqlNote')}</span>
-                ) : (
-                  <span>
-                    <Trans
-                      i18nKey="app.importSummary"
-                      values={{
-                        format: globalImportFileType.toUpperCase(),
-                        rows: globalImportPendingRows.length,
-                        cols: globalImportCols.length,
-                      }}
-                      components={{ strong: <b /> }}
-                    />
-                  </span>
-                )}
-              </span>
-            </div>
-
-            {/* Preview tabs: structure (columns + inferred types) | data (the first 10 rows) */}
-            {globalImportFileType !== 'sql' && (
-              <div style={{ display: 'flex', gap: '4px' }}>
-                {([
-                  { id: 'structure', label: t('app.importTabStructure', { n: globalImportCols.length }) },
-                  { id: 'data', label: t('app.importTabData', { n: globalImportPendingRows.length }) },
-                ] as const).map(tabDef => (
-                  <button
-                    key={tabDef.id}
-                    onClick={() => setGlobalImportTab(tabDef.id)}
-                    style={{
-                      padding: '4px 12px',
-                      fontSize: '11px',
-                      borderRadius: '4px',
-                      border: '1px solid var(--win-border)',
-                      cursor: 'pointer',
-                      background: globalImportTab === tabDef.id ? 'var(--win-accent)' : 'transparent',
-                      color: globalImportTab === tabDef.id ? '#fff' : 'var(--win-text-secondary)',
-                      fontWeight: 600
-                    }}
-                  >
-                    {tabDef.label}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {globalImportFileType === 'sql' ? (
-              <textarea
-                readOnly
-                value={globalImportSqlContent.slice(0, 5000)}
-                style={{
-                  width: '100%',
-                  height: '200px',
-                  background: 'var(--win-bg-window)',
-                  border: '1px solid var(--win-border)',
-                  color: 'var(--win-text-primary)',
-                  fontFamily: 'monospace',
-                  fontSize: '11px',
-                  padding: '10px',
-                  borderRadius: '4px',
-                  resize: 'none'
-                }}
-              />
-            ) : (
-              <div style={{
-                height: '200px',
-                overflow: 'auto',
-                border: '1px solid var(--win-border)',
-                borderRadius: '4px',
-                background: 'var(--win-bg-window)'
-              }}>
-                {globalImportPendingRows.length === 0 ? null : globalImportTab === 'structure' ? (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-                    <thead>
-                      <tr style={{ background: 'var(--win-bg-hover)', borderBottom: '1px solid var(--win-border)' }}>
-                        {[t('app.colInFile'), t('app.colInferredType'), t('app.colSampleValue')].map(h => (
-                          <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, borderRight: '1px solid var(--win-border)' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {globalImportCols.map(col => {
-                        const sample = globalImportPendingRows.find(r => r?.[col] !== null && r?.[col] !== undefined && r?.[col] !== '');
-                        return (
-                          <tr key={col} style={{ borderBottom: '1px solid var(--win-border)' }}>
-                            <td style={{ padding: '6px 8px', borderRight: '1px solid var(--win-border)', fontFamily: 'monospace', color: 'var(--win-text-primary)' }}>{col}</td>
-                            <td style={{ padding: '6px 8px', borderRight: '1px solid var(--win-border)', color: 'var(--win-text-secondary)' }}>{inferColType(globalImportPendingRows, col)}</td>
-                            <td style={{ padding: '6px 8px', color: 'var(--win-text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '260px' }}>
-                              {sample ? String(sample[col]) : '—'}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                ) : (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-                    <thead>
-                      <tr style={{ background: 'var(--win-bg-hover)', borderBottom: '1px solid var(--win-border)' }}>
-                        {globalImportCols.map(col => (
-                          <th key={col} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, borderRight: '1px solid var(--win-border)' }}>
-                            {col}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {globalImportPendingRows.slice(0, 10).map((row, rIdx) => (
-                        <tr key={rIdx} style={{ borderBottom: '1px solid var(--win-border)' }}>
-                          {globalImportCols.map(col => (
-                            <td key={col} style={{ padding: '6px 8px', color: 'var(--win-text-primary)', borderRight: '1px solid var(--win-border)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '160px' }}>
-                              {row[col] === null || row[col] === undefined
-                                ? <span style={{ color: 'var(--win-text-disabled)', fontStyle: 'italic' }}>NULL</span>
-                                : String(row[col])}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            )}
-          </ModalBody>
-
-          <ModalFooter>
-            <button
-              className="btn btn-secondary"
-              onClick={() => setShowGlobalImportModal(false)}
-            >
-              {t('common.cancel')}
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={confirmGlobalImport}
-              disabled={globalImportLoading || (!globalImportTableName.trim() && globalImportFileType !== 'sql')}
-              style={{ background: 'var(--win-accent)', color: '#fff', border: 'none' }}
-            >
-              {globalImportLoading ? t('app.importProcessing') : t('app.importConfirm')}
-            </button>
-          </ModalFooter>
-        </Modal>
       )}
 
       {/* About Modal */}

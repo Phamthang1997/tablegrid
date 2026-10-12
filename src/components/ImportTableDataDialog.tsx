@@ -3,22 +3,24 @@ import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { AlertTriangle, FileUp } from 'lucide-react';
 import { Modal, ModalBody, ModalFooter } from './Modal';
+import { ProgressBar } from './ProgressBar';
 import { dbHelper } from '../utils/dbHelper';
-import { readXlsxSheets } from '../utils/xlsxReader';
+import { fileBaseName } from '../utils/dumpPreview';
 import {
   DELIMITERS,
   autoMap,
-  buildRows,
-  detectDelimiter,
-  displayRowNumber,
-  jsonToMatrix,
+  mappedColumns,
   missingRequired,
-  parseDelimited,
-  toSourceTable,
+  newTableColumnType,
+  tableNameFromFile,
   typeFamily,
   type CellIssue,
   type CoerceOptions,
   type Delimiter,
+  type FileCheck,
+  type FileProbe,
+  type RowIssue,
+  type SourceOptions,
   type TargetColumn,
 } from '../utils/tableImport';
 import { startJob } from '../utils/jobs';
@@ -26,37 +28,37 @@ import { withJobConnection } from '../utils/jobConnection';
 import { approveJob, connKeyOfConn, type JobApproval } from '../utils/safeMode';
 
 /**
- * Import a CSV / Excel / JSON file into an EXISTING table, with the columns mapped, the values
- * converted to each column's type, and every row checked before anything is written.
+ * Import a CSV / Excel / JSON file — plain, gzipped or inside a zip — into a table, with the columns
+ * mapped, the values converted to each column's type, and every row checked before anything is
+ * written. With no `tableName` it creates a NEW table, its columns named after the file's and typed
+ * from what the whole file holds.
  *
- * All the rules are in `utils/tableImport.ts` (tested); this component draws them. The write is a
- * background job on a connection of its own, through `table_import.rs`: one transaction for the
- * whole file, in chunks, with the failing row found by position.
- *
- * It replaced two copies of an import (DataGrid's and App's) that used the file's header names as
- * the INSERT column list, sent every value as a string, and committed every 500 rows — so a failure
- * part-way left half a file in the table and said "error after 3,500 rows" without naming the row.
+ * The dialog holds the file's PATH, never its contents: Rust reads it (`src-tauri/src/import_file/`)
+ * for the preview (a couple of hundred rows), the dry run (counts and the first problems) and the
+ * import itself (`import_step`, a background job). It used to read the whole file into the webview
+ * and parse and convert it there, which crashed the app on a file of a few hundred MB.
  */
 
 interface Props {
   connId: string;
-  tableName: string;
+  /** The table to import into; null creates a new table from the file. */
+  tableName: string | null;
   /** A session-temporary table's own schema (Postgres `pg_temp_N`); normally absent. */
   tableSchema?: string | null;
-  file: File;
+  dbType?: string;
+  /** The file to import. */
+  path: string;
   onClose: () => void;
 }
-
-type SourceKind = 'csv' | 'xlsx' | 'json';
 
 /** Encodings worth offering. Windows-1258 is what Vietnamese Excel on Windows writes by default. */
 const ENCODINGS = ['utf-8', 'utf-16le', 'windows-1258', 'windows-1252', 'shift_jis', 'gb18030'] as const;
 
-/** Rows converted and sent per IPC call; the backend splits each into INSERTs of its own size. */
-const CHUNK_ROWS = 2000;
+/** Rows read, converted and inserted per `import_step` call. */
+const STEP_ROWS = 5000;
 
-/** Problems listed in the dialog; all of them are counted. */
-const ISSUES_SHOWN = 50;
+/** Problems listed in the job's result. */
+const FAILURES_SHOWN = 8;
 
 /** The translation key for each conversion problem — literal keys, so `t()` type-checks them. */
 const ISSUE_KEY: Record<CellIssue, `importTable.issue.${CellIssue}`> = {
@@ -72,222 +74,290 @@ const ISSUE_KEY: Record<CellIssue, `importTable.issue.${CellIssue}`> = {
   tooLong: 'importTable.issue.tooLong',
 };
 
-const kindOf = (name: string): SourceKind => {
-  const n = name.toLowerCase();
-  if (n.endsWith('.xlsx')) return 'xlsx';
-  if (n.endsWith('.json')) return 'json';
-  return 'csv';
-};
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
 
-export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tableSchema, file, onClose }) => {
+const message = (err: any) => String(err?.message ?? err);
+
+export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tableSchema, dbType, path, onClose }) => {
   const { t, i18n } = useTranslation();
   const fmt = (n: number) => n.toLocaleString(i18n.language);
-  const kind = kindOf(file.name);
+  const isNew = tableName === null;
 
-  // ---- What was read: the file's bytes (CSV, decoded per the chosen encoding) or its parsed form,
-  //      and the table's columns. Both arrive asynchronously when the dialog opens.
-  const [bytes, setBytes] = useState<ArrayBuffer | null>(null);
-  const [sheets, setSheets] = useState<{ name: string; rows: unknown[][] }[] | null>(null);
-  const [jsonMatrix, setJsonMatrix] = useState<unknown[][] | null>(null);
-  const [targets, setTargets] = useState<TargetColumn[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const [schema, buf] = await Promise.all([
-          dbHelper.getTableSchema(connId, tableName, tableSchema),
-          file.arrayBuffer(),
-        ]);
-        if (!alive) return;
-        const cols: TargetColumn[] = (schema.columns || []).map((c) => ({
-          name: c.name,
-          type: c.type,
-          nullable: c.nullable,
-          hasDefault: c.defaultValue !== null || !!c.autoIncrement || !!c.identityAlways,
-          generated: !!c.generated,
-        }));
-        if (kind === 'xlsx') {
-          const read = await readXlsxSheets(buf);
-          if (!alive) return;
-          setSheets(read);
-        } else if (kind === 'json') {
-          const parsed = JSON.parse(new TextDecoder().decode(buf));
-          if (!alive) return;
-          setJsonMatrix(jsonToMatrix(parsed));
-        } else {
-          setBytes(buf);
-        }
-        // set-state-in-effect: the schema and the file both arrive by async IPC/file reads when the
-        // dialog opens, which is the case the rule cannot cover — neither is derivable from props.
-        // eslint-disable-next-line react/set-state-in-effect
-        setTargets(cols);
-      } catch (err: any) {
-        if (alive) setLoadError(String(err?.message ?? err));
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [connId, tableName, tableSchema, file, kind]);
-
-  // ---- Source options
+  // ---- How to read the file
   const [encoding, setEncoding] = useState<(typeof ENCODINGS)[number]>('utf-8');
   const [delimiterChoice, setDelimiterChoice] = useState<'auto' | Delimiter>('auto');
   const [hasHeader, setHasHeader] = useState(true);
   const [sheetIndex, setSheetIndex] = useState(0);
-  const [emptyAs, setEmptyAs] = useState<CoerceOptions['emptyAs']>('null');
+  const sourceOptions: SourceOptions = useMemo(
+    () => ({
+      encoding,
+      delimiter: delimiterChoice === 'auto' ? undefined : delimiterChoice,
+      hasHeader,
+      sheet: sheetIndex,
+    }),
+    [encoding, delimiterChoice, hasHeader, sheetIndex],
+  );
+  const optionsKey = JSON.stringify(sourceOptions);
+
+  // ---- The preview: header + first rows, read again whenever an option changes. Stored WITH the
+  //      options it was read under, so the previous preview stays on screen while the next is read
+  //      but nothing that depends on the header acts on a stale one.
+  const [probeState, setProbeState] = useState<{ key: string; probe?: FileProbe; error?: string } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const opts = JSON.parse(optionsKey) as SourceOptions;
+    dbHelper.importFileProbe(path, opts).then(
+      (probe) => alive && setProbeState({ key: optionsKey, probe }),
+      (err) => alive && setProbeState({ key: optionsKey, error: message(err) }),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [path, optionsKey]);
+  const probe = probeState?.probe ?? null;
+  const probeCurrent = probeState?.key === optionsKey && !!probeState.probe;
+  const kind = probe?.kind ?? 'csv';
+
+  // ---- An existing table's columns
+  const [schemaCols, setSchemaCols] = useState<TargetColumn[] | null>(null);
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+  useEffect(() => {
+    if (isNew) return;
+    let alive = true;
+    dbHelper.getTableSchema(connId, tableName, tableSchema).then(
+      (schema) => {
+        if (!alive) return;
+        // set-state-in-effect: the schema arrives by async IPC when the dialog opens, which is the
+        // case the rule cannot cover — it is not derivable from props.
+        // eslint-disable-next-line react/set-state-in-effect
+        setSchemaCols(
+          (schema.columns || []).map((c) => ({
+            name: c.name,
+            type: c.type,
+            nullable: c.nullable,
+            hasDefault: c.defaultValue !== null || !!c.autoIncrement || !!c.identityAlways,
+            generated: !!c.generated,
+          })),
+        );
+      },
+      (err) => alive && setSchemaError(message(err)),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [isNew, connId, tableName, tableSchema]);
+
+  // ---- Conversion options
+  const [emptyAs, setEmptyAs] = useState<'null' | 'empty'>('null');
   const [trim, setTrim] = useState(true);
   const [mode, setMode] = useState<'atomic' | 'skip'>('atomic');
-  const opts: CoerceOptions = useMemo(() => ({ emptyAs, trim }), [emptyAs, trim]);
+  const coerce: CoerceOptions = useMemo(() => ({ emptyAsEmpty: emptyAs === 'empty', trim }), [emptyAs, trim]);
 
-  const csvText = useMemo(() => (bytes ? new TextDecoder(encoding).decode(bytes) : null), [bytes, encoding]);
-  const delimiter: Delimiter = useMemo(
-    () => (delimiterChoice !== 'auto' ? delimiterChoice : csvText ? detectDelimiter(csvText) : ','),
-    [delimiterChoice, csvText],
+  // ---- The dry run over the whole file. Declared before the targets because a new table's column
+  //      types come from it; its own inputs are only the options and the mapping.
+  const [checkState, setCheckState] = useState<{ key: string; result?: FileCheck; error?: string } | null>(null);
+  const [checkProgress, setCheckProgress] = useState<{ key: string; bytesDone: number; bytesTotal: number; rows: number } | null>(null);
+
+  // ---- A new table: its name and its columns' types (guessed, editable)
+  const [newName, setNewName] = useState(() => tableNameFromFile(path));
+  const [typeEdits, setTypeEdits] = useState<{ key: string; types: Record<number, string> }>({ key: '', types: {} });
+
+  // ---- The columns written to, and where each one's values come from
+  // The whole file's header once the dry run has read it (a JSON file can add keys after the
+  // preview's rows); indexes only ever grow, so a mapping made from the preview stays valid.
+  const checkResult = checkState?.result ?? null;
+  const headers = useMemo(
+    () => (checkResult && checkResult.headers.length >= (probe?.headers.length ?? 0) ? checkResult.headers : (probe?.headers ?? [])),
+    [checkResult, probe],
   );
+  const typesKey = `${optionsKey}\u0002${(probe?.headers ?? []).join('\u0001')}`;
+  const editedTypes = useMemo(
+    () => (typeEdits.key === typesKey ? typeEdits.types : ({} as Record<number, string>)),
+    [typeEdits, typesKey],
+  );
+  const typesEdited = Object.keys(editedTypes).length > 0;
 
-  const source = useMemo(() => {
-    if (kind === 'csv') return csvText === null ? null : toSourceTable(parseDelimited(csvText, delimiter), hasHeader);
-    if (kind === 'json') return jsonMatrix ? toSourceTable(jsonMatrix, true) : null;
-    const sheet = sheets?.[sheetIndex] ?? sheets?.[0];
-    return sheet ? toSourceTable(sheet.rows, hasHeader) : null;
-  }, [kind, csvText, delimiter, hasHeader, jsonMatrix, sheets, sheetIndex]);
+  const targets: TargetColumn[] | null = useMemo(() => {
+    if (!isNew) return schemaCols;
+    if (!probe) return null;
+    const inferred = checkResult?.inferred ?? probe.inferred;
+    return headers.map((h, i) => ({
+      name: h,
+      type: editedTypes[i] ?? newTableColumnType(inferred[i] ?? 'text', dbType),
+      nullable: true,
+      hasDefault: false,
+    }));
+  }, [isNew, schemaCols, probe, checkResult, headers, editedTypes, dbType]);
 
-  // ---- Mapping: the automatic guess, until the user changes a row. Stored WITH the headers and
-  //      targets it was made for, so changing the delimiter or the header toggle — which changes
-  //      the source columns — goes back to a fresh guess instead of keeping indexes into columns
-  //      that no longer mean the same thing.
-  const mappingKey = source && targets ? `${source.headers.join('\u0001')}\u0002${targets.map((c) => c.name).join('\u0001')}` : '';
+  // Mapping: the automatic guess, until the user changes a row. Keyed on the PREVIEW's header (and
+  // the targets), so the dry run growing the header does not throw away the user's choices.
+  const mappingKey = probe && targets ? `${probe.headers.join('\u0001')}\u0002${targets.map((c) => c.name).join('\u0001')}` : '';
   const [override, setOverride] = useState<{ key: string; mapping: (number | null)[] } | null>(null);
   const mapping = useMemo(() => {
-    if (!source || !targets) return [];
+    if (!probe || !targets) return [];
+    if (isNew) return targets.map((_, i) => i);
     if (override && override.key === mappingKey) return override.mapping;
-    return autoMap(source.headers, targets);
-  }, [source, targets, override, mappingKey]);
+    return autoMap(probe.headers, targets);
+  }, [isNew, probe, targets, override, mappingKey]);
   const setMappingAt = (i: number, value: number | null) => {
     const next = [...mapping];
     next[i] = value;
     setOverride({ key: mappingKey, mapping: next });
   };
+  const columns = useMemo(() => (targets ? mappedColumns(targets, mapping) : []), [targets, mapping]);
 
-  // ---- The dry run over the whole file
-  const check = useMemo(
-    () => (source && targets ? buildRows(source, targets, mapping, opts, 0, source.rows.length, ISSUES_SHOWN) : null),
-    [source, targets, mapping, opts],
-  );
-  const issuesByColumn = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const i of check?.issues ?? []) m.set(i.column, (m.get(i.column) ?? 0) + 1);
-    return m;
-  }, [check]);
-  const missing = targets ? missingRequired(targets, mapping) : [];
-  const mappedCount = mapping.filter((m) => m !== null).length;
-  const totalRows = source?.rows.length ?? 0;
+  // What the dry run is asked. For a new table its job is the TYPE GUESS — columns typed from the
+  // whole file take every value in it by construction, so they are only checked once the user has
+  // edited a type. Hence the key leaves the guessed types out: they come from this very run.
+  const checkSpec = useMemo(() => {
+    if (!probeCurrent || !targets) return null;
+    if (isNew) return { columns: typesEdited ? columns : [], coerce, infer: true };
+    return { columns, coerce, infer: false };
+  }, [probeCurrent, targets, isNew, typesEdited, columns, coerce]);
+  const checkKey = checkSpec ? JSON.stringify([optionsKey, checkSpec]) : '';
+  useEffect(() => {
+    if (!checkKey) return;
+    const [opts, spec] = JSON.parse(checkKey) as [string, NonNullable<typeof checkSpec>];
+    const id = crypto.randomUUID();
+    let alive = true;
+    // A burst of mapping changes starts one run, not one per change.
+    const timer = setTimeout(() => {
+      dbHelper
+        .importFileCheck(id, path, JSON.parse(opts) as SourceOptions, spec, (p) => alive && setCheckProgress({ key: checkKey, ...p }))
+        .then(
+          (result) => alive && result && setCheckState({ key: checkKey, result }),
+          (err) => alive && setCheckState({ key: checkKey, error: message(err) }),
+        );
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      void dbHelper.importFileCheckCancel(id);
+    };
+  }, [path, checkKey]);
+  const checkDone = checkState?.key === checkKey && !!checkState.result;
+  const check = checkDone ? checkState!.result! : null;
+  const checkError = checkState?.key === checkKey ? (checkState.error ?? null) : null;
+  const checking = !!checkKey && !checkDone && !checkError;
+  const progress = checking && checkProgress?.key === checkKey ? checkProgress : null;
+
+  const issuesByColumn = check?.issuesByColumn ?? {};
+  const missing = !isNew && targets ? missingRequired(targets, mapping) : [];
+  const totalRows = check?.rows ?? null;
   const badRows = check?.badRows ?? 0;
-  const readyRows = totalRows - badRows;
+  const readyRows = totalRows === null ? null : totalRows - badRows;
+  const noRows = (probe?.complete && probe.sample.length === 0) || totalRows === 0;
 
   const blockReason =
-    !source || !targets
+    !probe || !targets
       ? null
-      : totalRows === 0
+      : noRows
         ? t('importTable.blockNoRows')
-        : mappedCount === 0
-          ? t('importTable.blockNothingMapped')
-          : missing.length > 0
-            ? t('importTable.blockMissing', { cols: missing.join(', ') })
-            : mode === 'atomic' && badRows > 0
-              ? t('importTable.blockAtomicBad', { n: fmt(badRows) })
-              : null;
-
-  /** First non-empty value of a source column, to show what it holds. */
-  const sampleOf = (srcIndex: number | null) => {
-    if (srcIndex === null || !source) return '';
-    for (const r of source.rows.slice(0, 50)) {
-      const v = r[srcIndex];
-      if (v !== null && v !== undefined && String(v).trim() !== '') {
-        const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
-        return s.length > 40 ? `${s.slice(0, 40)}…` : s;
-      }
-    }
-    return '';
-  };
+        : isNew && !newName.trim()
+          ? t('importTable.blockNoName')
+          : columns.length === 0
+            ? t('importTable.blockNothingMapped')
+            : missing.length > 0
+              ? t('importTable.blockMissing', { cols: missing.join(', ') })
+              : mode === 'atomic' && badRows > 0
+                ? t('importTable.blockAtomicBad', { n: fmt(badRows) })
+                : null;
+  // A new table's types come from the whole file, so it waits for the dry run; an existing table
+  // may be imported while the dry run is still counting (the import checks every row anyway).
+  const canSubmit = probeCurrent && !!targets && !blockReason && (!isNew || checkDone);
 
   // ---- Run as a background job
   const submit = async () => {
-    if (!source || !targets || blockReason) return;
+    if (!canSubmit || !targets) return;
+    const table = isNew ? newName.trim() : tableName;
+    const n = readyRows === null ? null : fmt(mode === 'skip' ? readyRows : (totalRows ?? 0));
     let approval: JobApproval;
     try {
-      approval = await approveJob('import_chunk', connId, t('importTable.approve', { n: fmt(readyRows), table: tableName }));
+      approval = await approveJob(
+        'import_step',
+        connId,
+        isNew
+          ? t('importTable.approveNew', { n: n ?? '?', table })
+          : n !== null
+            ? t('importTable.approve', { n, table })
+            : t('importTable.approveUnknown', { table }),
+      );
     } catch {
       return;
     }
     // Everything the job reads is fixed now: the dialog closes, and its state goes with it.
-    const src = source;
-    const cols = targets;
-    const map = [...mapping];
-    const convert = opts;
+    const source = { path, options: sourceOptions, columns, coerce };
+    const create = isNew ? targets.map((c) => ({ name: c.name, type: c.type })) : null;
     const importMode = mode;
-    const header = hasHeader || kind === 'json';
-    const rowLabel = (index: number) => fmt(displayRowNumber(index, header));
+    const issueText = (iss: RowIssue) => `${iss.column}: ${t(ISSUE_KEY[iss.issue])} (${iss.value})`;
 
     startJob({
       kind: 'import-table',
-      title: t('jobs.titleImportTable', { n: tableName }),
-      db: tableName,
+      title: t('jobs.titleImportTable', { n: table }),
+      db: table,
       conn: connKeyOfConn(connId),
       write: true,
-      lockKey: `${connId}|${tableName}`,
+      lockKey: `${connId}|${table}`,
       run: (ctx) =>
         withJobConnection(connId, [approval], async ({ connId: jobConnId }) => {
-          const columns = buildRows(src, cols, map, convert, 0, 0).columns;
-          const { handle } = await dbHelper.importBegin(jobConnId, tableName, columns, importMode, tableSchema);
+          const { handle } = await dbHelper.importBegin(
+            jobConnId,
+            table,
+            columns.map((c) => c.target.name),
+            importMode,
+            tableSchema,
+            source,
+            create,
+          );
           let finished = false;
           try {
             let inserted = 0;
-            let clientSkipped = 0;
-            let dbFailed = 0;
+            let skipped = 0;
             const failures: string[] = [];
-            for (let from = 0; from < src.rows.length; from += CHUNK_ROWS) {
+            for (;;) {
               // A cancel rolls the whole import back — the `finally` aborts the transaction.
               ctx.throwIfCancelled();
-              ctx.report({
-                label: t('importTable.progress', { table: tableName }),
-                current: from,
-                total: src.rows.length,
-                detail: t('importTable.progressDetail', { done: fmt(from), total: fmt(src.rows.length) }),
-              });
-              const part = buildRows(src, cols, map, convert, from, from + CHUNK_ROWS, 0);
-              clientSkipped += part.badRows;
-              if (part.rows.length === 0) continue;
-              // Sequential on purpose: one transaction, chunk after chunk, in file order.
-              const res = await dbHelper.importChunk(handle, part.rows, 0);
-              inserted += res.inserted;
-              for (const f of res.failed) {
-                dbFailed++;
-                if (failures.length < 8) {
-                  failures.push(t('importTable.failedRow', { row: rowLabel(part.indexes[f.row] ?? from), message: f.error }));
-                }
+              const r = await dbHelper.importStep(handle, STEP_ROWS);
+              inserted += r.inserted;
+              skipped += r.badRows + r.failed.length;
+              for (const iss of r.issues) {
+                if (failures.length < FAILURES_SHOWN) failures.push(t('importTable.failedRow', { row: fmt(iss.row), message: issueText(iss) }));
               }
-              if (res.stopped) {
-                const f = res.failed[0];
+              for (const f of r.failed) {
+                if (failures.length < FAILURES_SHOWN) failures.push(t('importTable.failedRow', { row: fmt(f.row), message: f.error }));
+              }
+              if (r.stopped) {
+                const f = r.failed[0];
+                const iss = r.issues[0];
                 throw new Error(
                   t('importTable.errAtomicStopped', {
-                    row: rowLabel(part.indexes[f?.row ?? 0] ?? from),
-                    message: f?.error ?? '',
+                    row: fmt(f?.row ?? iss?.row ?? 0),
+                    message: f ? f.error : iss ? issueText(iss) : '',
                   }),
                 );
               }
+              ctx.report({
+                label: t('importTable.progress', { table }),
+                current: r.bytesDone,
+                total: r.bytesTotal || undefined,
+                detail: t('importTable.progressRows', { n: fmt(inserted) }),
+              });
+              if (r.done) break;
             }
             await dbHelper.importFinish(handle, true);
             finished = true;
             window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId } }));
-            const skipped = clientSkipped + dbFailed;
             return {
-              message: skipped
-                ? t('importTable.doneSkipped', { n: fmt(inserted), table: tableName, skipped: fmt(skipped) })
-                : t('importTable.done', { n: fmt(inserted), table: tableName }),
+              message: isNew
+                ? t('importTable.doneNew', { n: fmt(inserted), table })
+                : skipped
+                  ? t('importTable.doneSkipped', { n: fmt(inserted), table, skipped: fmt(skipped) })
+                  : t('importTable.done', { n: fmt(inserted), table }),
               warning: failures.length ? failures.join('\n') : undefined,
             };
           } finally {
@@ -299,19 +369,35 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
   };
 
   // ---- Render
-  const loading = !loadError && (!source || !targets);
+  const loadError = (probeState?.key === optionsKey ? probeState.error : null) ?? schemaError;
+  const loading = !loadError && (!probe || !targets);
+  const sampleOf = (src: number | null | undefined) => (src === null || src === undefined ? '' : (probe?.firstValues[src] ?? ''));
+  const setTypeAt = (i: number, ty: string) => setTypeEdits({ key: typesKey, types: { ...editedTypes, [i]: ty } });
+
+  const container =
+    probe?.compression === 'zip'
+      ? t('importTable.fromZip', { entry: probe.entry ?? '' })
+      : probe?.compression === 'gzip'
+        ? t('importTable.fromGzip')
+        : null;
 
   return (
     <Modal
-      title={t('importTable.title', { table: tableName })}
+      title={isNew ? t('importTable.titleNew') : t('importTable.title', { table: tableName })}
       icon={<FileUp size={14} />}
       onClose={onClose}
       width="860px"
     >
       <ModalBody>
         <div className="imp-file">
-          <strong>{file.name}</strong>
-          {source && <span>{t('importTable.rowsInFile', { n: fmt(totalRows) })}</span>}
+          <strong>{fileBaseName(path)}</strong>
+          {probe && <span>{formatSize(probe.fileBytes)}</span>}
+          {container && <span>{container}</span>}
+          {totalRows !== null ? (
+            <span>{t('importTable.rowsInFile', { n: fmt(totalRows) })}</span>
+          ) : (
+            probe && <span>{t('importTable.rowsCounting')}</span>
+          )}
         </div>
 
         {loadError && (
@@ -322,15 +408,24 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
         )}
         {loading && <div className="imp-muted">{t('importTable.loading')}</div>}
 
-        {source && targets && (
+        {probe && targets && (
           <>
+            {isNew && (
+              <label className="imp-name">
+                <span>{t('importTable.newTableName')}</span>
+                <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} spellCheck={false} />
+              </label>
+            )}
+
             <div className="imp-options">
               {kind === 'csv' && (
                 <>
                   <label>
                     <span>{t('importTable.delimiter')}</span>
                     <select value={delimiterChoice} onChange={(e) => setDelimiterChoice(e.target.value as 'auto' | Delimiter)}>
-                      <option value="auto">{t('importTable.delimiterAuto', { d: delimiterLabel(delimiter, t) })}</option>
+                      <option value="auto">
+                        {t('importTable.delimiterAuto', { d: delimiterLabel((probe.delimiter ?? ',') as Delimiter, t) })}
+                      </option>
                       {DELIMITERS.map((d) => (
                         <option key={d} value={d}>{delimiterLabel(d, t)}</option>
                       ))}
@@ -346,12 +441,12 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
                   </label>
                 </>
               )}
-              {kind === 'xlsx' && sheets && sheets.length > 1 && (
+              {kind === 'xlsx' && probe.sheets.length > 1 && (
                 <label>
                   <span>{t('importTable.sheet')}</span>
                   <select value={sheetIndex} onChange={(e) => setSheetIndex(Number(e.target.value))}>
-                    {sheets.map((s, i) => (
-                      <option key={s.name} value={i}>{s.name}</option>
+                    {probe.sheets.map((s, i) => (
+                      <option key={s} value={i}>{s}</option>
                     ))}
                   </select>
                 </label>
@@ -364,7 +459,7 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
               )}
               <label>
                 <span>{t('importTable.emptyAs')}</span>
-                <select value={emptyAs} onChange={(e) => setEmptyAs(e.target.value as CoerceOptions['emptyAs'])}>
+                <select value={emptyAs} onChange={(e) => setEmptyAs(e.target.value as 'null' | 'empty')}>
                   <option value="null">{t('importTable.emptyAsNull')}</option>
                   <option value="empty">{t('importTable.emptyAsEmpty')}</option>
                 </select>
@@ -381,14 +476,14 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
                   <tr>
                     <th>{t('importTable.colTarget')}</th>
                     <th>{t('importTable.colType')}</th>
-                    <th>{t('importTable.colSource')}</th>
+                    {!isNew && <th>{t('importTable.colSource')}</th>}
                     <th>{t('importTable.colSample')}</th>
                     <th>{t('importTable.colProblems')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {targets.map((col, i) => {
-                    const problems = issuesByColumn.get(col.name) ?? 0;
+                    const problems = issuesByColumn[col.name] ?? 0;
                     return (
                       <tr key={col.name} className={col.generated ? 'is-disabled' : undefined}>
                         <td>
@@ -397,24 +492,38 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
                             <span className="imp-badge">{t('importTable.required')}</span>
                           )}
                         </td>
-                        <td className="imp-type" title={typeFamily(col.type)}>{col.type}</td>
-                        <td>
-                          {col.generated ? (
-                            <span className="imp-muted">{t('importTable.generated')}</span>
-                          ) : (
-                            <select
-                              value={mapping[i] === null || mapping[i] === undefined ? '' : String(mapping[i])}
-                              onChange={(e) => setMappingAt(i, e.target.value === '' ? null : Number(e.target.value))}
-                            >
-                              <option value="">{col.hasDefault ? t('importTable.skipDefault') : t('importTable.skip')}</option>
-                              {/* Names are unique — 	oSourceTable suffixes repeats — so they key the list. */}
-                              {source.headers.map((h, hi) => (
-                                <option key={h} value={hi}>{h}</option>
-                              ))}
-                            </select>
-                          )}
-                        </td>
-                        <td className="imp-sample">{sampleOf(mapping[i] ?? null)}</td>
+                        {isNew ? (
+                          <td>
+                            <input
+                              type="text"
+                              className="imp-type-input"
+                              value={col.type}
+                              spellCheck={false}
+                              onChange={(e) => setTypeAt(i, e.target.value)}
+                            />
+                          </td>
+                        ) : (
+                          <td className="imp-type" title={typeFamily(col.type)}>{col.type}</td>
+                        )}
+                        {!isNew && (
+                          <td>
+                            {col.generated ? (
+                              <span className="imp-muted">{t('importTable.generated')}</span>
+                            ) : (
+                              <select
+                                value={mapping[i] === null || mapping[i] === undefined ? '' : String(mapping[i])}
+                                onChange={(e) => setMappingAt(i, e.target.value === '' ? null : Number(e.target.value))}
+                              >
+                                <option value="">{col.hasDefault ? t('importTable.skipDefault') : t('importTable.skip')}</option>
+                                {/* Names are unique — the reader suffixes repeats — so they key the list. */}
+                                {headers.map((h, hi) => (
+                                  <option key={h} value={hi}>{h}</option>
+                                ))}
+                              </select>
+                            )}
+                          </td>
+                        )}
+                        <td className="imp-sample">{sampleOf(mapping[i])}</td>
                         <td className={problems ? 'imp-problems' : 'imp-muted'}>{problems ? fmt(problems) : '—'}</td>
                       </tr>
                     );
@@ -423,11 +532,30 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
               </table>
             </div>
 
-            <div className="imp-summary">
-              {badRows === 0
-                ? t('importTable.allGood', { n: fmt(totalRows) })
-                : t('importTable.someBad', { bad: fmt(badRows), n: fmt(totalRows) })}
-            </div>
+            {checking && (
+              <ProgressBar
+                progress={{
+                  label: t('importTable.checking'),
+                  current: progress?.bytesDone,
+                  total: progress?.bytesTotal || undefined,
+                  detail: progress ? t('importTable.checkingDetail', { n: fmt(progress.rows) }) : undefined,
+                }}
+              />
+            )}
+            {checkError && (
+              <div className="imp-banner is-error">
+                <AlertTriangle size={13} />
+                <span>{t('importTable.errCheck', { message: checkError })}</span>
+              </div>
+            )}
+
+            {check && (
+              <div className="imp-summary">
+                {badRows === 0
+                  ? t('importTable.allGood', { n: fmt(check.rows) })
+                  : t('importTable.someBad', { bad: fmt(badRows), n: fmt(check.rows) })}
+              </div>
+            )}
 
             {check && check.issues.length > 0 && (
               <div className="imp-issues">
@@ -442,8 +570,8 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
                   </thead>
                   <tbody>
                     {check.issues.map((iss) => (
-                      <tr key={`${iss.index}:${iss.column}`}>
-                        <td>{fmt(displayRowNumber(iss.index, hasHeader || kind === 'json'))}</td>
+                      <tr key={`${iss.row}:${iss.column}`}>
+                        <td>{fmt(iss.row)}</td>
                         <td>{iss.column}</td>
                         <td className="imp-value">{iss.value === '' ? <span className="imp-muted">{t('importTable.emptyCell')}</span> : iss.value}</td>
                         <td>{t(ISSUE_KEY[iss.issue])}</td>
@@ -451,7 +579,7 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
                     ))}
                   </tbody>
                 </table>
-                {badRows > check.issues.length && (
+                {check.issues.length < badRows && (
                   <div className="imp-muted">{t('importTable.moreIssues', { n: fmt(badRows) })}</div>
                 )}
               </div>
@@ -461,7 +589,7 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
               <label className="imp-check">
                 <input type="radio" name="imp-mode" checked={mode === 'atomic'} onChange={() => setMode('atomic')} />
                 <span>
-                  <strong>{t('importTable.modeAtomic')}</strong> {t('importTable.modeAtomicHint')}
+                  <strong>{t('importTable.modeAtomic')}</strong> {isNew ? t('importTable.modeAtomicHintNew') : t('importTable.modeAtomicHint')}
                 </span>
               </label>
               <label className="imp-check">
@@ -485,13 +613,14 @@ export const ImportTableDataDialog: React.FC<Props> = ({ connId, tableName, tabl
         <button type="button" className="btn btn-secondary" onClick={onClose}>
           {t('common.cancel')}
         </button>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={!source || !targets || !!blockReason}
-          onClick={() => void submit()}
-        >
-          {t('importTable.submit', { n: fmt(mode === 'skip' ? readyRows : totalRows) })}
+        <button type="button" className="btn btn-primary" disabled={!canSubmit} onClick={() => void submit()}>
+          {readyRows === null
+            ? isNew
+              ? t('importTable.submitNewUnknown')
+              : t('importTable.submitUnknown')
+            : isNew
+              ? t('importTable.submitNew', { n: fmt(mode === 'skip' ? readyRows : (totalRows ?? 0)) })
+              : t('importTable.submit', { n: fmt(mode === 'skip' ? readyRows : (totalRows ?? 0)) })}
         </button>
       </ModalFooter>
     </Modal>

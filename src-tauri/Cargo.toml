@@ -59,6 +59,14 @@ zip = "8.6.0"
 # Incremental gzip for streamed exports (`export_sink.rs`). flate2 itself was already in the tree
 # through `zip`; 1.1.10 brings `miniz_oxide` 0.9 alongside the 0.8 other crates still use.
 flate2 = "1.1.10"
+# Importing a CSV / JSON / Excel file into a table (`import_file/`) reads the file from disk in
+# Rust, a record at a time — a 1GB file cannot be a JS string at all, which is what crashed the
+# webview. `encoding_rs` decodes the encodings the import dialog offers (Windows-1258 is what a
+# Vietnamese Excel on Windows writes, Shift_JIS / GB18030 for the other two locales) as a stream;
+# `quick-xml` reads an .xlsx sheet as a stream of events instead of a DOM. quick-xml was already
+# in Cargo.lock (through `plist`), so it adds no crate; encoding_rs is the one new dependency.
+encoding_rs = "0.8"
+quick-xml = "0.41"
 tokio = { version = "1.53.1", features = ["full"] }
 futures-util = "0.3"
 thiserror = "2.0.20"

@@ -102,6 +102,11 @@ interface ImportDatabaseDialogProps {
     prepend: string[]
   ) => Promise<boolean>;
   asTab?: boolean;
+  /**
+   * A file already picked elsewhere — a table's Import was given a .sql or a dump — to load as if
+   * it had been browsed to. A new `at` is a new request.
+   */
+  fileRequest?: { path: string; at: number } | null;
 }
 
 /**
@@ -116,6 +121,7 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
   dbType = 'mysql',
   onSubmit,
   asTab = false,
+  fileRequest = null,
 }) => {
   const { t, i18n } = useTranslation();
   const fmtNum = (n: number) => n.toLocaleString(i18n.language);
@@ -249,20 +255,7 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
     [parsed, keepStatement]
   );
 
-  if (!open) return null;
-
-  const browse = async () => {
-    const picked = await pickOpenFile({
-      title: t('importDialog.pickFileTitle'),
-      // A pg_dump -Fc/-Ft archive is read through pg_restore; what a file IS is decided by its
-      // bytes, not its name, so "All files" is offered too.
-      filters: [
-        { name: 'SQL dump / pg_dump archive', extensions: ['sql', 'gz', 'dump', 'backup', 'tar'] },
-        { name: 'All files', extensions: ['*'] },
-      ],
-    });
-    if (!picked) return;
-
+  const loadPath = async (picked: string) => {
     const seq = ++scanSeq.current;
     setError(null);
     setPath(picked);
@@ -297,6 +290,33 @@ export const ImportDatabaseDialog: React.FC<ImportDatabaseDialogProps> = ({
         setParsing(false);
       }
     }
+  };
+
+  // A file picked elsewhere (see `fileRequest`). Queued like the reset above so it lands after it.
+  const requestAt = fileRequest?.at;
+  useEffect(() => {
+    if (!open || !fileRequest) return;
+    const picked = fileRequest.path;
+    queueMicrotask(() => void loadPath(picked));
+    // Only a NEW request loads — `at` is what says so. `loadPath` is a fresh closure every render
+    // and `fileRequest` a fresh object from App, so listing either would reload the file each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, requestAt]);
+
+  if (!open) return null;
+
+  const browse = async () => {
+    const picked = await pickOpenFile({
+      title: t('importDialog.pickFileTitle'),
+      // A pg_dump -Fc/-Ft archive is read through pg_restore; what a file IS is decided by its
+      // bytes, not its name, so "All files" is offered too.
+      filters: [
+        { name: 'SQL dump / pg_dump archive', extensions: ['sql', 'gz', 'dump', 'backup', 'tar'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    });
+    if (!picked) return;
+    await loadPath(picked);
   };
 
   const shown = search.trim()
