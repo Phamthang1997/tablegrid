@@ -66,7 +66,7 @@ flate2 = "1.1.10"
 # `quick-xml` reads an .xlsx sheet as a stream of events instead of a DOM. quick-xml was already
 # in Cargo.lock (through `plist`), so it adds no crate; encoding_rs is the one new dependency.
 encoding_rs = "0.8"
-quick-xml = "0.41"
+quick-xml = "0.42"
 tokio = { version = "1.53.1", features = ["full"] }
 futures-util = "0.3"
 thiserror = "2.0.20"

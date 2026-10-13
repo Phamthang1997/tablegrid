@@ -94,12 +94,12 @@ fn col_index(cell_ref: &[u8]) -> Option<usize> {
     (any && i > 0).then(|| i - 1)
 }
 
-fn attr(e: &BytesStart, name: &[u8]) -> Option<String> {
+fn attr(e: &BytesStart, name: &str) -> Option<String> {
     e.attributes().with_checks(false).flatten().find_map(|a| {
         (a.key.local_name().as_ref() == name).then(|| {
             a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .map(|v| v.into_owned())
-                .unwrap_or_else(|_| String::from_utf8_lossy(&a.value).into_owned())
+                .unwrap_or_else(|_| a.value.clone().into_owned())
         })
     })
 }
@@ -110,12 +110,12 @@ fn push_ref(out: &mut String, r: &BytesRef) {
         out.push(c);
         return;
     }
-    let name = String::from_utf8_lossy(r);
-    match quick_xml::escape::resolve_predefined_entity(&name) {
+    let name: &str = r;
+    match quick_xml::escape::resolve_predefined_entity(name) {
         Some(s) => out.push_str(s),
         None => {
             out.push('&');
-            out.push_str(&name);
+            out.push_str(name);
             out.push(';');
         }
     }
@@ -159,8 +159,8 @@ fn read_workbook<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Workbook, St
         let mut buf = Vec::new();
         loop {
             match r.read_event_into(&mut buf).map_err(xml_error)? {
-                Event::Start(e) if e.local_name().as_ref() == b"Relationship" => {
-                    if let (Some(id), Some(target)) = (attr(&e, b"Id"), attr(&e, b"Target")) {
+                Event::Start(e) if e.local_name().as_ref() == "Relationship" => {
+                    if let (Some(id), Some(target)) = (attr(&e, "Id"), attr(&e, "Target")) {
                         let t = target.trim_start_matches('/');
                         let path = if t.starts_with("xl/") {
                             t.to_string()
@@ -184,14 +184,14 @@ fn read_workbook<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Workbook, St
         let mut buf = Vec::new();
         loop {
             match r.read_event_into(&mut buf).map_err(xml_error)? {
-                Event::Start(e) if e.local_name().as_ref() == b"workbookPr" => {
-                    date1904 = matches!(attr(&e, b"date1904").as_deref(), Some("1" | "true"));
+                Event::Start(e) if e.local_name().as_ref() == "workbookPr" => {
+                    date1904 = matches!(attr(&e, "date1904").as_deref(), Some("1" | "true"));
                 }
-                Event::Start(e) if e.local_name().as_ref() == b"sheet" => {
+                Event::Start(e) if e.local_name().as_ref() == "sheet" => {
                     let n = sheets.len() + 1;
-                    let name = attr(&e, b"name").unwrap_or_else(|| format!("Sheet{n}"));
+                    let name = attr(&e, "name").unwrap_or_else(|| format!("Sheet{n}"));
                     // `r:id` — the only attribute of <sheet> whose local name is `id`.
-                    let rid = attr(&e, b"id").unwrap_or_default();
+                    let rid = attr(&e, "id").unwrap_or_default();
                     let path = targets
                         .iter()
                         .find(|(id, _)| *id == rid)
@@ -218,15 +218,15 @@ fn read_workbook<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Workbook, St
         loop {
             match r.read_event_into(&mut buf).map_err(xml_error)? {
                 Event::Start(e) => match e.local_name().as_ref() {
-                    b"numFmt" => {
-                        if let Some(id) = attr(&e, b"numFmtId").and_then(|v| v.parse().ok()) {
-                            let code = attr(&e, b"formatCode").unwrap_or_default();
+                    "numFmt" => {
+                        if let Some(id) = attr(&e, "numFmtId").and_then(|v| v.parse().ok()) {
+                            let code = attr(&e, "formatCode").unwrap_or_default();
                             custom.push((id, looks_like_date_format(&code)));
                         }
                     }
-                    b"cellXfs" => in_cell_xfs = true,
-                    b"xf" if in_cell_xfs => {
-                        let id: u32 = attr(&e, b"numFmtId")
+                    "cellXfs" => in_cell_xfs = true,
+                    "xf" if in_cell_xfs => {
+                        let id: u32 = attr(&e, "numFmtId")
                             .and_then(|v| v.parse().ok())
                             .unwrap_or(0);
                         let is_date = BUILTIN_DATE_FMT.contains(&id)
@@ -235,7 +235,7 @@ fn read_workbook<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Workbook, St
                     }
                     _ => {}
                 },
-                Event::End(e) if e.local_name().as_ref() == b"cellXfs" => in_cell_xfs = false,
+                Event::End(e) if e.local_name().as_ref() == "cellXfs" => in_cell_xfs = false,
                 Event::Eof => break,
                 _ => {}
             }
@@ -265,19 +265,19 @@ fn read_shared_strings<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Vec<St
     loop {
         match r.read_event_into(&mut buf).map_err(xml_error)? {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"si" => cur.clear(),
-                b"t" if !in_rph => in_t = true,
-                b"rPh" => in_rph = true,
+                "si" => cur.clear(),
+                "t" if !in_rph => in_t = true,
+                "rPh" => in_rph = true,
                 _ => {}
             },
             Event::End(e) => match e.local_name().as_ref() {
-                b"si" => out.push(std::mem::take(&mut cur)),
-                b"t" => in_t = false,
-                b"rPh" => in_rph = false,
+                "si" => out.push(std::mem::take(&mut cur)),
+                "t" => in_t = false,
+                "rPh" => in_rph = false,
                 _ => {}
             },
-            Event::Text(t) if in_t => cur.push_str(&t.xml10_content().map_err(xml_error)?),
-            Event::CData(t) if in_t => cur.push_str(&String::from_utf8_lossy(&t)),
+            Event::Text(t) if in_t => cur.push_str(&t.xml10_content()),
+            Event::CData(t) if in_t => cur.push_str(&t),
             Event::GeneralRef(g) if in_t => push_ref(&mut cur, &g),
             Event::Eof => break,
             _ => {}
@@ -366,34 +366,34 @@ pub(crate) fn read_xlsx<R: Read + Seek>(
     loop {
         match r.read_event_into(&mut buf).map_err(xml_error)? {
             Event::Start(e) => match e.local_name().as_ref() {
-                b"row" => {
-                    row_no = attr(&e, b"r")
+                "row" => {
+                    row_no = attr(&e, "r")
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(row_no + 1);
                     row.clear();
                 }
-                b"c" => {
-                    let col = attr(&e, b"r")
+                "c" => {
+                    let col = attr(&e, "r")
                         .and_then(|v| col_index(v.as_bytes()))
                         .unwrap_or(row.len());
                     pending = Some(PendingCell {
                         col,
-                        t: attr(&e, b"t"),
-                        style: attr(&e, b"s").and_then(|v| v.parse().ok()),
+                        t: attr(&e, "t"),
+                        style: attr(&e, "s").and_then(|v| v.parse().ok()),
                     });
                     text.clear();
                 }
-                b"v" => capture = pending.is_some(),
-                b"is" => in_is = true,
-                b"rPh" => in_rph = true,
-                b"t" if in_is && !in_rph => capture = true,
+                "v" => capture = pending.is_some(),
+                "is" => in_is = true,
+                "rPh" => in_rph = true,
+                "t" if in_is && !in_rph => capture = true,
                 _ => {}
             },
             Event::End(e) => match e.local_name().as_ref() {
-                b"v" | b"t" => capture = false,
-                b"is" => in_is = false,
-                b"rPh" => in_rph = false,
-                b"c" => {
+                "v" | "t" => capture = false,
+                "is" => in_is = false,
+                "rPh" => in_rph = false,
+                "c" => {
                     if let Some(p) = pending.take() {
                         // A sheet past column XFD is not a real sheet; refuse to allocate for it.
                         if p.col < 16_384 {
@@ -405,16 +405,16 @@ pub(crate) fn read_xlsx<R: Read + Seek>(
                         }
                     }
                 }
-                b"row" => {
+                "row" => {
                     if !emit(row_no, std::mem::take(&mut row))? {
                         return Ok(());
                     }
                 }
-                b"sheetData" => break,
+                "sheetData" => break,
                 _ => {}
             },
-            Event::Text(t) if capture => text.push_str(&t.xml10_content().map_err(xml_error)?),
-            Event::CData(t) if capture => text.push_str(&String::from_utf8_lossy(&t)),
+            Event::Text(t) if capture => text.push_str(&t.xml10_content()),
+            Event::CData(t) if capture => text.push_str(&t),
             Event::GeneralRef(g) if capture => push_ref(&mut text, &g),
             Event::Eof => break,
             _ => {}
