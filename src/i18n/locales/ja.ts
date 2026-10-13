@@ -1923,6 +1923,7 @@ const ja: typeof en = {
   },
 
   migration: {
+    snapNamePattern: '{{prefix}}_YYYYMMDD_HHMM',
     capturing: 'スキーマ "{{name}}" を取得中...',
     captured: 'スナップショット "{{name}}" を保存しました ({{n}} テーブル)。',
     errCapture: 'スキーマの取得に失敗しました: {{message}}',

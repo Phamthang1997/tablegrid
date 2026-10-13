@@ -1943,6 +1943,7 @@ const en = {
   },
 
   migration: {
+    snapNamePattern: '{{prefix}}_YYYYMMDD_HHMM',
     capturing: 'Taking a snapshot of "{{name}}"...',
     captured: 'Snapshot "{{name}}" saved ({{n}} tables).',
     errCapture: 'Snapshot failed: {{message}}',

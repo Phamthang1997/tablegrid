@@ -23,7 +23,7 @@ mod write;
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo},
+    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig},
     schemars, tool, tool_handler, tool_router,
 };
 use std::future::Future;
@@ -325,11 +325,11 @@ impl Default for TableGridMcp {
 
 #[tool_handler]
 impl ServerHandler for TableGridMcp {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         // No `with_protocol_version(...)`: the default is whatever revision this build of `rmcp`
         // implements. Pinning one here would freeze the app at a revision the SDK has moved past,
         // which is the exact failure the SDK was adopted to avoid.
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             // NOT `Implementation::from_build_env()`: that macro reads the CARGO_PKG_* of the crate
             // it expands in, which is `rmcp` - so the server introduced itself to every client as
             // "rmcp 3.1.4" instead of TableGrid. Spelled out here, it reads this crate's own.

@@ -1927,6 +1927,7 @@ const vi: typeof en = {
   },
 
   migration: {
+    snapNamePattern: '{{prefix}}_YYYYMMDD_HHMM',
     capturing: 'Đang chụp schema "{{name}}"...',
     captured: 'Đã lưu snapshot "{{name}}" ({{n}} bảng).',
     errCapture: 'Lỗi chụp schema: {{message}}',
