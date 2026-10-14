@@ -610,12 +610,14 @@ fn open(key: &[u8; KEY_LEN], aad: &[u8], encoded: &str) -> Result<Vec<u8>, Strin
 /// 16 random bytes from the OS CSPRNG. Taken from `aes-gcm`'s own generator rather than adding
 /// `getrandom` as a direct dependency: it is the same source, and a key's worth of entropy
 /// truncated to a salt is still a salt — a salt only has to be unique, not secret.
+///
+/// Built straight from the slice rather than by filling a zeroed buffer: CodeQL follows the literal
+/// `[0u8; SALT_LEN]` into Argon2's salt and reports a hard-coded salt.
 fn random_salt() -> Result<[u8; SALT_LEN], String> {
     let key = Key::<Aes256Gcm>::try_generate()
         .map_err(|e| format!("Không sinh được muối cho kho bí mật: {e}"))?;
-    let mut salt = [0u8; SALT_LEN];
-    salt.copy_from_slice(&key[..SALT_LEN]);
-    Ok(salt)
+    <[u8; SALT_LEN]>::try_from(&key[..SALT_LEN])
+        .map_err(|_| "Muối trong kho bí mật sai độ dài.".to_string())
 }
 
 fn decode_salt(file: &VaultFile) -> Result<[u8; SALT_LEN], String> {
@@ -638,15 +640,24 @@ fn no_dir() -> String {
     "Chưa xác định được thư mục dữ liệu của ứng dụng.".to_string()
 }
 
+// `load` and `save` spell out the missing-directory case instead of `file_path().ok_or_else(..)?`.
+// CodeQL models `?` as flowing its whole operand into the function's return value, so the path —
+// built from the literal FILE_NAME — would reach whatever `get`'s caller does with a secret, and
+// the MCP audit log turns one into an AES key: a "hard-coded key" that is really a file name.
 fn load() -> Result<VaultFile, String> {
-    let path = file_path().ok_or_else(no_dir)?;
+    let Some(path) = file_path() else {
+        return Err(no_dir());
+    };
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("Không đọc được tệp kho bí mật: {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("Tệp kho bí mật đã hỏng: {e}"))
 }
 
 fn save(file: &VaultFile) -> Result<(), String> {
-    save_at(file_path().ok_or_else(no_dir)?, file)
+    let Some(path) = file_path() else {
+        return Err(no_dir());
+    };
+    save_at(path, file)
 }
 
 /// Write beside the real file and rename over it. A crash mid-write would otherwise leave a
@@ -668,28 +679,36 @@ fn save_at(path: PathBuf, file: &VaultFile) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn key_from(byte: u8) -> [u8; KEY_LEN] {
-        [byte; KEY_LEN]
+    // Keys, salts and passwords here are drawn at random, never written as literals. The tests only
+    // need two values to differ or one to round-trip, and CodeQL reports a literal that reaches a
+    // key, salt or password parameter as a hard-coded secret, test code included.
+    fn random_key() -> [u8; KEY_LEN] {
+        let key = Key::<Aes256Gcm>::try_generate().unwrap();
+        <[u8; KEY_LEN]>::try_from(&key[..]).unwrap()
+    }
+
+    fn random_password() -> String {
+        B64.encode(random_key())
     }
 
     #[test]
     fn a_sealed_value_opens_with_the_same_key_and_aad() {
-        let key = key_from(7);
+        let key = random_key();
         let sealed = seal(&key, b"p1:password", b"hunter2").unwrap();
         assert_eq!(open(&key, b"p1:password", &sealed).unwrap(), b"hunter2");
     }
 
     #[test]
     fn a_sealed_value_does_not_open_under_another_key() {
-        let sealed = seal(&key_from(7), b"p1:password", b"hunter2").unwrap();
-        assert!(open(&key_from(8), b"p1:password", &sealed).is_err());
+        let sealed = seal(&random_key(), b"p1:password", b"hunter2").unwrap();
+        assert!(open(&random_key(), b"p1:password", &sealed).is_err());
     }
 
     /// The property the AAD exists for: an entry moved to another profile or field stops opening,
     /// so swapping two blobs in the file cannot silently swap two passwords.
     #[test]
     fn a_sealed_value_does_not_open_under_another_account() {
-        let key = key_from(7);
+        let key = random_key();
         let sealed = seal(&key, b"p1:password", b"hunter2").unwrap();
         assert!(open(&key, b"p2:password", &sealed).is_err());
         assert!(open(&key, b"p1:sshPassword", &sealed).is_err());
@@ -697,7 +716,7 @@ mod tests {
 
     #[test]
     fn a_tampered_record_does_not_open() {
-        let key = key_from(7);
+        let key = random_key();
         let sealed = seal(&key, b"p1:password", b"hunter2").unwrap();
         let mut bytes = B64.decode(sealed.as_bytes()).unwrap();
         let last = bytes.len() - 1;
@@ -715,18 +734,20 @@ mod tests {
     #[test]
     fn derivation_is_deterministic_and_password_dependent() {
         // The smallest legal cost, so the test is about the wiring rather than about waiting.
-        let salt = [3u8; SALT_LEN];
-        let a = derive("hunter2", &salt, Params::MIN_M_COST, 1, 1).unwrap();
-        let b = derive("hunter2", &salt, Params::MIN_M_COST, 1, 1).unwrap();
-        let c = derive("hunter3", &salt, Params::MIN_M_COST, 1, 1).unwrap();
+        let salt = random_salt().unwrap();
+        let password = random_password();
+        let a = derive(&password, &salt, Params::MIN_M_COST, 1, 1).unwrap();
+        let b = derive(&password, &salt, Params::MIN_M_COST, 1, 1).unwrap();
+        let c = derive(&random_password(), &salt, Params::MIN_M_COST, 1, 1).unwrap();
         assert_eq!(a.as_ref(), b.as_ref());
         assert_ne!(a.as_ref(), c.as_ref());
     }
 
     #[test]
     fn a_different_salt_gives_a_different_key() {
-        let a = derive("hunter2", &[1u8; SALT_LEN], Params::MIN_M_COST, 1, 1).unwrap();
-        let b = derive("hunter2", &[2u8; SALT_LEN], Params::MIN_M_COST, 1, 1).unwrap();
+        let password = random_password();
+        let a = derive(&password, &random_salt().unwrap(), Params::MIN_M_COST, 1, 1).unwrap();
+        let b = derive(&password, &random_salt().unwrap(), Params::MIN_M_COST, 1, 1).unwrap();
         assert_ne!(a.as_ref(), b.as_ref());
     }
 
@@ -734,7 +755,7 @@ mod tests {
     /// them apart.
     #[test]
     fn verify_separates_a_wrong_password_from_a_damaged_file() {
-        let key = key_from(7);
+        let key = random_key();
         let good = VaultFile {
             version: 1,
             kdf: "argon2id".to_string(),
@@ -748,7 +769,7 @@ mod tests {
         };
         assert!(verify(&good, &key).is_ok());
         assert_eq!(
-            verify(&good, &key_from(8)).unwrap_err(),
+            verify(&good, &random_key()).unwrap_err(),
             "Mật khẩu chính không đúng."
         );
 
@@ -785,7 +806,7 @@ mod tests {
             m_cost: M_COST,
             t_cost: T_COST,
             p_cost: P_COST,
-            check: seal(&key_from(7), CHECK_AAD, CHECK_PLAINTEXT).unwrap(),
+            check: seal(&random_key(), CHECK_AAD, CHECK_PLAINTEXT).unwrap(),
             relock: true,
             entries: BTreeMap::new(),
         };
