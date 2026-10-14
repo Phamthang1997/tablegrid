@@ -20,6 +20,7 @@ use std::time::Duration;
 use rmcp::ErrorData as McpError;
 use serde_json::json;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 use super::audit::{Denial, Refusal};
 
@@ -34,8 +35,8 @@ pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Emitted when a request needs an answer. `McpApprovalGate.tsx` listens for it.
 const REQUEST_EVENT: &str = "mcp-approval-request";
-/// Emitted when a request stops needing an answer without the user giving one — today only on
-/// timeout. Without it the dialog would sit there offering buttons for a request that is already
+/// Emitted when a request stops needing an answer without the user giving one: it timed out, the
+/// client cancelled it, or the server was stopped. Without it the dialog would sit there offering buttons for a request that is already
 /// refused, and pressing Approve would appear to do nothing.
 const RESOLVED_EVENT: &str = "mcp-approval-resolved";
 
@@ -63,7 +64,12 @@ pub struct AskFor<'a> {
 /// Returns `Ok(())` only on an explicit approval. Every other ending — declined, timed out, or the
 /// answering channel dropped because the window went away — is a refusal, because "nobody said yes"
 /// and "somebody said no" have to mean the same thing here.
-pub async fn ask(req: AskFor<'_>) -> Result<(), Refusal> {
+///
+/// `ct` is the request's own cancellation token. rmcp runs a tool call on a detached task and only
+/// cancels this token when the client gives up (Esc in the client, a closed session) - it does NOT
+/// drop the future. Without watching it the dialog stayed up for a call nobody was waiting on, and
+/// pressing Approve still ran the write, its result delivered to no one.
+pub async fn ask(req: AskFor<'_>, ct: &CancellationToken) -> Result<(), Refusal> {
     let id = crate::state::mint_id().to_string();
     let (tx, rx) = oneshot::channel::<bool>();
     match pending().lock() {
@@ -88,7 +94,14 @@ pub async fn ask(req: AskFor<'_>) -> Result<(), Refusal> {
         }),
     );
 
-    let outcome = tokio::time::timeout(APPROVAL_TIMEOUT, rx).await;
+    let outcome = tokio::select! {
+        r = tokio::time::timeout(APPROVAL_TIMEOUT, rx) => r,
+        _ = ct.cancelled() => {
+            take(&id);
+            crate::state::emit(RESOLVED_EVENT, json!({ "id": id, "reason": "cancelled" }));
+            return Err(refuse("the request was cancelled before the user answered, so the statement was not run."));
+        }
+    };
     // Whatever happened, this id is finished: `respond` must not find it afterwards, and a timed-out
     // request must not leave its sender in the map for the life of the process.
     take(&id);
@@ -121,10 +134,27 @@ pub fn respond(id: &str, approved: bool) -> Result<(), String> {
     let tx = take(id).ok_or_else(|| {
         "Yêu cầu này không còn chờ trả lời (đã hết hạn hoặc đã được trả lời).".to_string()
     })?;
-    // The receiver is gone only if `ask` already stopped waiting, which `take` above has just ruled
-    // out for every ordinary path; ignoring the error keeps the race harmless either way.
-    let _ = tx.send(approved);
-    Ok(())
+    // The receiver is gone when `ask` stopped waiting in the instant between the click and this call
+    // (timeout, cancellation). Reporting success there would tell the user a write ran that did not,
+    // so it gets the same answer as an id that is already gone.
+    tx.send(approved).map_err(|_| {
+        "Yêu cầu này không còn chờ trả lời (đã hết hạn hoặc đã được trả lời).".to_string()
+    })
+}
+
+/// Refuse every parked request at once - the server is stopping.
+///
+/// Dropping a sender is what `ask` reads as "closed without an answer", i.e. a refusal. The event
+/// takes each dialog off the screen: stopping the server is how a user cuts an AI off, and an Approve
+/// button still offered afterwards would be exactly the thing they meant to stop.
+pub fn refuse_all() {
+    let drained: Vec<String> = match pending().lock() {
+        Ok(mut map) => map.drain().map(|(id, _)| id).collect(),
+        Err(poisoned) => poisoned.into_inner().drain().map(|(id, _)| id).collect(),
+    };
+    for id in drained {
+        crate::state::emit(RESOLVED_EVENT, json!({ "id": id, "reason": "stopped" }));
+    }
 }
 
 /// Remove one parked request, whoever gets there first.

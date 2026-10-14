@@ -8,7 +8,7 @@ use rmcp::ErrorData as McpError;
 
 use super::audit::{Denial, Refusal};
 
-use crate::database::{DbConnection, split_sql_statements, strip_leading_comments};
+use crate::database::{DbConnection, classification_head, split_sql_statements};
 use crate::state::AppState;
 
 /// Rows returned to an AI client when the caller does not say otherwise.
@@ -121,6 +121,19 @@ fn resolve_inner(
         .connections
         .acquire(&connection_id)
         .map_err(|_| unknown_connection())?;
+    // Refused HERE rather than by the funnel after approval: a write the read-only lock was always
+    // going to refuse must not cost the user an approval dialog first (see the order in `write.rs`).
+    if need_write && crate::state::conn_is_read_only(&ctx.conn().id) {
+        return Err(Refusal::new(
+            Denial::WriteNotAllowed,
+            McpError::invalid_params(
+                "this connection is locked read-only in TableGrid, so no write can run on it. Ask \
+                 the user to turn the read-only lock off first if they want you to change data."
+                    .to_string(),
+                None,
+            ),
+        ));
+    }
     reject_if_manual(&connection_id)?;
     let target = Target {
         conn: ctx.conn().clone(),
@@ -313,7 +326,8 @@ fn refuse_write(message: String) -> Refusal {
 /// `(SELECT …) UNION (SELECT …)` is still a read, which is why the parens are skipped rather than
 /// treated as an unknown shape.
 fn statement_head(statement: &str) -> String {
-    let text = strip_leading_comments(statement);
+    // Not `strip_leading_comments`: that one skips MySQL's `/*! … */`, whose contents the server runs.
+    let text = classification_head(statement);
     let word: String = text
         .trim_start_matches(['(', ' ', '\t', '\r', '\n'])
         .chars()
@@ -396,6 +410,16 @@ mod tests {
         assert!(ensure_single_read("-- SELECT\nDELETE FROM t").is_err());
         // ...and must not make a genuine read look unrecognisable either.
         assert!(ensure_single_read("/* daily report */ SELECT 1").is_ok());
+    }
+
+    /// MySQL executes the inside of `/*! … */`, so it cannot be skipped like a comment.
+    #[test]
+    fn an_executable_comment_cannot_disguise_a_write() {
+        assert!(ensure_single_read("/*!DELETE FROM orders WHERE 1 IN */ (SELECT 1)").is_err());
+        assert!(ensure_single_read("/*!50001 DROP TABLE t */").is_err());
+        assert!(ensure_single_read("/*M! UPDATE t SET a = 1 */").is_err());
+        // ...and the write tool must not send it back to the read tool either.
+        assert!(ensure_single_write("/*!DELETE FROM orders WHERE 1 IN */ (SELECT 1)").is_ok());
     }
 
     #[test]

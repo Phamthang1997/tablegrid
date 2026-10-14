@@ -55,6 +55,7 @@ pub async fn redis_connect(config: Value) -> Result<Value, String> {
         state.connections.insert(
             conn_id.clone(),
             crate::state::ConnEntry {
+                purpose: crate::state::ConnPurpose::User,
                 read_only,
                 // Redis is out of MCP scope entirely; the field exists because the registry is shared.
                 mcp_exposed: false,
@@ -159,6 +160,7 @@ pub(crate) async fn select_db_inner(
     state.connections.insert(
         new_id.clone(),
         crate::state::ConnEntry {
+            purpose: crate::state::ConnPurpose::User,
             // Inherit the read-only flag of the connection it was opened from: same server, and whoever marked
             // production read-only meant every db index of it. Same reasoning as `open_database`.
             read_only,

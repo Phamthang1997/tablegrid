@@ -12,10 +12,23 @@ mimalloc = "0.1.52"
 tauri = { version = "2.11.5", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-fs = "2.5.2"
+# OS notification when a background job finishes while the window is not focused (`app/notify.rs`).
+# Used directly, not through tauri-plugin-notification: that plugin picks the Windows AUMID by the
+# exe's path and got it wrong for this repo's CARGO_TARGET_DIR, so every toast was dropped. Already
+# in the lockfile, so declaring it adds no crate.
+notify-rust = "4.18.0"
 window-vibrancy = "0.8.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# DuckDB, for querying Parquet / CSV / JSON files in place. `bundled` compiles the engine in (the
+# crate's default links a system libduckdb nobody has); `parquet` and `json` compile those two
+# extensions in with it, so reading them needs nothing installed and nothing downloaded. The
+# connection also turns extension autoinstall OFF — see database/duck.rs — so an `s3://` path is
+# refused with a message instead of fetching httpfs from the internet. The first build compiles
+# DuckDB's C++ (~7 minutes on the dev machine); the target dir must stay SHORT, since MSVC fails
+# on object paths past 260 characters (it did, from a deep temp directory).
+duckdb = { version = "1.10505", features = ["bundled", "parquet", "json"] }
 sqlx = { version = "0.9.0", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
@@ -43,6 +56,17 @@ uuid = { version = "1", features = ["v4"] }
 russh = "0.63.2"
 portable-pty = "0.9"
 zip = "8.6.0"
+# Incremental gzip for streamed exports (`export_sink.rs`). flate2 itself was already in the tree
+# through `zip`; 1.1.10 brings `miniz_oxide` 0.9 alongside the 0.8 other crates still use.
+flate2 = "1.1.10"
+# Importing a CSV / JSON / Excel file into a table (`import_file/`) reads the file from disk in
+# Rust, a record at a time — a 1GB file cannot be a JS string at all, which is what crashed the
+# webview. `encoding_rs` decodes the encodings the import dialog offers (Windows-1258 is what a
+# Vietnamese Excel on Windows writes, Shift_JIS / GB18030 for the other two locales) as a stream;
+# `quick-xml` reads an .xlsx sheet as a stream of events instead of a DOM. quick-xml was already
+# in Cargo.lock (through `plist`), so it adds no crate; encoding_rs is the one new dependency.
+encoding_rs = "0.8"
+quick-xml = "0.42"
 tokio = { version = "1.53.1", features = ["full"] }
 futures-util = "0.3"
 thiserror = "2.0.20"
@@ -70,6 +94,15 @@ base64 = "0.23.1"
 # lập chỉ mục trên máy. Chọn aes-gcm vì nó ĐÃ có sẵn trong Cargo.lock (qua `pkcs5`), nên khai báo
 # trực tiếp không kéo thêm crate nào vào cây — cùng lý lẽ với `base64` ở trên.
 aes-gcm = "0.11"
+# Master Password (`credentials/vault.rs`): dẫn xuất khoá từ mật khẩu người dùng. Argon2id chứ không
+# PBKDF2 vì đây là mật khẩu do người gõ — hàm memory-hard là thứ duy nhất làm GPU/ASIC đắt lên.
+# Cả hai crate ĐÃ có trong Cargo.lock từ trước (argon2 qua `pkcs5`, zeroize qua đám RustCrypto), nên
+# khai báo trực tiếp không kéo thêm gì vào cây — cùng lý lẽ với `base64`/`aes-gcm` ở trên.
+# `default-features = false` bỏ `password-hash` + `getrandom`: chỉ dùng API thô `hash_password_into`,
+# còn muối thì sinh bằng chính CSPRNG của `aes-gcm` (xem `random_salt` trong vault.rs).
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc"] }
+# Khoá đã dẫn xuất phải biến mất khỏi RAM khi khoá kho lại, chứ không nằm chờ bị đọc.
+zeroize = "1.9"
 # Kho bí mật của HĐH (Windows Credential Manager / Keychain / Secret Service).
 # Tắt default-features rồi bật đúng backend theo từng nền tảng bên dưới, tránh kéo
 # zbus + secret-service vào bản build Windows.

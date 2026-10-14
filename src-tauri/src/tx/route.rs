@@ -33,6 +33,11 @@ pub fn should_route(conn: &DbConnection, sql: &str) -> bool {
     let Some(id) = conn_scope_id(conn) else {
         return false;
     };
+    // DuckDB has no manual-transaction mode here: nothing pins it, and a typed BEGIN simply runs on
+    // its one shared handle, as it would in the DuckDB CLI.
+    if matches!(conn.kind, DbKind::DuckDb(_)) {
+        return false;
+    }
     // `get_session`, not `session_for`: this runs on EVERY statement, including each of the 50k in a
     // restore, and the check path must not write to the map. No session yet == auto-commit, which is
     // the right answer for a connection never switched to manual mode.
@@ -73,6 +78,7 @@ pub(super) async fn lock_pinned(
                 Pinned::Postgres(pool.acquire().await.map_err(|e| e.to_string())?)
             }
             DbKind::Mysql(pool) => Pinned::Mysql(pool.acquire().await.map_err(|e| e.to_string())?),
+            DbKind::DuckDb(_) => return Err(database::DUCK_UNSUPPORTED.to_string()),
         });
     }
     Ok(guard)
@@ -176,6 +182,58 @@ pub(crate) async fn run_bound(
         Pinned::Mysql(c) => database::mysql_bound(c, &sql, params).await,
     };
     drop(guard);
+
+    match &out {
+        Ok(_) => apply_effect(id, &effect, is_write, &sql, None),
+        Err(e) => apply_effect(id, &effect, is_write, &sql, Some(e)),
+    }
+    release_if_closed(id).await;
+    out
+}
+
+/// `run_bound` with `setup` statements (`SET LOCAL …`) scoped to this one query. Postgres only.
+///
+/// Runs inside a savepoint that is always rolled back: `ROLLBACK TO` undoes a `SET LOCAL` as well,
+/// so the user's transaction keeps its own settings, and a failing query cannot leave it aborted
+/// (25P02) either. The query itself is counted like any other read — it opens the transaction if
+/// manual mode has not yet, exactly as a SELECT from the editor would.
+pub(crate) async fn run_bound_scoped(
+    conn: &DbConnection,
+    setup: &[String],
+    sql: String,
+    params: &[Value],
+) -> Result<Vec<Value>, String> {
+    let stripped = database::strip_leading_comments(&sql);
+    let effect = tx_effect(dialect_of(conn), stripped);
+    let is_write = is_write_stmt(stripped);
+    let id = conn_scope_id(conn).ok_or("internal: ad-hoc connection has no transaction session")?;
+    check_not_aborted(id, &effect)?;
+
+    let mut guard = lock_pinned(conn).await?;
+    let pinned = guard.as_mut().ok_or("Phiên transaction không sẵn sàng")?;
+    ensure_begin(pinned, conn, &effect).await?;
+    let Pinned::Postgres(c) = pinned else {
+        return Err("Tìm kiếm vector chỉ hỗ trợ PostgreSQL".to_string());
+    };
+
+    const SP: &str = "tablegrid_vector_search";
+    database::pg_raw(c, &format!("SAVEPOINT {SP}")).await?;
+    let mut out = Ok(Vec::new());
+    for stmt in setup {
+        if let Err(e) = database::pg_raw(c, stmt).await {
+            out = Err(e);
+            break;
+        }
+    }
+    if out.is_ok() {
+        out = database::pg_bound(c, &sql, params).await;
+    }
+    // Both always run. If the rollback itself fails the savepoint is still there; say so rather
+    // than report a result from a transaction whose state is now unknown.
+    let undo = database::pg_raw(c, &format!("ROLLBACK TO SAVEPOINT {SP}")).await;
+    let release = database::pg_raw(c, &format!("RELEASE SAVEPOINT {SP}")).await;
+    drop(guard);
+    undo.and(release)?;
 
     match &out {
         Ok(_) => apply_effect(id, &effect, is_write, &sql, None),

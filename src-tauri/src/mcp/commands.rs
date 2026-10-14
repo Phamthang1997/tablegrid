@@ -24,7 +24,13 @@ pub async fn mcp_status() -> Result<McpStatus, String> {
 pub async fn mcp_start(port: Option<u16>) -> Result<McpStatus, String> {
     Box::pin(async move {
         let state = crate::state::require_state()?;
-        state.mcp.start(port.unwrap_or(DEFAULT_PORT)).await
+        let port = port.unwrap_or(DEFAULT_PORT);
+        // Port 0 would bind a random port while `Running` records 0, so the Host check (which wants
+        // the bound port) would refuse every request - a server that looks up and answers nothing.
+        if port == 0 {
+            return Err("Cổng MCP phải nằm trong khoảng 1–65535".to_string());
+        }
+        state.mcp.start(port).await
     })
     .await
 }

@@ -85,6 +85,8 @@ pub async fn get_full_catalog(conn_id: String) -> Result<Value, String> {
                 arr.push(json!({ "column": cell(&row, "c"), "refTable": cell(&row, "rt"), "refColumn": cell(&row, "rc") }));
             }
         }
+    } else if let DbKind::DuckDb(arc) = &conn_type.kind {
+        (columns_map, fk_map) = crate::database::duck_blocking(arc, crate::database::duck_catalog_on).await?;
     } else if db_type == "sqlite" {
         // SQLite has no information_schema, but it does have the pragmas as TABLE-VALUED
         // functions (3.16+, and the bundled amalgamation is far newer), so joining
@@ -198,7 +200,8 @@ pub(super) async fn estimate_row_count(
              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}' AND TABLE_TYPE = 'BASE TABLE'",
             sql_str(table)
         ),
-        DbKind::Sqlite(_) => return None,
+        // COUNT(*) over a Parquet view is answered from the file's footer, so exact costs nothing.
+        DbKind::Sqlite(_) | DbKind::DuckDb(_) => return None,
     };
     let n = first_i64(execute_raw_sql_generic(conn, sql).await.ok()?)?;
     (n >= APPROX_COUNT_MIN).then_some(n)

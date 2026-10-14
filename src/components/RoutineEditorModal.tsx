@@ -162,11 +162,11 @@ export const RoutineEditorModal: React.FC<RoutineEditorModalProps> = ({
       <div className="rt-test-panel">
         <div className="rt-test-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <Play size={14} color="var(--win-accent)" />
+            <Play size={14} style={{ color: 'var(--win-accent)' }} />
             <span>Chạy thử nghiệm (Execute Test)</span>
           </div>
           {parsedParams.length > 0 && (
-            <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 500 }}>
+            <span style={{ fontSize: '11px', color: 'var(--st-ok)', fontWeight: 500 }}>
               ✓ Đã tự động nhận diện {parsedParams.length} tham số ({parsedParams.filter(p => p.mode === 'OUT').length} OUT)
             </span>
           )}
@@ -284,7 +284,7 @@ export const RoutineEditorModal: React.FC<RoutineEditorModalProps> = ({
           disabled={testing}
           style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
         >
-          <Play size={13} color="var(--win-accent)" />
+          <Play size={13} style={{ color: 'var(--win-accent)' }} />
           <span>{testing ? 'Đang thực thi...' : 'Chạy thử nghiệm'}</span>
         </button>
         {!embedded && onClose && <button className="btn btn-secondary" onClick={onClose}>Hủy</button>}

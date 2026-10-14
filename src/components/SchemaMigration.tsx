@@ -37,6 +37,8 @@ export const SchemaMigration: React.FC<SchemaMigrationProps> = ({ dbType, databa
 
   const refresh = () => setSnapshots(listSnapshots());
 
+  // Read at CAPTURE time, never during render: a placeholder computed in render showed one minute
+  // and saved another. The placeholder shows the pattern instead.
   const defaultName = () => {
     const d = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -154,7 +156,7 @@ export const SchemaMigration: React.FC<SchemaMigrationProps> = ({ dbType, databa
             type="text"
             value={snapName}
             onChange={(e) => setSnapName(e.target.value)}
-            placeholder={defaultName()}
+            placeholder={t('migration.snapNamePattern', { prefix: database || dbType })}
             style={{ background: 'var(--win-bg-window)', border: '1px solid var(--win-border)', color: 'var(--win-text-primary)', borderRadius: '4px', padding: '6px 8px', fontSize: '12px', outline: 'none' }}
           />
           <div style={{ display: 'flex', gap: '6px' }}>

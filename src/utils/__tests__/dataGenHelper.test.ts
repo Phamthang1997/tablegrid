@@ -380,3 +380,26 @@ describe('formatting', () => {
     ).toBe(15);
   });
 });
+
+describe('vector generator', () => {
+  const vec = (options: Record<string, unknown>) =>
+    validateSpec(spec({ tables: [{ table: 't', rows: 10, columns: [col({ generator: 'vector', options })] }] }));
+
+  it('is a known, labelled, non-text generator with its option fields', () => {
+    expect(isKnownGenerator('vector')).toBe(true);
+    expect(resolve(generatorLabelKey('vector'))).toBeTypeOf('string');
+    expect(isTextGenerator('vector')).toBe(false);
+    expect(optionFields('vector').map((f) => f.key)).toEqual(['dimensions', 'normalize', 'sparse', 'nonZero']);
+    for (const f of optionFields('vector')) expect(resolve(f.labelKey)).toBeTypeOf('string');
+  });
+
+  it('accepts sane dimensions and refuses the ones Rust would silently clamp', () => {
+    expect(vec({ dimensions: 1536 })).toEqual([]);
+    expect(vec({ dimensions: 30, sparse: true, nonZero: 10 })).toEqual([]);
+    for (const bad of [{ dimensions: 0 }, { dimensions: 1.5 }, { dimensions: 20000 }, { dimensions: 5, sparse: true, nonZero: 6 }]) {
+      expect(vec(bad).map((i) => i.key)).toEqual(['dataGen.errVectorDims']);
+    }
+    // nonZero only matters for a sparse vector.
+    expect(vec({ dimensions: 5, nonZero: 99 })).toEqual([]);
+  });
+});

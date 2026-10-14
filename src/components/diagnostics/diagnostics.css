@@ -1,0 +1,399 @@
+/* Lock tree (LockTreeView) and index health (IndexHealthPanel). Theme tokens only. */
+
+.diag-spin {
+  animation: diag-spin 0.9s linear infinite;
+}
+
+@keyframes diag-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.lt-root,
+.ih-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.lt-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--win-bg-subtle);
+  color: var(--win-text-secondary);
+}
+
+.lt-banner svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.lt-banner.warn {
+  background: color-mix(in srgb, var(--st-warn) 14%, transparent);
+  color: var(--st-warn);
+}
+
+.lt-banner.error {
+  background: color-mix(in srgb, var(--st-danger) 12%, transparent);
+  color: var(--st-danger);
+}
+
+.lt-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 16px;
+  font-size: 13px;
+  color: var(--win-text-secondary);
+}
+
+.lt-empty.ok {
+  color: var(--st-ok);
+}
+
+.lt-summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+
+.lt-tree {
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.lt-node + .lt-node {
+  border-top: 1px solid var(--win-border);
+}
+
+.lt-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 10px 2px;
+  font-size: 12px;
+}
+
+.lt-row.root {
+  background: color-mix(in srgb, var(--st-danger) 7%, transparent);
+}
+
+.lt-row.cycle {
+  box-shadow: inset 3px 0 0 var(--st-danger);
+}
+
+.lt-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  background: transparent;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+}
+
+.lt-toggle:disabled {
+  cursor: default;
+}
+
+.lt-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--win-text-disabled);
+}
+
+.lt-id {
+  font-family: var(--win-font-mono);
+  font-weight: 700;
+  color: var(--win-text-primary);
+}
+
+.lt-who {
+  font-family: var(--win-font-mono);
+  color: var(--win-text-secondary);
+}
+
+.lt-badge {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--st-danger);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.lt-state,
+.lt-meta {
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+
+.lt-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--st-warn);
+}
+
+.lt-spacer {
+  flex: 1;
+}
+
+.lt-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  font-size: 11px;
+}
+
+.lt-act.danger {
+  color: var(--st-danger);
+}
+
+.lt-query {
+  padding: 0 10px 6px;
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lt-confirm-query {
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--win-bg-code);
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.lt-deadlock {
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+}
+
+.lt-deadlock-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--win-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lt-deadlock pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-top: 1px solid var(--win-border);
+  background: var(--win-bg-code);
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+/* ── Index health ── */
+
+.ih-root {
+  padding: 4px 2px;
+}
+
+.ih-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.ih-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1;
+}
+
+.ih-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 110px;
+  padding: 8px 12px;
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+}
+
+.ih-card span {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--win-text-secondary);
+}
+
+.ih-card b {
+  font-size: 18px;
+  color: var(--win-text-primary);
+}
+
+.ih-card.warn b {
+  color: var(--st-warn);
+}
+
+.ih-card.accent b {
+  color: var(--win-accent);
+}
+
+.ih-refresh,
+.ih-toolbar .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.ih-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ih-chip {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--win-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--win-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.ih-chip.on {
+  border-color: var(--win-accent);
+  background: var(--win-accent-subtle);
+  color: var(--win-accent);
+}
+
+.ih-table-wrap {
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+  overflow: auto;
+}
+
+.ih-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ih-table th {
+  position: sticky;
+  top: 0;
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+  background: var(--win-bg-tab-bar);
+  border-bottom: 1px solid var(--win-border);
+  white-space: nowrap;
+}
+
+.ih-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--win-border);
+  vertical-align: top;
+  color: var(--win-text-primary);
+}
+
+.ih-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.ih-table .mono {
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+}
+
+.ih-table .dim {
+  color: var(--win-text-secondary);
+}
+
+.ih-table .num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.ih-issue {
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.ih-issue.unused,
+.ih-issue.duplicate,
+.ih-issue.redundant {
+  color: var(--st-warn);
+}
+
+.ih-issue.invalid {
+  color: var(--st-danger);
+}
+
+.ih-issue.fk {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--st-danger);
+}
+
+.ih-drop {
+  height: 24px;
+  font-size: 11px;
+}
+
+/* Inside LiveProcessListPanel: the tree takes the table's place and its scroll. */
+.pm-tree-container {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 2px 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.pm-toggle-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--win-border);
+}

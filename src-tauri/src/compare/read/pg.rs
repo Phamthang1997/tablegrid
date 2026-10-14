@@ -72,7 +72,10 @@ pub(super) async fn read_pg(conn: &DbConnection, schema: &str) -> Result<SchemaM
 
     let sql = format!(
         "SELECT c.relname AS table_name, i.relname AS index_name, ix.indisunique AS is_unique, \
-                ix.indisprimary AS is_primary, pg_get_indexdef(ix.indexrelid) AS index_def \
+                ix.indisprimary AS is_primary, \
+                (SELECT string_agg(pg_get_indexdef(ix.indexrelid, k, true), chr(31) ORDER BY k) \
+                   FROM generate_series(1, ix.indnkeyatts) AS k) AS index_keys, \
+                substring(pg_get_indexdef(ix.indexrelid) from ' USING .*$') AS index_using \
          FROM pg_index ix \
          JOIN pg_class c ON c.oid = ix.indrelid \
          JOIN pg_class i ON i.oid = ix.indexrelid \
@@ -83,7 +86,14 @@ pub(super) async fn read_pg(conn: &DbConnection, schema: &str) -> Result<SchemaM
     for row in query_rows_soft(conn, sql).await {
         let table = f_str(&row, "table_name");
         if let Some(t) = out.get_mut(&table) {
-            let cols = index_def_columns(&f_str(&row, "index_def"));
+            // One key per call rather than the text inside the last parentheses of the whole
+            // definition, which is the `WITH (m=…)` of an HNSW index or a partial index's WHERE.
+            // Joined on U+001F because an expression key (`coalesce(a, b)`) holds commas.
+            let cols: Vec<String> = f_str(&row, "index_keys")
+                .split('\u{1f}')
+                .map(|p| p.trim().trim_matches('"').to_string())
+                .filter(|p| !p.is_empty())
+                .collect();
             if f_bool(&row, "is_primary") {
                 t.pk = cols;
                 continue;
@@ -92,6 +102,7 @@ pub(super) async fn read_pg(conn: &DbConnection, schema: &str) -> Result<SchemaM
                 name: f_str(&row, "index_name"),
                 columns: cols,
                 unique: f_bool(&row, "is_unique"),
+                using: f_opt_str(&row, "index_using"),
             });
         }
     }
@@ -142,20 +153,6 @@ pub(super) async fn read_pg(conn: &DbConnection, schema: &str) -> Result<SchemaM
     }
 
     Ok(out)
-}
-
-/// Takes the column list out of `pg_get_indexdef` — what sits inside the LAST pair of parentheses.
-/// `CREATE UNIQUE INDEX x ON t USING btree (a, lower(b))` -> ["a", "lower(b)"].
-pub(super) fn index_def_columns(def: &str) -> Vec<String> {
-    let open = match def.rfind('(') {
-        Some(i) => i,
-        None => return Vec::new(),
-    };
-    let close = match def.rfind(')') {
-        Some(i) if i > open => i,
-        _ => return Vec::new(),
-    };
-    split_csv(&def[open + 1..close])
 }
 
 pub(super) fn split_csv(s: &str) -> Vec<String> {

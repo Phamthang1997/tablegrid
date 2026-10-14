@@ -18,6 +18,10 @@ interface ConfirmDialogProps {
   tone?: 'danger' | 'success' | 'info';
   /** When present: the user has to type this string exactly before the confirm button works. */
   requireText?: string;
+  /** Blocks confirming while the caller's own input in `message` is not usable yet — the master
+   *  password dialog puts a password field there, and an empty one must not confirm. It gates the
+   *  Enter shortcut too, not only the button, or Enter would walk straight past it. */
+  confirmDisabled?: boolean;
   /** Override the stacking order. The default sits above the 9999/10000 dialogs, but a
    *  caller opened from a modal that raised itself higher (Sidebar, SequenceManagerModal
    *  use 999999) must pass a bigger value or the confirmation renders behind it. */
@@ -40,6 +44,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   danger = false,
   tone,
   requireText,
+  confirmDisabled = false,
   zIndex = 10001,
   onConfirm,
   onCancel,
@@ -53,18 +58,18 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
     });
   }, [open]);
 
-  const ready = !requireText || typed.trim() === requireText;
+  const ready = (!requireText || typed.trim() === requireText) && !confirmDisabled;
 
   // Escape is already handled by Modal; all that is needed here is Enter for a quick confirm, and only
   // when no typed confirmation is required.
   useEffect(() => {
-    if (!open || requireText) return;
+    if (!open || requireText || confirmDisabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Enter') onConfirm();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onConfirm, requireText]);
+  }, [open, onConfirm, requireText, confirmDisabled]);
 
   if (!open) return null;
 

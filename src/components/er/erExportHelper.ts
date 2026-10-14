@@ -16,32 +16,123 @@ import {
 } from './erLayoutEngine';
 
 /**
- * Generates Mermaid ER Diagram markdown string.
+ * Mermaid's default render limits (`maxTextSize`, `maxEdges`). A diagram over either is refused
+ * with "Maximum text size in diagram exceeded" — by GitHub, Notion and anything else embedding
+ * Mermaid with its defaults — so a whole-database export past them copies fine and renders nowhere.
+ */
+export const MERMAID_MAX_TEXT = 50_000;
+export const MERMAID_MAX_EDGES = 500;
+
+/** An identifier Mermaid takes bare: entity and attribute names outside it need care. */
+const MERMAID_WORD = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * An attribute TYPE as Mermaid accepts it: it must start with a letter and may hold letters,
+ * digits, `_`, `-`, parentheses and square brackets. `varchar(255)` survives as is (the old export
+ * wrote `varchar_255_`); a space, a comma or a quote becomes `_`, and an `enum('a','b')` list,
+ * which cannot be spelt at all, becomes plain `enum`.
+ */
+export function mermaidType(type: string): string {
+  let t = type.trim();
+  if (/^(enum|set)\s*\(/i.test(t)) t = t.slice(0, t.indexOf('(')).trim();
+  t = t.replace(/[^A-Za-z0-9_\-()[\]]+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  if (!t) return 'text';
+  return /^[A-Za-z]/.test(t) ? t : `t_${t}`;
+}
+
+/** Text inside a Mermaid double-quoted string: it has no escape for `"`, and a newline ends it. */
+function mermaidString(text: string, max = 120): string {
+  const s = text.replace(/\s+/g, ' ').replace(/"/g, "'").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * Generates a Mermaid `erDiagram` for `tables` and the relationships between them.
+ *
+ * What the old version got wrong, each of which made Mermaid reject the whole diagram or say
+ * something the schema does not:
+ *  - names were written raw, so `bookings.flights`, a space, a hyphen or a Vietnamese name was a
+ *    syntax error. A name that is not a plain word now gets a safe id plus an alias,
+ *    `t1["Khách hàng"]`, and an attribute name that is not one is sanitised with the original kept
+ *    in its comment;
+ *  - every relationship was `||--o{`. The parent side is now `|o` when the FK column allows
+ *    NULL, the child side `o|` when that column is the child's whole primary key (one-to-one),
+ *    and the line is solid (identifying) only when the FK is part of the child's key;
+ *  - relationships to tables not in the export were written anyway, so exporting a filtered or
+ *    selected view drew empty stub entities; a composite FK drew one line per column;
+ *  - column comments were dropped (Mermaid shows them after the key markers).
  */
 export function exportToMermaid(tables: ERTable[], relationships: ERRelationship[]): string {
-  const lines: string[] = [];
-  lines.push('erDiagram');
+  // Stable, unique ids: the real name when Mermaid takes it bare, otherwise a sanitised form.
+  const ids = new Map<string, string>();
+  const taken = new Set<string>();
+  for (const table of tables) {
+    let id = MERMAID_WORD.test(table.name)
+      ? table.name
+      : table.name.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^([^A-Za-z_])/, 't_$1') || 't';
+    if (taken.has(id)) {
+      let n = 2;
+      while (taken.has(`${id}_${n}`)) n++;
+      id = `${id}_${n}`;
+    }
+    taken.add(id);
+    ids.set(table.name, id);
+  }
+  const byName = new Map(tables.map((tb) => [tb.name, tb]));
 
-  relationships.forEach((rel) => {
-    const relName = rel.name ? `"${rel.name}"` : `"${rel.sourceColumn} -> ${rel.targetColumn}"`;
-    lines.push(`    ${rel.targetTable} ||--o{ ${rel.sourceTable} : ${relName}`);
-  });
+  const lines: string[] = ['erDiagram'];
 
-  tables.forEach((table) => {
-    lines.push(`    ${table.name} {`);
-    table.columns.forEach((col) => {
-      const cleanType = col.type.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase() || 'text';
-      let keyBadge = '';
-      if (col.isPrimaryKey && col.isForeignKey) keyBadge = 'PK,FK';
-      else if (col.isPrimaryKey) keyBadge = 'PK';
-      else if (col.isForeignKey) keyBadge = 'FK';
-
-      lines.push(`        ${cleanType} ${col.name} ${keyBadge}`.trimEnd());
-    });
+  for (const table of tables) {
+    const id = ids.get(table.name)!;
+    const head = id === table.name ? id : `${id}["${mermaidString(table.name, 200)}"]`;
+    lines.push(`    ${head} {`);
+    for (const col of table.columns) {
+      const keys = [col.isPrimaryKey && 'PK', col.isForeignKey && 'FK'].filter(Boolean).join(', ');
+      const name = MERMAID_WORD.test(col.name)
+        ? col.name
+        : col.name.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^([^A-Za-z_])/, 'c_$1') || 'column';
+      const notes = [name !== col.name ? col.name : '', col.comment ?? ''].filter(Boolean).join(' — ');
+      let line = `        ${mermaidType(col.type)} ${name}`;
+      if (keys) line += ` ${keys}`;
+      if (notes) line += ` "${mermaidString(notes)}"`;
+      lines.push(line);
+    }
     lines.push('    }');
-  });
+  }
+
+  // One line per constraint between two exported tables: a composite FK arrives as one
+  // relationship per column.
+  const seen = new Set<string>();
+  for (const rel of relationships) {
+    const child = byName.get(rel.sourceTable);
+    const parent = byName.get(rel.targetTable);
+    if (!child || !parent) continue;
+    const key = `${rel.sourceTable}\u0000${rel.targetTable}\u0000${rel.name ?? rel.sourceColumn}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const fkCol = child.columns.find((c) => c.name === rel.sourceColumn);
+    const childPk = child.columns.filter((c) => c.isPrimaryKey);
+    const optional = fkCol?.nullable === true;
+    const oneToOne = childPk.length === 1 && childPk[0].name === rel.sourceColumn;
+    const identifying = fkCol?.isPrimaryKey === true;
+    const parentEnd = optional ? '|o' : '||';
+    const childEnd = oneToOne ? 'o|' : 'o{';
+    const label = mermaidString(rel.name || `${rel.sourceColumn} → ${rel.targetColumn}`);
+    lines.push(
+      `    ${ids.get(parent.name)} ${parentEnd}${identifying ? '--' : '..'}${childEnd} ${ids.get(child.name)} : "${label}"`
+    );
+  }
 
   return lines.join('\n');
+}
+
+/** Whether Mermaid, with its default limits, would refuse to render this diagram. */
+export function mermaidTooLarge(text: string): boolean {
+  if (text.length > MERMAID_MAX_TEXT) return true;
+  let edges = 0;
+  for (const line of text.split('\n')) if (/\s(?:\|\||\|o|\}o|\}\|)(?:--|\.\.)/.test(line)) edges++;
+  return edges > MERMAID_MAX_EDGES;
 }
 
 function escapeSingleQuote(str: string): string {

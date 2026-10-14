@@ -21,6 +21,8 @@ import i18n from '../i18n';
 
 /** Backend messages with no interpolation — matched whole, after trimming. */
 export const EXACT: Record<string, string> = {
+  // datagen/mask.rs
+  'Thiếu khoá che dữ liệu': 'backend.maskKeyEmpty',
   'Chưa kết nối CSDL': 'backend.notConnected',
   // terminal/docker.rs — neither CLI is installed, so container discovery has nothing to ask.
   'Không tìm thấy lệnh docker hoặc nerdctl trên máy': 'backend.dockerCliMissing',
@@ -32,9 +34,17 @@ export const EXACT: Record<string, string> = {
   'Yêu cầu này không còn chờ trả lời (đã hết hạn hoặc đã được trả lời).': 'backend.mcpApprovalGone',
   // state/registry.rs — the write tick refuses on a connection that is not shared.
   'Kết nối này chưa được chia sẻ với MCP nên không thể bật quyền ghi': 'backend.mcpWriteNeedsShare',
+  // mcp/server.rs — mcp_start / mcp_regenerate_token, shown by the MCP settings screen.
+  'MCP Server đang chạy rồi': 'backend.mcpAlreadyRunning',
+  'Cổng MCP phải nằm trong khoảng 1–65535': 'backend.mcpBadPort',
   // tx_session.rs — transaction manual
   'Không có transaction nào đang mở': 'backend.txNotOpen',
   'Transaction đã bị huỷ do lỗi trước đó, chỉ có thể rollback': 'backend.txAborted',
+  'DuckDB chưa hỗ trợ thao tác này': 'backend.duckUnsupported',
+  'hnsw.ef_search phải là số nguyên từ 1 đến 1000': 'backend.vectorEfSearch',
+  'ivfflat.probes phải là số nguyên từ 1 đến 32768': 'backend.vectorProbes',
+  'Tìm kiếm vector chỉ hỗ trợ PostgreSQL': 'backend.vectorPgOnly',
+  'Tìm kiếm vector chỉ chạy câu SELECT hoặc EXPLAIN': 'backend.vectorReadOnly',
   'Transaction đang mở — hãy commit hoặc rollback trước khi bật lại auto-commit': 'backend.txPendingAutocommit',
   'Mức cô lập không hợp lệ cho hệ quản trị này': 'backend.txBadIsolation',
   'Phiên transaction không sẵn sàng': 'backend.txSessionNotReady',
@@ -45,7 +55,15 @@ export const EXACT: Record<string, string> = {
     'backend.txOpenRestore',
   'Đang bật commit thủ công — hãy kết thúc transaction và chuyển về tự động trước khi sinh dữ liệu':
     'backend.txOpenGenerate',
+  'Đang bật commit thủ công — hãy kết thúc transaction và chuyển về tự động trước khi nhập dữ liệu':
+    'backend.txOpenImport',
   'Kết nối không khớp với phiên transaction': 'backend.txConnMismatch',
+  // database/commands/restore.rs — a programming error rather than a user one, but still text.
+  'Cần đúng một nguồn dump: nội dung SQL hoặc đường dẫn tệp.': 'backend.restoreNeedsOneSource',
+  'Tệp dump dùng COPY … FROM stdin (định dạng của pg_dump), chỉ phục hồi được vào PostgreSQL':
+    'backend.copyNeedsPg',
+  'Tệp là bản dump định dạng custom/tar của pg_dump, cần pg_restore để đọc nhưng không tìm thấy pg_restore trên máy — cài PostgreSQL client tools hoặc thêm thư mục bin của nó vào PATH':
+    'backend.pgRestoreMissing',
   'Tên savepoint chỉ gồm chữ, số và dấu gạch dưới, bắt đầu bằng chữ': 'backend.txBadSavepointName',
   'Chưa kết nối database': 'backend.notConnected',
   'Chưa kết nối Redis': 'backend.notConnectedRedis',
@@ -53,7 +71,11 @@ export const EXACT: Record<string, string> = {
   'Chưa có cấu hình kết nối để quét sâu': 'backend.noConnConfigDeepScan',
   'Hệ quản trị CSDL không được hỗ trợ': 'backend.unsupportedDbms',
   'Dữ liệu import không có cột nào': 'backend.importNoColumns',
-  'Không có dữ liệu để tạo bảng': 'backend.noDataForTable',
+  // import_file/source.rs + xlsx.rs — what a file to import is, before any row is read.
+  'Tệp .xls (Excel 97-2003) không được hỗ trợ — hãy lưu lại thành .xlsx hoặc CSV': 'backend.importXlsUnsupported',
+  'Tệp nén .zip không chứa tệp CSV/JSON nào': 'backend.importZipEmpty',
+  'Định dạng tệp không được hỗ trợ': 'backend.importUnsupported',
+  'Tệp Excel không có trang tính nào': 'backend.xlsxNoSheet',
   'Không lấy được định nghĩa đối tượng': 'backend.noObjectDefinition',
   'Không tìm thấy định nghĩa': 'backend.definitionNotFound',
   'Không tìm thấy định nghĩa bảng': 'backend.tableDefinitionNotFound',
@@ -91,6 +113,11 @@ export const EXACT: Record<string, string> = {
   'Thiếu danh sách thay đổi': 'backend.missingChangeList',
   'Thiếu đường dẫn tệp SQLite': 'backend.missingSqlitePath',
   'Thiếu địa chỉ máy chủ SSH': 'backend.missingSshHost',
+  // ssh/known_hosts.rs — trusting a refused host key.
+  'Không có khoá máy chủ SSH nào đang chờ xác nhận': 'backend.sshHostKeyNoPending',
+  'Khoá máy chủ SSH đã đổi trong lúc chờ xác nhận, hãy kết nối lại': 'backend.sshHostKeyMoved',
+  // backup_prune.rs — a scheduled backup's retention.
+  'Phải giữ lại ít nhất một bản sao lưu': 'backend.backupKeepAtLeastOne',
   'Thiếu private key cho xác thực SSH bằng khóa': 'backend.missingSshKey',
   'Thiếu key': 'backend.missingKey',
   'Thiếu host RDS': 'backend.missingRdsHost',
@@ -110,6 +137,18 @@ export const EXACT: Record<string, string> = {
   "Regex không hỗ trợ neo '^' và '$'": 'backend.rxNoAnchors',
   'Lớp ký tự [...] rỗng': 'backend.rxEmptyClass',
   'Regex không hỗ trợ ký tự này trong [...]': 'backend.rxUnsupportedInClass',
+  // credentials/vault.rs — the master password. `vaultLocked` is the one the UI branches on
+  // (it is what puts the lock screen back up), so it must keep matching exactly.
+  'Kho bí mật đang khoá. Hãy mở khoá bằng mật khẩu chính.': 'backend.vaultLocked',
+  'Mật khẩu chính đã được bật.': 'backend.vaultAlreadyEnabled',
+  'Mật khẩu chính không được để trống.': 'backend.vaultPasswordEmpty',
+  'Mật khẩu chính không đúng.': 'backend.vaultWrongPassword',
+  'Tệp kho bí mật đã hỏng.': 'backend.vaultFileCorrupt',
+  'Bản ghi trong kho bí mật quá ngắn.': 'backend.vaultRecordTooShort',
+  'Nonce trong kho bí mật sai độ dài.': 'backend.vaultBadNonce',
+  'Muối trong kho bí mật sai độ dài.': 'backend.vaultBadSalt',
+  'Không giải mã được bí mật trong kho.': 'backend.vaultDecryptFailed',
+  'Chưa xác định được thư mục dữ liệu của ứng dụng.': 'backend.vaultNoDataDir',
 };
 
 /**
@@ -130,6 +169,20 @@ export const NORMALIZED_ALIASES = new Set(['Chưa kết nối database']);
  */
 export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   { re: /^Lỗi khi chạy lệnh SQL: ([\s\S]*?)\. Chi tiết: ([\s\S]*)$/, key: 'backend.sqlFailed' },
+  // database/commands/table_import.rs — a mapped column the table does not have.
+  { re: /^Bảng không có cột '([^']*)'$/, key: 'backend.importNoColumn' },
+  // database/dump_file.rs — the payload is the OS / gzip error, in its own words.
+  { re: /^Không mở được tệp dump: ([\s\S]*)$/, key: 'backend.dumpOpenFailed' },
+  { re: /^Không đọc được tệp dump: ([\s\S]*)$/, key: 'backend.dumpReadFailed' },
+  // database/pg_archive.rs — the payload is pg_restore's own stderr, in its own words.
+  { re: /^pg_restore báo lỗi: ([\s\S]*)$/, key: 'backend.pgRestoreFailed' },
+  // import_file/ — reading a CSV / JSON / Excel file to import. The payload is the OS, zip or XML
+  // parser's error in its own words; a JSON one names the element's position first.
+  { re: /^Không mở được tệp: ([\s\S]*)$/, key: 'backend.importOpenFailed' },
+  { re: /^Không đọc được tệp: ([\s\S]*)$/, key: 'backend.importReadFailed' },
+  { re: /^Tệp Excel không hợp lệ: ([\s\S]*)$/, key: 'backend.xlsxInvalid' },
+  { re: /^JSON không hợp lệ ở phần tử thứ (\d+): ([\s\S]*)$/, key: 'backend.jsonInvalidElement' },
+  { re: /^Bảng mã không được hỗ trợ: ([\s\S]*)$/, key: 'backend.encodingUnsupported' },
   // terminal/docker.rs — the payload is the OS spawn error or docker's own stderr, which stays
   // in its own words the way `failed[].error` does for a Redis RESTORE.
   { re: /^Không chạy được ([^:]+): ([\s\S]*)$/, key: 'backend.dockerRunFailed' },
@@ -137,6 +190,14 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   // database.rs — a statement's time fence (the connection's `statementTimeoutSecs`).
   { re: /^Câu lệnh đã chạy quá ([\d]+) giây và bị dừng$/, key: 'backend.statementTimeout' },
   { re: /^Lỗi tại câu lệnh:\n([\s\S]*)\n\nChi tiết: ([\s\S]*)$/, key: 'backend.sqlStatementFailed' },
+  // ssh/auth.rs + ssh/known_hosts.rs — a host key that is not trusted (yet), and saving one.
+  { re: /^Khoá máy chủ SSH của ([^\s]+) chưa được tin cậy$/, key: 'backend.sshHostKeyUnknown' },
+  { re: /^Khoá máy chủ SSH của ([^\s]+) đã thay đổi — có thể có kẻ đang chặn kết nối$/, key: 'backend.sshHostKeyChanged' },
+  { re: /^Khoá máy chủ SSH đã lưu trong ~\/\.ssh\/known_hosts, hãy chạy: ssh-keygen -R "([^"]*)"$/, key: 'backend.sshHostKeyOpenSsh' },
+  { re: /^Lỗi ghi known_hosts: ([\s\S]*)$/, key: 'backend.knownHostsWriteFailed' },
+  // backup_prune.rs — the payload is the prefix as sent, or the OS error.
+  { re: /^Tiền tố tên bản sao lưu không hợp lệ: ([\s\S]*)$/, key: 'backend.backupPrefixInvalid' },
+  { re: /^Không đọc được thư mục sao lưu: ([\s\S]*)$/, key: 'backend.backupDirReadFailed' },
   { re: /^Lỗi kết nối SSH tới ([^\s]+): ([\s\S]*)$/, key: 'backend.sshConnectFailed' },
   { re: /^Lỗi xác thực SSH bằng mật khẩu: ([\s\S]*)$/, key: 'backend.sshPasswordAuthFailed' },
   { re: /^Lỗi xác thực SSH bằng khóa: ([\s\S]*)$/, key: 'backend.sshKeyAuthFailed' },
@@ -154,6 +215,9 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   { re: /^Khoá mã hoá nhật ký MCP không hợp lệ: ([\s\S]*)$/, key: 'backend.mcpAuditKeyInvalid' },
   { re: /^Không ghi được nhật ký MCP: ([\s\S]*)$/, key: 'backend.mcpAuditWriteFailed' },
   { re: /^Không sinh được khoá mã hoá: ([\s\S]*)$/, key: 'backend.mcpAuditKeyGenFailed' },
+  // mcp/server.rs — binding the listener.
+  { re: /^Cổng (\d+) đang bị tiến trình khác dùng — đổi cổng trong Cài đặt$/, key: 'backend.mcpPortInUse' },
+  { re: /^Không mở được MCP Server: ([\s\S]*)$/, key: 'backend.mcpStartFailed' },
   { re: /^PING lỗi: ([\s\S]*)$/, key: 'backend.pingFailed' },
   { re: /^Không thể kết nối Redis: ([\s\S]*)$/, key: 'backend.redisConnectFailed' },
   // redis_db.rs — refused commands and pagination
@@ -235,6 +299,10 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
     key: 'backend.dataGenFkEstimated',
   },
   { re: /^Bảng '([^']*)' không có cột nào để sinh dữ liệu$/, key: 'backend.dataGenAllSkipped' },
+  // datagen/mask.rs — masking an export. Each one stops the export rather than letting a value through.
+  { re: /^Quy tắc che dữ liệu của cột '([^']*)' không hợp lệ: ([\s\S]*)$/, key: 'backend.maskRuleInvalid' },
+  { re: /^Không che được cột nhị phân '([^']*)'$/, key: 'backend.maskBinary' },
+  { re: /^Cột '([^']*)' không phải ngày tháng \(YYYY-MM-DD…\), không dịch ngày được$/, key: 'backend.maskNotDate' },
   { re: /^Không có cấu hình sinh dữ liệu cho bảng '([^']*)'$/, key: 'backend.dataGenNoSpec' },
   {
     re: /^Các bảng tham chiếu vòng: ([\s\S]*)\. Hãy bật 'Tắt ràng buộc' khi sinh\.$/,
@@ -242,6 +310,25 @@ export const PATTERNS: { re: RegExp; key: string; nested?: boolean }[] = [
   },
   { re: /^Không xoá được dữ liệu cũ của bảng '([^']*)': ([\s\S]*)$/, key: 'backend.dataGenDeleteFailed' },
   { re: /^Lỗi khi chèn dữ liệu vào bảng '([^']*)': ([\s\S]*)$/, key: 'backend.dataGenInsertFailed' },
+  // credentials/vault.rs — the master password's own failures. The payload is a crypto, serde or
+  // filesystem error in its own words, passed through like every other driver text.
+  // `vaultFileCorruptDetail` carries serde's reason and must not be confused with the bare
+  // `Tệp kho bí mật đã hỏng.` in EXACT: that one ends in a full stop, this one in `: <reason>`.
+  { re: /^Bí mật '([^']*)' trong kho không phải văn bản hợp lệ\.$/, key: 'backend.vaultSecretNotText' },
+  { re: /^Tham số Argon2 không hợp lệ: ([\s\S]*)$/, key: 'backend.vaultBadArgonParams' },
+  { re: /^Không dẫn xuất được khoá từ mật khẩu chính: ([\s\S]*)$/, key: 'backend.vaultDeriveFailed' },
+  { re: /^Khoá kho bí mật không hợp lệ: ([\s\S]*)$/, key: 'backend.vaultKeyInvalid' },
+  { re: /^Không sinh được nonce cho kho bí mật: ([\s\S]*)$/, key: 'backend.vaultNonceGenFailed' },
+  { re: /^Không mã hoá được bí mật: ([\s\S]*)$/, key: 'backend.vaultEncryptFailed' },
+  { re: /^Bản ghi trong kho bí mật không đọc được: ([\s\S]*)$/, key: 'backend.vaultRecordUnreadable' },
+  { re: /^Không sinh được muối cho kho bí mật: ([\s\S]*)$/, key: 'backend.vaultSaltGenFailed' },
+  { re: /^Muối trong kho bí mật không đọc được: ([\s\S]*)$/, key: 'backend.vaultSaltUnreadable' },
+  { re: /^Không đọc được tệp kho bí mật: ([\s\S]*)$/, key: 'backend.vaultReadFileFailed' },
+  { re: /^Tệp kho bí mật đã hỏng: ([\s\S]*)$/, key: 'backend.vaultFileCorruptDetail' },
+  { re: /^Không dựng được tệp kho bí mật: ([\s\S]*)$/, key: 'backend.vaultSerializeFailed' },
+  { re: /^Không tạo được thư mục kho bí mật: ([\s\S]*)$/, key: 'backend.vaultMkdirFailed' },
+  { re: /^Không ghi được tệp kho bí mật: ([\s\S]*)$/, key: 'backend.vaultWriteFileFailed' },
+  { re: /^Không xoá được tệp kho bí mật: ([\s\S]*)$/, key: 'backend.vaultDeleteFileFailed' },
 ];
 
 /**

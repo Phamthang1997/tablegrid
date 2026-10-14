@@ -95,6 +95,18 @@
 
   --win-border: rgba(255, 255, 255, 0.12);
   --win-border-strong: rgba(255, 255, 255, 0.22);
+  --win-border-light: rgba(255, 255, 255, 0.08);
+
+  /* Surfaces a component needs and the palette above did not name. Every one of these was
+     already referenced — `var(--win-bg-input)` forty times — while nothing defined it, so a
+     reference without a fallback was an invalid declaration (the inputs had NO background) and
+     one with a fallback was that hardcoded colour in both themes. `themeTokens.test.ts` now
+     fails on a `var()` naming a token no stylesheet defines. */
+  --win-bg-input: rgba(10, 12, 16, 0.55);
+  --win-bg-input-focus: rgba(10, 12, 16, 0.75);
+  --win-bg-subtle: rgba(255, 255, 255, 0.04);
+  --win-bg-code: rgba(0, 0, 0, 0.25);
+  --win-accent-subtle: rgba(96, 165, 250, 0.15);
 
   /* The bundled Inter and JetBrains Mono carry no CJK glyphs, so Japanese text
      falls through to the platform CJK faces listed after them. These are OS
@@ -135,6 +147,13 @@
 
   --win-border: rgba(0, 0, 0, 0.10);
   --win-border-strong: rgba(0, 0, 0, 0.18);
+  --win-border-light: rgba(0, 0, 0, 0.06);
+
+  --win-bg-input: rgba(255, 255, 255, 0.85);
+  --win-bg-input-focus: rgba(255, 255, 255, 0.95);
+  --win-bg-subtle: rgba(0, 0, 0, 0.03);
+  --win-bg-code: rgba(0, 0, 0, 0.04);
+  --win-accent-subtle: rgba(37, 99, 235, 0.10);
 
   --win-bg-btn-secondary: #ffffff;
   --win-border-btn-secondary: transparent;
@@ -215,6 +234,12 @@ body {
 
 [data-theme='light'] ::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.1);
+}
+
+/* The rule above has the same specificity as `:hover` and comes later, so on the light theme the
+   thumb never darkened under the pointer. */
+[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
 }
 
 #root {
@@ -366,7 +391,15 @@ body {
   font-family: var(--win-font-mono);
   font-size: 12.5px;
   color: var(--win-text-primary);
-  flex: 1;
+  /* Sizes to its text, and only shrinks. It used to be `flex: 1`, which made a fixed 700px slab of
+     white with the status line floating in the middle of it — the wider the window, the more empty
+     pill. Centring is the WRAPPER's job (`justify-content: center` on the flex:1 box around it), so
+     the capsule does not need to stretch to stay in the middle.
+     `min-width: 0` is what makes the shrink legal: `white-space: nowrap` puts min-content at the
+     full string, and a flex item's automatic minimum size would otherwise refuse to go below it and
+     push the toolbars aside on a narrow window. */
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 700px;
   margin: 0 10px;
   white-space: nowrap;
@@ -904,7 +937,7 @@ input[type="number"],
 input[type="password"],
 select,
 textarea {
-  background: rgba(10, 12, 16, 0.55);
+  background: var(--win-bg-input);
   border: 1px solid var(--win-border-strong);
   border-radius: 6px;
   padding: 6px 10px;
@@ -928,7 +961,7 @@ select:focus,
 textarea:focus {
   border-color: var(--win-border-strong);
   box-shadow: none;
-  background: rgba(10, 12, 16, 0.75);
+  background: var(--win-bg-input-focus);
   outline: none;
 }
 
@@ -938,7 +971,7 @@ textarea:focus {
 [data-theme='light'] input[type="password"],
 [data-theme='light'] select,
 [data-theme='light'] textarea {
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--win-bg-input);
   border: 0 solid rgba(0, 0, 0, 0.15);
   color: #0f172a;
 }
@@ -1080,8 +1113,8 @@ select.form-input {
   letter-spacing: 0.05em;
 }
 
-.context-menu-heading + .context-menu-heading,
-.context-menu-item + .context-menu-heading {
+.context-menu-heading+.context-menu-heading,
+.context-menu-item+.context-menu-heading {
   margin-top: 4px;
   padding-top: 6px;
   border-top: 1px solid var(--win-border);
@@ -1114,6 +1147,377 @@ select.form-input {
   color: #ffffff !important;
 }
 
+/* GridContextMenu.tsx: a heading after a submenu trigger gets the same rule as after an item. */
+.context-menu-sub+.context-menu-heading {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--win-border);
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--win-border);
+}
+
+.context-menu-item.is-danger {
+  color: var(--st-danger, #ef4444);
+}
+
+/* The trigger of an open flyout stays lit while the pointer is inside the flyout. */
+.context-menu-item.is-open {
+  background: var(--win-bg-hover);
+}
+
+/* The shortcut / chevron at the right end. Beats `.context-menu-item span`'s 16px icon box on
+   specificity, which would otherwise squeeze "Ctrl+C" into one centred column. */
+.context-menu-item .context-menu-hint {
+  width: auto;
+  margin-left: auto;
+  padding-left: 24px;
+  font-family: inherit;
+  font-size: 10.5px;
+  color: var(--win-text-disabled);
+  background: none;
+  border: none;
+}
+
+.context-menu-item .context-menu-chevron {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.context-menu-sub {
+  position: relative;
+}
+
+.grid-context-menu.grid-context-submenu {
+  position: absolute;
+  min-width: 200px;
+}
+
+/* ─── Grid tools: column statistics, transpose, value editor ─── */
+.gt-stats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  font-size: 12px;
+}
+
+.gt-stats dt {
+  color: var(--win-text-secondary);
+}
+
+.gt-stats dd {
+  margin: 0;
+  font-family: var(--win-font-mono);
+  color: var(--win-text-primary);
+  cursor: copy;
+  word-break: break-all;
+}
+
+.gt-stats dd:hover {
+  color: var(--win-accent);
+}
+
+.gt-stats-sep {
+  grid-column: 1 / -1;
+  height: 1px;
+  background: var(--win-border);
+}
+
+.gt-note {
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+
+.gt-transpose {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+}
+
+.gt-transpose table {
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: var(--win-font-mono);
+}
+
+.gt-transpose th,
+.gt-transpose td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--win-border);
+  text-align: left;
+  vertical-align: top;
+  max-width: 360px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.gt-transpose thead th {
+  position: sticky;
+  top: 0;
+  background: var(--win-bg-tab-bar);
+  color: var(--win-text-secondary);
+  font-weight: 600;
+  z-index: 1;
+}
+
+.gt-transpose tbody th {
+  position: sticky;
+  left: 0;
+  background: var(--win-bg-tab-bar);
+  color: var(--win-text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.gt-transpose tr.is-diff td {
+  background: color-mix(in srgb, var(--win-accent) 10%, transparent);
+}
+
+.gt-null {
+  color: var(--win-text-disabled);
+  font-style: italic;
+}
+
+.gt-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+}
+
+.gt-toolbar .gt-spacer {
+  flex: 1;
+}
+
+.gt-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+}
+
+.gt-editor {
+  flex: 1;
+  min-height: 260px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  padding: 10px;
+  font-family: var(--win-font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--win-text-primary);
+  background: var(--win-bg-window);
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  outline: none;
+  tab-size: 2;
+}
+
+.gt-editor:focus {
+  border-color: var(--win-accent);
+}
+
+.gt-editor.no-wrap {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.gt-editor-msg {
+  font-size: 11px;
+  color: var(--st-danger, #ef4444);
+}
+
+/* ─── pgvector: inspector + k-NN playground (VectorDialogs.tsx) ─── */
+.vec-title-col {
+  color: var(--win-accent);
+  font-family: var(--win-font-mono);
+}
+
+.vec-section {
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+.vec-components {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 280px;
+  overflow: auto;
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+}
+
+.vec-comp {
+  display: grid;
+  grid-template-columns: 48px 1fr 110px;
+  align-items: center;
+  gap: 8px;
+}
+
+.vec-comp-idx {
+  color: var(--win-text-disabled);
+  text-align: right;
+}
+
+.vec-comp-val {
+  color: var(--win-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A centre line with positive values growing right of it and negative ones left. */
+.vec-comp-bar {
+  position: relative;
+  height: 8px;
+  background: var(--win-bg-subtle);
+  border-radius: 2px;
+}
+
+.vec-comp-bar::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--win-border);
+}
+
+.vec-comp-bar > span {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 2px;
+}
+
+.vec-comp-bar > .pos {
+  left: 50%;
+  background: var(--win-accent);
+}
+
+.vec-comp-bar > .neg {
+  right: 50%;
+  background: var(--st-warn);
+}
+
+/* The operators are the content here: Inter and JetBrains Mono both ligate `<=>` into ⇔ and `->`
+   into →, which reads as a different operator (and `<->` is L2, not an arrow). */
+.vec-form,
+.vec-form select,
+.vec-form option,
+.vec-query,
+.vec-sql,
+.vec-plan,
+.vec-index {
+  font-variant-ligatures: none;
+  font-feature-settings: 'calt' 0, 'liga' 0;
+}
+
+.vec-form {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.vec-form label,
+.vec-query {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--win-text-secondary);
+  flex: 1;
+  min-width: 180px;
+}
+
+.vec-form .vec-form-k {
+  flex: 0 0 110px;
+  min-width: 0;
+}
+
+.vec-query-input.gt-editor {
+  min-height: 72px;
+  flex: none;
+  height: 72px;
+  resize: vertical;
+}
+
+.vec-index,
+.vec-warn {
+  font-size: 11.5px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--win-border);
+  color: var(--win-text-primary);
+}
+
+.vec-index.ok {
+  border-color: color-mix(in srgb, var(--st-ok) 45%, transparent);
+  background: color-mix(in srgb, var(--st-ok) 10%, transparent);
+}
+
+.vec-index.warn,
+.vec-warn {
+  border-color: color-mix(in srgb, var(--st-warn) 45%, transparent);
+  background: color-mix(in srgb, var(--st-warn) 10%, transparent);
+}
+
+.vec-sql summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--win-text-secondary);
+}
+
+.vec-sql pre,
+.vec-plan pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+  background: var(--win-bg-code);
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  color: var(--win-text-primary);
+}
+
+.vec-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vec-results {
+  flex: 1;
+  min-height: 160px;
+}
+
+.vec-results td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vec-tuning {
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-text-primary);
+}
+
+.vec-results .vec-score {
+  color: var(--win-accent);
+  font-weight: 600;
+}
+
 /* TablePlus Premium Disabled Button Styling */
 .btn:disabled,
 .btn-primary:disabled,
@@ -1136,17 +1540,23 @@ select.form-input {
   opacity: 1 !important;
 }
 
-/* Workspace Layout */
+/* Workspace Layout.
+
+   No `height` here. It used to say `calc(100vh - 34px)` while `.title-bar` is 40px — a number that
+   never applied (`flex: 1` means `flex-basis: 0%`, and a flex item's basis beats its height on the
+   main axis) but that read as a real constraint and would have been six pixels wrong the moment
+   anyone changed `flex`. `#root` is a 100vh flex column and the title bar is `flex-shrink: 0`, so
+   "everything the title bar left over" is exactly what `flex: 1` already means. */
 .workspace-container {
   display: flex;
   flex: 1;
   overflow: hidden;
-  height: calc(100vh - 34px);
+  min-height: 0;
 }
 
 /* Database rail: the narrow column of databases sitting left of the sidebar.
    Fixed width — it is NOT resizable like the sidebar, so a name longer than the
-   cell is clipped by .db-rail-name and the full name stays in the tooltip. */
+   cell wraps to two lines in .db-rail-name and the full name stays in the tooltip. */
 .db-rail {
   flex: 0 0 auto;
   width: 64px;
@@ -1400,36 +1810,48 @@ select.form-input {
   outline-offset: -2px;
 }
 
-/* One line, clipped: two databases whose names differ only at the end are still
-   told apart by the tooltip, and the rail never grows to fit a long name. */
+/* At most two lines. A name that fits is wrapped whole, between words; a longer one is split by
+   railNameParts() in DbRail into its START (first line, cut with an ellipsis) and its END (second
+   line), because the end is where similar names differ — performance_schema / information_schema,
+   sakila_dev / sakila_prod. The old one-line inline-flex centring let a long name overflow BOTH
+   edges, so performance_schema read as "mance_sc" with no sign it was cut. The clamp is only a
+   backstop for a name wider than the character estimate; the full name stays in the tooltip. */
 .db-rail-name {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3.5px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   max-width: 100%;
   padding: 0 2px;
   font-size: 10.5px;
   line-height: 1.2;
+  text-align: center;
   overflow: hidden;
+  overflow-wrap: anywhere;
   letter-spacing: -0.01em;
 }
 
-.db-rail-name-text {
+.db-rail-name.is-split {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.db-rail-name-head,
+.db-rail-name-tail {
+  max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.db-rail-name-lock {
-  flex-shrink: 0;
-  opacity: 0.75;
-  color: var(--win-text-secondary);
+.db-rail-name-head {
+  text-overflow: ellipsis;
 }
 
-.db-rail-item.is-on .db-rail-name-lock {
-  opacity: 1;
-  color: var(--win-text-primary);
+.db-rail-name-tail.is-cut::before {
+  content: '\2026';
 }
 
 .db-rail-status {
@@ -1644,7 +2066,7 @@ select.form-input {
 /* Temporary tables are the session's, not the database's — the amber matches the "TEMP" badge in
    the Properties tab so the two read as one idea. */
 .sidebar-group-icon-temp {
-  color: var(--win-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 /* Icon buttons in a sidebar group heading (create / reload).
@@ -1975,7 +2397,7 @@ select.form-input {
    (`applyRowClasses` in Sidebar.tsx), and an inline style would win over every one of them.
    The numbers are the inline style's, not `.sidebar-item`'s defaults, which they used to
    override — `contain-intrinsic-size` above is measured from THESE. */
-.sidebar-row > .sidebar-item {
+.sidebar-row>.sidebar-item {
   padding: 4px 8px;
   gap: 6px;
 }
@@ -2873,6 +3295,12 @@ select.form-input {
   overflow: auto;
   background: var(--win-bg-window);
   position: relative;
+  /* The gutter is reserved whether or not a scrollbar is showing. `.grid-table` is
+     `min-width: 100%`, so the moment a filter (or a shorter page) leaves too few rows to overflow,
+     the scrollbar disappears, the container gains its ~15px back and every column stretches into
+     it — a small sideways jerk with no cause the user can see. Reserving it costs a strip of
+     background and removes the whole class of shifts. */
+  scrollbar-gutter: stable;
 }
 
 /* The SQL result grid carries tabIndex={-1} so it can own Ctrl+C and Escape for its row
@@ -2972,6 +3400,15 @@ select.form-input {
   cursor: default;
   vertical-align: middle;
   position: relative;
+  /* The one place in this app where text is selectable. `body` sets `user-select: none` for the
+     desktop feel, which is right for chrome and wrong for the DATA: a result the app judges
+     read-only (a join, an aggregate, anything `sql/editableResult.ts` cannot map to one table)
+     has no cell editor to open, and without a selection there was no way to get a value out by
+     hand at all. Both grids' Ctrl+C handlers already yield to a live text selection — that branch
+     was unreachable until this line existed.
+     Headers and the row-number column stay unselectable below, so dragging across rows copies the
+     values and not the row numbers. */
+  user-select: text;
 }
 
 [data-theme='light'] .grid-table td {
@@ -2987,6 +3424,9 @@ select.form-input {
   border-right: 1px solid #333a45 !important;
   border-bottom: none !important;
   font-weight: 400;
+  /* Overrides the `user-select: text` the cell rule above hands every td: a row number is a label
+     the grid drew, not data, and dragging down a column of values must not interleave it. */
+  user-select: none;
 }
 
 [data-theme='light'] .grid-row-index {
@@ -3189,6 +3629,13 @@ select.form-input {
 .tn-connection-pill:hover {
   background: rgba(255, 255, 255, 0.12);
   border-color: rgba(255, 255, 255, 0.16);
+}
+
+/* Same specificity as the light rule above and later in the file, so without this the white
+   wash won in the light theme too and hovering LIGHTENED the pill instead of darkening it. */
+[data-theme='light'] .tn-connection-pill:hover {
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.16);
 }
 
 .tn-connection-pill-speed {
@@ -5271,6 +5718,64 @@ select.form-input {
   gap: 6px;
 }
 
+/* The history drawer's header buttons: Import / Export (Saved tab only) and Close. */
+.sql-history-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Same footprint as the Close button beside them. */
+.sql-history-icon-btn {
+  padding: 2px 6px;
+  height: 20px;
+  min-width: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Snippet panel header: Import / Export / Close, drawn like the panel's existing bare icon buttons. */
+.snippet-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.snippet-header-btn {
+  background: transparent;
+  border: none;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.snippet-header-btn:hover {
+  color: var(--win-text-primary);
+}
+
+/* What an import/export did, under the header for a few seconds. */
+.snippet-transfer-msg {
+  padding: 6px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--win-text-secondary);
+  border-bottom: 1px solid var(--win-border-light, var(--win-border));
+  word-break: break-all;
+}
+
+.snippet-transfer-msg.is-error {
+  color: var(--st-danger, #ef4444);
+}
+
+/* The file pickers behind "Open .sql file…" and the Saved import, opened by .click(). */
+.sql-hidden-file-input {
+  display: none;
+}
+
 .sql-history-search {
   padding: 8px 12px;
   border-bottom: 1px solid var(--win-border);
@@ -5859,7 +6364,8 @@ select.form-input {
 }
 
 .st-fk-chip.empty:hover {
-  background: rgba(255, 255, 255, 0.05);
+  /* A white wash is invisible on the light theme; the hover token darkens there instead. */
+  background: var(--win-bg-hover);
 }
 
 .st-fk-arrow {
@@ -6446,8 +6952,11 @@ select.form-input {
 }
 
 /* The "Run" menu in SqlEditor: the span is a text label, not a 16px icon, so the width:16px
-   constraint is dropped or the label overflows onto the shortcut. */
-.sql-run-menu .context-menu-item span {
+   constraint is dropped or the label overflows onto the shortcut. The More and Format menus are
+   the same shape (a lucide icon, then a text span): squeezed to 16px, the label spilled out of its
+   box, so the menu's max-content width left no room for it and the text ran into the right edge. */
+.sql-run-menu .context-menu-item span,
+.sql-toolbar-menu .context-menu-item span {
   width: auto;
   text-align: left;
   font-size: inherit;
@@ -7436,6 +7945,19 @@ input.rename-input {
   box-shadow: 0 4px 12px -2px rgba(220, 56, 45, 0.45);
 }
 
+/* DuckDB's brand is yellow, so its mark is drawn dark: white on #FFF000 cannot be read. */
+.cm-badge.duckdb,
+.cm-avatar.duckdb {
+  background: linear-gradient(145deg, #fff34d 0%, #d9c400 100%);
+  box-shadow: 0 4px 12px -2px rgba(160, 145, 0, 0.45);
+}
+
+.cm-badge.duckdb svg,
+.cm-avatar.duckdb svg {
+  color: #1b1b1b;
+  filter: none;
+}
+
 .cm-badge.sm {
   width: 22px;
   height: 22px;
@@ -7458,6 +7980,10 @@ input.rename-input {
 
 .cm-badge.sm.redis {
   box-shadow: 0 2px 6px -1px rgba(220, 56, 45, 0.35);
+}
+
+.cm-badge.sm.duckdb {
+  box-shadow: 0 2px 6px -1px rgba(160, 145, 0, 0.35);
 }
 
 .cm-badge.ghost {
@@ -7913,6 +8439,20 @@ input.rename-input {
 
 .cm-combo.two-btn .form-input {
   padding-right: 54px;
+}
+
+/* While the list is open its click-away backdrop (.cm-pop-backdrop, z-index 40) covers the page —
+   the field included. The field opens the list on click, so it is lifted above the backdrop:
+   clicking or typing in it again keeps working instead of closing the list. The popup (41) comes
+   later in the DOM, so it still sits over the field; the icon and buttons go on top of both. */
+.cm-combo.open > .form-input {
+  position: relative;
+  z-index: 41;
+}
+
+.cm-combo.open > .input-icon,
+.cm-combo.open > .cm-combo-btn {
+  z-index: 42;
 }
 
 .cm-combo-btn.second {
@@ -8430,6 +8970,11 @@ input.rename-input {
   color: var(--win-text-secondary);
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;
+  /* It is a <button> now (the native picker returns a path, which a file input cannot), so the
+     button's own font, alignment and width are reset to what the <label> had. */
+  font: inherit;
+  text-align: left;
+  width: 100%;
 }
 
 .cm-dropzone:hover {
@@ -8600,6 +9145,137 @@ input.rename-input {
 .cm-foot {
   padding-left: max(24px, calc((100% - 860px) / 2));
   padding-right: max(24px, calc((100% - 860px) / 2));
+}
+
+/* ————— The "New connection" dialog (ConnectionManager variant="new") ————— */
+/* One compact row in place of .cm-main-head, whose avatar is pulled up by -24px into the title-bar
+   strip the full screen reserves — inside a Modal there is no such strip and the avatar got cut off. */
+.cm-newconn-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px 0;
+  flex-shrink: 0;
+}
+
+.cm-newconn-type {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--win-text-primary);
+}
+
+.cm-type-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 48px 0 24px;
+}
+
+.cm-type-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 120px));
+  gap: 12px;
+}
+
+.cm-type-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-window);
+  color: var(--win-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+
+.cm-type-tile:hover {
+  border-color: var(--win-accent);
+  transform: translateY(-1px);
+}
+
+.cm-type-tile .cm-badge {
+  width: 40px;
+  height: 40px;
+}
+
+/* "— or paste a connection URL —": two hairlines around the label, as wide as the tile grid. */
+.cm-type-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 516px;
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--win-text-secondary);
+}
+
+.cm-type-or::before,
+.cm-type-or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--win-border);
+}
+
+.cm-type-url {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 516px;
+}
+
+.cm-type-url input[type='text'] {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px 0 34px;
+  border-radius: 9px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-window);
+  color: var(--win-text-primary);
+  font-family: var(--win-font-mono);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.cm-type-url input[type='text']:focus {
+  border-color: var(--win-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--win-accent) 18%, transparent);
+}
+
+.cm-type-url-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--win-text-secondary);
+  pointer-events: none;
+}
+
+.cm-type-url .cm-btn {
+  height: 36px;
+  width: 40px;
+  padding: 0;
+  justify-content: center;
+}
+
+@media (max-width: 560px) {
+  .cm-type-grid {
+    grid-template-columns: repeat(2, minmax(0, 120px));
+  }
 }
 
 
@@ -11375,6 +12051,7 @@ input.rename-input {
     transform: translateX(100%);
     opacity: 0;
   }
+
   to {
     transform: translateX(0);
     opacity: 1;
@@ -12322,9 +12999,10 @@ input.rename-input {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  border: 1px solid var(--win-border, #d1d5db);
-  background: #e5e7eb;
-  color: #4b5563;
+  /* Light-grey literals made this a pale disc on the (default) dark theme. */
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-btn-secondary);
+  color: var(--win-text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12341,7 +13019,7 @@ input.rename-input {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: #d1d5db;
+  background: var(--win-border-strong);
   border: none;
   padding: 0;
   cursor: pointer;
@@ -12349,7 +13027,7 @@ input.rename-input {
 }
 
 .whats-new-dot-btn.active {
-  background: #008ae6;
+  background: var(--win-accent);
 }
 
 .whats-new-close-wrapper {
@@ -12370,6 +13048,34 @@ input.rename-input {
 }
 
 /* Mock Window Container & Elements */
+/* ---- What's New previews: small mock screens built from tokens only, so both themes hold. ---- */
+.wn-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; font-size: 11.5px; color: var(--win-text-primary); overflow: hidden; }
+.wn-row { display: flex; align-items: center; gap: 8px; }
+.wn-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wn-muted { color: var(--win-text-secondary); }
+.wn-small { font-size: 10.5px; }
+.wn-mono { font-family: var(--win-font-mono); }
+.wn-accent { color: var(--win-accent); }
+.wn-ok { color: var(--st-ok); }
+.wn-bar { height: 5px; border-radius: 3px; background: var(--win-bg-active); overflow: hidden; }
+.wn-bar > span { display: block; height: 100%; background: var(--win-accent); border-radius: 3px; }
+.wn-note { margin-top: auto; color: var(--win-text-secondary); font-size: 10.5px; }
+.wn-card { border: 1px solid var(--win-border); border-radius: 6px; padding: 8px 10px; background: var(--win-bg-subtle); display: flex; flex-direction: column; gap: 4px; }
+.wn-center { align-items: center; text-align: center; flex: 1; }
+.wn-tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--win-bg-hover); color: var(--win-text-secondary); }
+.wn-checks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.wn-check { display: flex; align-items: center; gap: 4px; }
+.wn-grid { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--win-border); }
+.wn-grid-head { color: var(--win-text-secondary); font-size: 10.5px; font-weight: 600; }
+.wn-mapped { display: flex; align-items: center; gap: 4px; color: var(--win-accent); }
+.wn-warn-row { margin-top: 4px; color: var(--st-warn); }
+.wn-copy { display: flex; align-items: center; gap: 12px; flex: 1; }
+.wn-lock { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+.wn-lock-field { width: 220px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--win-border-strong); background: var(--win-bg-input); letter-spacing: 2px; }
+.wn-lock-btn { width: 220px; text-align: center; padding: 6px 10px; border-radius: 6px; background: var(--win-accent); color: #fff; font-weight: 600; }
+.wn-del { background: var(--win-status-deleted); color: var(--win-text-primary); }
+.wn-add { background: var(--win-status-added); color: var(--win-text-primary); }
+
 .whats-new-window-container {
   background: var(--win-bg-card, #ffffff);
   border-radius: 6px;
@@ -13001,12 +13707,16 @@ input.rename-input {
   color: #ffffff;
 }
 
+/* The quick-search highlight must not change the text's METRICS. `padding: 0 1px` plus
+   `font-weight: 600` made every matched cell wider than the same cell unmatched, so a column could
+   grow past the width frozen when the search opened — the grid still shifted a little, and only
+   while typing something that matched. The background is what marks a hit; the radius costs no
+   width, and the 1px of air comes back as a box-shadow, which does not take part in layout. */
 .grid-search-mark {
   background: rgba(255, 210, 0, 0.4);
   color: inherit;
-  padding: 0 1px;
   border-radius: 2px;
-  font-weight: 600;
+  box-shadow: 0 0 0 1px rgba(255, 210, 0, 0.4);
 }
 
 [data-theme='dark'] .grid-search-mark {
@@ -13338,6 +14048,595 @@ input.rename-input {
 .explain-flow-line-base {
   stroke: var(--win-border-strong, var(--win-border));
   stroke-width: 1.5px;
+  stroke-linecap: round;
+  transition: stroke 0.15s ease;
+}
+/* The edge carrying (close to) the plan's largest row flow: where the data balloons. */
+.explain-flow-line-base.is-heavy {
+  stroke: color-mix(in srgb, var(--st-warn, #f59e0b) 70%, var(--win-border-strong, #999));
+}
+.explain-flow-arrow {
+  fill: var(--win-border-strong, var(--win-border));
+  stroke: var(--win-border-strong, var(--win-border));
+  stroke-width: 1px;
+  stroke-linejoin: round;
+}
+.explain-flow-arrow.is-heavy {
+  fill: color-mix(in srgb, var(--st-warn, #f59e0b) 70%, var(--win-border-strong, #999));
+  stroke: color-mix(in srgb, var(--st-warn, #f59e0b) 70%, var(--win-border-strong, #999));
+}
+.explain-edge-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--win-text-secondary);
+  user-select: none;
+}
+.explain-edge-label.is-heavy {
+  color: var(--st-warn, #f59e0b);
+  font-weight: 700;
+}
+
+/* Canvas: scrolls, and drags to pan. */
+.explain-canvas {
+  flex: 1;
+  overflow: auto;
+  padding: 24px 24px 56px 24px;
+  cursor: grab;
+  outline: none;
+}
+.explain-canvas.is-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+.explain-canvas.is-panning .explain-node {
+  cursor: grabbing;
+}
+
+/* Summary strip: "look here first", one chip per finding. */
+.explain-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--win-border);
+  flex-shrink: 0;
+}
+.explain-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 420px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+.explain-chip:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+.explain-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.explain-chip-count {
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+}
+.explain-chip-hot {
+  color: var(--win-text-primary);
+  background: color-mix(in srgb, var(--st-danger, #ef4444) 10%, transparent);
+  border-color: color-mix(in srgb, var(--st-danger, #ef4444) 25%, transparent);
+}
+.explain-chip-hot > svg,
+.explain-chip-hot > strong {
+  color: var(--st-danger, #ef4444);
+}
+.explain-chip-danger {
+  color: var(--st-danger, #ef4444);
+  background: color-mix(in srgb, var(--st-danger, #ef4444) 14%, transparent);
+  border-color: color-mix(in srgb, var(--st-danger, #ef4444) 40%, transparent);
+}
+.explain-chip-warn {
+  color: var(--st-warn, #f59e0b);
+  background: color-mix(in srgb, var(--st-warn, #f59e0b) 12%, transparent);
+  border-color: color-mix(in srgb, var(--st-warn, #f59e0b) 30%, transparent);
+}
+
+/* Operator node. `--op-color` is set per node from its type. */
+.explain-node {
+  --op-color: var(--win-accent);
+  flex-shrink: 0;
+  cursor: pointer;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 3px;
+  /* The bottom padding is the gap between stacked branches: rows are only as tall as their cells. */
+  padding: 4px 4px 18px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+.explain-node:hover {
+  background: color-mix(in srgb, var(--op-color) 6%, transparent);
+}
+.explain-node.is-selected {
+  background: color-mix(in srgb, var(--win-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--win-accent) 55%, transparent);
+}
+.explain-node-badges {
+  height: 16px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.explain-pct {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  color: var(--win-text-secondary);
+  background: color-mix(in srgb, var(--win-text-secondary) 14%, transparent);
+}
+.explain-pct.is-high {
+  color: var(--st-danger, #ef4444);
+  background: color-mix(in srgb, var(--st-danger, #ef4444) 16%, transparent);
+}
+.explain-pct.is-mid {
+  color: var(--st-warn, #f59e0b);
+  background: color-mix(in srgb, var(--st-warn, #f59e0b) 16%, transparent);
+}
+.explain-pct.is-low {
+  color: var(--st-ok, #16a34a);
+  background: color-mix(in srgb, var(--st-ok, #16a34a) 16%, transparent);
+}
+/* The icon tile: a soft gradient of the operator colour with a hairline ring and a faint glow,
+   instead of a flat tinted square. */
+.explain-node-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  margin: 2px 0 3px;
+  border-radius: 13px;
+  color: var(--op-color);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--op-color) 22%, transparent),
+    color-mix(in srgb, var(--op-color) 8%, transparent)
+  );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--op-color) 26%, transparent),
+    0 2px 6px -2px color-mix(in srgb, var(--op-color) 35%, transparent);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+.explain-node-icon.is-small {
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  border-radius: 9px;
+}
+.explain-node:hover .explain-node-icon {
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--op-color) 40%, transparent),
+    0 5px 12px -4px color-mix(in srgb, var(--op-color) 50%, transparent);
+}
+.explain-node.is-selected .explain-node-icon {
+  color: #ffffff;
+  background: linear-gradient(145deg, var(--win-accent), var(--win-accent-secondary, var(--win-accent)));
+  box-shadow: 0 6px 14px -4px var(--win-accent-glow, transparent);
+}
+/* A cross join: the node's colour is already swapped to the danger red (NodeCell sets
+   `--op-color`), so the tile is red through and through. Only its ring is drawn a little
+   stronger — one ring, never a red one around a blue one. */
+.explain-node.is-danger .explain-node-icon {
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in srgb, var(--op-color) 55%, transparent),
+    0 4px 12px -3px color-mix(in srgb, var(--op-color) 50%, transparent);
+}
+/* Up to three lines, broken where the lines come out even ("Inner hash join / (no condition)"
+   rather than "Inner hash join (no / condition)"). The full text is in the tooltip and the
+   detail panel. */
+.explain-node-title {
+  max-width: 100%;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+  text-align: center;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.explain-node-sub {
+  font-size: 10.5px;
+  color: var(--win-text-secondary);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.explain-node-cost {
+  font-size: 10px;
+  color: var(--win-text-disabled);
+  white-space: nowrap;
+}
+
+/* ---- EXPLAIN views other than the diagram ---------------------------------------------------- */
+
+/* `body` turns selection off for the desktop feel; a plan's text is data (conditions, index
+   names, numbers) and people copy pieces of it, so these views turn it back on. */
+.explain-selectable,
+.explain-selectable * {
+  user-select: text;
+}
+.explain-selectable button,
+.explain-selectable button * {
+  user-select: none;
+}
+
+.explain-view {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--win-bg-window);
+}
+.explain-view-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+.explain-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--win-bg-card);
+  border-bottom: 1px solid var(--win-border);
+  flex-shrink: 0;
+}
+.explain-toolbar-left {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.explain-toolbar-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+.explain-copy-btn {
+  height: 24px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.explain-copy-btn.is-on {
+  color: var(--win-accent);
+  border-color: color-mix(in srgb, var(--win-accent) 45%, transparent);
+}
+.explain-copy-ok {
+  color: var(--st-ok, #22c55e);
+}
+.explain-raw {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  font-family: var(--win-font-mono);
+  font-size: 12px;
+  color: var(--win-text-primary);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.explain-tab-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  color: #ffffff;
+  background: var(--st-warn, #f59e0b);
+}
+.explain-tab-count.is-active {
+  color: var(--win-accent);
+  background: #ffffff;
+}
+.explain-chip-tip {
+  color: var(--win-accent);
+  background: color-mix(in srgb, var(--win-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--win-accent) 30%, transparent);
+}
+
+.explain-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 520px;
+  margin: 40px auto;
+  text-align: center;
+  color: var(--win-text-disabled);
+}
+.explain-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+.explain-empty-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--win-text-secondary);
+}
+
+/* Index suggestions */
+.explain-index-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 900px;
+}
+.explain-index-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+  background: var(--win-bg-card);
+}
+.explain-index-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--win-text-primary);
+}
+.explain-index-alias {
+  color: var(--win-text-secondary);
+}
+.explain-index-rows {
+  font-size: 11px;
+  color: var(--st-warn, #f59e0b);
+  font-weight: 600;
+}
+.explain-index-copy {
+  margin-left: auto;
+}
+.explain-index-cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.explain-index-col {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+  color: var(--win-text-primary);
+  background: color-mix(in srgb, var(--win-accent) 12%, transparent);
+}
+.explain-index-col.is-range {
+  background: color-mix(in srgb, var(--st-warn, #f59e0b) 14%, transparent);
+}
+.explain-index-col em {
+  font-family: var(--win-font-sans);
+  font-style: normal;
+  font-size: 10px;
+  color: var(--win-text-secondary);
+}
+.explain-index-sql {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-window);
+  font-family: var(--win-font-mono);
+  font-size: 12px;
+  color: var(--win-text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.explain-index-why {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+.explain-index-why code {
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-text-primary);
+  word-break: break-all;
+}
+
+/* Plan comparison */
+.explain-cmp-sql {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 11px;
+}
+.explain-cmp-sql > div {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.explain-cmp-sql span {
+  width: 56px;
+  flex-shrink: 0;
+  color: var(--win-text-disabled);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.explain-cmp-sql code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--win-font-mono);
+  color: var(--win-text-primary);
+}
+.explain-cmp-identical {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+  background: color-mix(in srgb, var(--win-text-secondary) 10%, transparent);
+}
+.explain-cmp-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.explain-cmp-card {
+  --cmp-color: var(--win-text-secondary);
+  min-width: 200px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--win-border);
+  border-left: 3px solid var(--cmp-color);
+  background: var(--win-bg-card);
+}
+.explain-cmp-card.is-better { --cmp-color: var(--st-ok, #22c55e); }
+.explain-cmp-card.is-worse { --cmp-color: var(--st-danger, #ef4444); }
+.explain-cmp-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--win-text-disabled);
+  margin-bottom: 4px;
+}
+.explain-cmp-values {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--win-text-secondary);
+}
+.explain-cmp-values strong {
+  color: var(--win-text-primary);
+}
+.explain-cmp-delta {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--cmp-color);
+}
+.explain-cmp-delta.is-muted {
+  font-weight: 400;
+  color: var(--win-text-disabled);
+}
+.explain-cmp-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.explain-cmp-flag {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+}
+.explain-cmp-flag.is-better { color: var(--st-ok, #22c55e); }
+.explain-cmp-flag.is-worse { color: var(--st-danger, #ef4444); }
+.explain-cmp-flag em {
+  font-style: normal;
+  color: var(--win-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.explain-cmp-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  background: var(--win-bg-card);
+  font-size: 11.5px;
+}
+.explain-cmp-table th {
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--win-text-disabled);
+  border-bottom: 1px solid var(--win-border);
+  user-select: none;
+}
+.explain-cmp-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--win-border);
+  color: var(--win-text-primary);
+  vertical-align: top;
+}
+.explain-cmp-table-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.explain-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--win-text-secondary);
+  background: color-mix(in srgb, var(--win-text-secondary) 12%, transparent);
+}
+.explain-verdict.is-better {
+  color: var(--st-ok, #22c55e);
+  background: color-mix(in srgb, var(--st-ok, #22c55e) 14%, transparent);
+}
+.explain-verdict.is-worse {
+  color: var(--st-danger, #ef4444);
+  background: color-mix(in srgb, var(--st-danger, #ef4444) 14%, transparent);
+}
+.explain-verdict.is-added {
+  color: var(--win-accent);
+  background: color-mix(in srgb, var(--win-accent) 12%, transparent);
 }
 
 /* ==========================================================================
@@ -13942,7 +15241,7 @@ input.rename-input {
 
 .doc-params-table td {
   padding: 8px 12px;
-  border-bottom: 1px solid var(--win-border-subtle, rgba(255, 255, 255, 0.05));
+  border-bottom: 1px solid var(--win-border-light, rgba(255, 255, 255, 0.05));
   vertical-align: top;
 }
 
@@ -14203,6 +15502,85 @@ input.rename-input {
   font-size: 11.5px;
 }
 
+/* The SSH host key prompt (SshHostKeyGate). The fingerprint is the thing to compare character by
+   character, so it gets the mono face and a box of its own; a changed key is told in the danger tint. */
+.shk-icon { color: var(--win-accent); flex-shrink: 0; }
+.shk-icon-danger { color: var(--st-danger); flex-shrink: 0; }
+.shk-body { font-size: 12.5px; line-height: 1.6; color: var(--win-text-primary); }
+.shk-body code { font-family: var(--win-font-mono, monospace); font-size: 11.5px; padding: 1px 4px; border-radius: 4px; background: var(--win-bg-code); }
+.shk-body-danger {
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--win-status-deleted-border);
+  background: var(--win-status-deleted);
+}
+.shk-key {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  background: var(--win-bg-subtle);
+}
+.shk-label { font-size: 11px; color: var(--win-text-secondary); align-self: center; }
+.shk-value { font-family: var(--win-font-mono, monospace); font-size: 12px; color: var(--win-text-primary); }
+.shk-fp { word-break: break-all; font-weight: 600; user-select: text; }
+.shk-note { font-size: 11px; line-height: 1.5; color: var(--win-text-secondary); }
+.shk-error { font-size: 12px; line-height: 1.5; color: var(--st-danger); }
+.btn.btn-primary.shk-btn-danger { background: var(--st-danger); border-color: var(--st-danger); }
+
+/* The scheduled backups dialog (BackupSchedulesDialog). One row per schedule; a disabled one is
+   dimmed rather than hidden, so turning it back on is one click away. */
+.bsd-icon { color: var(--win-accent); flex-shrink: 0; }
+.bsd-intro { font-size: 12px; line-height: 1.55; color: var(--win-text-secondary); }
+.bsd-empty { font-size: 12.5px; color: var(--win-text-secondary); padding: 18px 0; text-align: center; }
+.bsd-list { display: flex; flex-direction: column; gap: 8px; }
+.bsd-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  background: var(--win-bg-subtle);
+}
+.bsd-row > input[type='checkbox'] { margin-top: 3px; }
+.bsd-off { opacity: 0.55; }
+.bsd-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.bsd-name { font-size: 12.5px; font-weight: 600; color: var(--win-text-primary); }
+.bsd-db { font-weight: 400; color: var(--win-text-secondary); font-family: var(--win-font-mono, monospace); font-size: 11.5px; }
+.bsd-sub { font-size: 11px; color: var(--win-text-secondary); }
+.bsd-path { font-family: var(--win-font-mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bsd-last { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--win-text-secondary); margin-top: 2px; }
+.bsd-last > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bsd-last > svg { flex-shrink: 0; }
+.bsd-ok > svg { color: var(--st-ok); }
+.bsd-fail { color: var(--st-danger); }
+.bsd-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.bsd-actions .btn { padding: 0 8px; }
+.bsd-folder { display: flex; gap: 6px; }
+.bsd-folder > input { flex: 1; min-width: 0; }
+.bsd-folder > .btn { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.bsd-keep { flex: 0 0 110px; }
+.bsd-hint { font-size: 11px; line-height: 1.5; color: var(--win-text-secondary); margin-top: -6px; }
+.bsd-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--win-text-primary); cursor: pointer; }
+/* The editor's fields at the size every other dialog uses (30px, 11px — see ExportDatabaseDialog).
+   The shared .form-input default is 13px, which made this form read as a different app; the native
+   <select> and the time field then also fell back to their own metrics. */
+.bsd-form .form-input { height: 30px; font-size: 11px; padding: 0 10px; }
+.bsd-form select.form-input { padding: 0 8px; }
+.bsd-form input[type='number'] { height: 30px; font-size: 11px; padding: 0 10px; }
+/* The time field: digits of one width so 02:00 does not jiggle while typed, and the picker icon in
+   the theme's own colours (color-scheme), since the WebView draws it. */
+.bsd-form input[type='time'] { font-variant-numeric: tabular-nums; color-scheme: dark; }
+[data-theme='light'] .bsd-form input[type='time'] { color-scheme: light; }
+.bsd-form .bsd-check { font-size: 11px; }
+.bsd-error { font-size: 12px; line-height: 1.5; color: var(--st-danger); }
+.bsd-db-error { display: flex; align-items: center; gap: 8px; font-size: 11.5px; line-height: 1.5; color: var(--st-danger); }
+.bsd-db-error > span { flex: 1; min-width: 0; }
+.bsd-db-error > .btn { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+
 /* The table or key the command targets, in the Safe Mode dialog: monospaced and bold so it stands out
    of the sentence, because it is the word the user most needs to read before pressing anything. */
 .smg-target {
@@ -14336,6 +15714,54 @@ input.rename-input {
   color: var(--win-text-secondary);
 }
 
+/* The notification switch at the foot of the jobs popover, under a rule like the history heading. */
+.jobs-notify-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px 10px 2px;
+  border-top: 1px solid var(--win-border);
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+
+.jobs-notify-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+/* "Nothing running" above the history, when this session has no job of its own. */
+.jobs-empty {
+  padding: 8px 10px;
+}
+
+/* The heading between this session's jobs and the history of earlier ones. A rule above it says
+   "a different list starts here"; the clear button reuses .jobs-pop-clear, minus its bottom pad. */
+.jobs-history-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 8px 0 0 10px;
+  border-top: 1px solid var(--win-border);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--win-text-secondary);
+}
+
+.jobs-history-head .jobs-pop-clear {
+  padding-bottom: 0;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+
 .jobs-row-state {
   flex-shrink: 0;
 }
@@ -14343,7 +15769,7 @@ input.rename-input {
 .jobs-row-error {
   font-size: 11px;
   line-height: 1.45;
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
   word-break: break-word;
 }
 
@@ -14354,7 +15780,7 @@ input.rename-input {
 }
 
 .jobs-row-warn {
-  color: var(--win-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 .jobs-row-actions {
@@ -14370,12 +15796,39 @@ input.rename-input {
   margin-left: 3px;
 }
 
+/* The bell, as the anchor for its unseen count. */
+.jobs-bell {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The red count of jobs finished since the popover was last opened, pinned to the bell's top-right
+   corner like any notification badge. Absolutely positioned so it never widens the capsule. */
+.jobs-bell-count {
+  position: absolute;
+  top: -7px;
+  left: 7px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  background: var(--st-danger, #ef4444);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 .jobs-icon-ok {
   color: var(--win-status-added);
 }
 
 .jobs-icon-error {
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
 }
 
 .jobs-icon-muted {
@@ -14921,8 +16374,8 @@ input.rename-input {
 }
 
 .redis-toast.ok {
-  background: color-mix(in srgb, var(--st-success, #10b981) 12%, transparent);
-  color: var(--st-success, #10b981);
+  background: color-mix(in srgb, var(--st-ok, #10b981) 12%, transparent);
+  color: var(--st-ok, #10b981);
 }
 
 .redis-toast.err {
@@ -15107,8 +16560,8 @@ input.rename-input {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  background: color-mix(in srgb, var(--st-warning, #f59e0b) 12%, transparent);
-  color: var(--st-warning, #f59e0b);
+  background: color-mix(in srgb, var(--st-warn, #f59e0b) 12%, transparent);
+  color: var(--st-warn, #f59e0b);
 }
 
 .redis-keylist-cap-btn {
@@ -15429,7 +16882,7 @@ input.rename-input {
   align-items: center;
   gap: 4px;
   font-size: 10px;
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 .redis-value-btn {
@@ -15478,8 +16931,8 @@ input.rename-input {
 .redis-value-notice {
   padding: 6px 8px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--st-warning, #f59e0b) 12%, transparent);
-  color: var(--st-warning, #f59e0b);
+  background: color-mix(in srgb, var(--st-warn, #f59e0b) 12%, transparent);
+  color: var(--st-warn, #f59e0b);
   font-size: 10px;
   display: flex;
   align-items: center;
@@ -15535,7 +16988,7 @@ input.rename-input {
 }
 
 .redis-unsupported-icon {
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
   flex-shrink: 0;
 }
 
@@ -16010,7 +17463,7 @@ input.rename-input {
 }
 
 .redis-syntax-cost {
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
   font-size: 9px;
 }
 
@@ -16044,7 +17497,7 @@ input.rename-input {
 }
 
 .redis-log-binary {
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 /* ---- Stat tiles (Dashboard, Analysis) ---- */
@@ -16175,7 +17628,7 @@ input.rename-input {
   align-items: flex-start;
   gap: 6px;
   font-size: 10px;
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
   line-height: 1.5;
 }
 
@@ -16203,7 +17656,7 @@ input.rename-input {
 }
 
 .redis-dialog-status.cancelled {
-  color: var(--st-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 /* ---- The keyspace export/import dialog (RedisTransferDialog) ---- */
@@ -16836,7 +18289,7 @@ input.rename-input {
   transition: background 0.1s ease;
 }
 
-.doc-tree-node:last-child > .doc-tree-row {
+.doc-tree-node:last-child>.doc-tree-row {
   border-bottom: none;
 }
 
@@ -16961,6 +18414,7 @@ input.rename-input {
 :root:not([data-theme='light']) .doc-type-string {
   color: #34d399;
 }
+
 [data-theme='dark'] .doc-tree-val.is-string,
 :root:not([data-theme='light']) .doc-tree-val.is-string {
   color: #34d399;
@@ -16970,6 +18424,7 @@ input.rename-input {
 :root:not([data-theme='light']) .doc-type-number {
   color: #60a5fa;
 }
+
 [data-theme='dark'] .doc-tree-val.is-number,
 :root:not([data-theme='light']) .doc-tree-val.is-number {
   color: #60a5fa;
@@ -16979,6 +18434,7 @@ input.rename-input {
 :root:not([data-theme='light']) .doc-type-boolean {
   color: #fbbf24;
 }
+
 [data-theme='dark'] .doc-tree-val.is-boolean,
 :root:not([data-theme='light']) .doc-tree-val.is-boolean {
   color: #fbbf24;
@@ -17042,80 +18498,210 @@ input.rename-input {
 }
 
 /* ===== MCP Server settings (McpServerSettingsModal.tsx) ===================================== */
-/* Modern Tabbed & Card-based Design (Zero inline CSS, fully theme-aware) */
+/* `.mcp-conn-db` and `.mcp-dialect-badge` are also used by McpApprovalGate.tsx. The switches and
+   segmented controls reuse `.cm-switch` / `.cm-seg` from the connection form rather than copying them. */
+
+/* Page frame when opened as a workspace tab */
+.mcp-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--win-bg-window);
+}
+
+.mcp-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--win-border);
+  background: var(--win-bg-card);
+  flex-shrink: 0;
+}
+
+.mcp-page-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--win-accent);
+}
+
+.mcp-page-title h2 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+
+.mcp-page-title p {
+  margin: 1px 0 0;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-page-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px 24px;
+}
+
+.mcp-page-body>.mcp-container {
+  max-width: 1080px;
+  margin: 0 auto;
+}
+
+.mcp-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Start and Stop swap in place: a fixed minimum width keeps the refresh button beside it from jumping. */
+.mcp-head-actions .mcp-power {
+  min-width: 76px;
+}
+
+/* 28px and the 8px radius of `.btn`, so the pill and the two buttons after it read as one row. */
+.mcp-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-window);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+.mcp-status-pill.on {
+  border-color: var(--win-status-added-border, #10b981);
+  background: var(--win-status-added, rgba(16, 185, 129, 0.1));
+  color: var(--win-status-added-border, #10b981);
+}
+
+.mcp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--win-text-disabled);
+  flex-shrink: 0;
+}
+
+.mcp-status-pill.on .mcp-dot {
+  background: var(--win-status-added-border, #10b981);
+  box-shadow: 0 0 6px var(--win-status-added-border, #10b981);
+}
+
 .mcp-container {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
 }
 
-/* Top Tab Navigation */
+/* Tabs: an underline strip, so they read as navigation rather than as three more buttons */
 .mcp-tabs-header {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: flex-end;
+  gap: 2px;
   border-bottom: 1px solid var(--win-border);
-  padding-bottom: 6px;
-  margin-bottom: 2px;
 }
 
 .mcp-tab-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 12px;
+  height: 32px;
+  padding: 0 12px;
+  margin-bottom: -1px;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-family: var(--win-font-sans);
   font-size: 12px;
   font-weight: 500;
   color: var(--win-text-secondary);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition: color 0.12s ease, border-color 0.12s ease;
 }
 
 .mcp-tab-btn:hover:not(.active) {
-  background: var(--win-bg-hover);
   color: var(--win-text-primary);
 }
 
 .mcp-tab-btn.active {
-  background: var(--win-accent-glow, rgba(37, 99, 235, 0.12));
-  border-color: rgba(96, 165, 250, 0.25);
-  color: var(--win-accent);
+  border-bottom-color: var(--win-accent);
+  color: var(--win-text-primary);
   font-weight: 600;
 }
 
+.mcp-tab-btn.active svg {
+  color: var(--win-accent);
+}
+
 .mcp-tab-badge {
+  min-width: 16px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--win-bg-hover);
+  color: var(--win-text-secondary);
   font-size: 10px;
   font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 10px;
-  background: var(--win-bg-hover);
-  color: var(--win-text-disabled);
+  text-align: center;
 }
 
 .mcp-tab-btn.active .mcp-tab-badge {
   background: var(--win-accent);
-  color: #ffffff;
+  color: #fff;
 }
 
-/* Tab Panels & Cards */
-.mcp-tab-content {
+.mcp-tab-badge.warn,
+.mcp-tab-btn.active .mcp-tab-badge.warn {
+  background: var(--st-danger, #ef4444);
+  color: #fff;
+}
+
+/* Layout */
+.mcp-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .mcp-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.mcp-col {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+  min-width: 0;
 }
 
 .mcp-card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
   background: var(--win-bg-card);
   border: 1px solid var(--win-border);
   border-radius: 8px;
-  padding: 8px 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .mcp-card-header {
@@ -17123,13 +18709,13 @@ input.rename-input {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .mcp-card-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -17137,309 +18723,406 @@ input.rename-input {
   color: var(--win-text-secondary);
 }
 
-.mcp-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mcp-spacer {
-  flex: 1;
-}
-
-.mcp-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--win-text-secondary);
-  flex-shrink: 0;
-}
-
-.mcp-dot.on {
-  background: #10b981;
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
-}
-
-.mcp-status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--win-text-primary);
-}
-
-.mcp-status-badge code {
-  font-family: var(--win-font-mono);
-  font-size: 10.5px;
-  background: var(--win-bg-hover);
-  padding: 1px 5px;
-  border-radius: 4px;
+.mcp-card-title svg {
   color: var(--win-accent);
 }
 
-.mcp-port-box {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.mcp-count {
   font-size: 11px;
   color: var(--win-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fields */
+.mcp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mcp-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+.mcp-field-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .mcp-port {
-  width: 64px;
-  height: 26px;
-  font-size: 11px;
+  width: 72px;
+  height: 28px;
+  flex-shrink: 0;
   font-family: var(--win-font-mono);
+  font-size: 11.5px;
   text-align: center;
 }
 
-.mcp-check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--win-text-secondary);
-  cursor: pointer;
-  user-select: none;
+.mcp-port.invalid {
+  border-color: var(--st-danger, #ef4444);
 }
 
-.mcp-token-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.mcp-endpoint {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  line-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  background: var(--win-bg-window);
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-endpoint.off {
+  color: var(--win-text-disabled);
 }
 
 .mcp-token-input {
   flex: 1;
+  min-width: 0;
   height: 28px;
+  padding: 0 8px;
   font-family: var(--win-font-mono);
   font-size: 11px;
-  padding: 0 8px;
+}
+
+.btn.mcp-icon-btn {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* A toggle button's ON state. `.btn-secondary` has `border: none`, so a border-color alone changed
+   nothing - the state has to live in the fill and an inset ring. */
+.btn.btn-secondary.mcp-btn-on {
+  background: var(--win-accent-glow, rgba(37, 99, 235, 0.12));
+  color: var(--win-accent);
+  box-shadow: inset 0 0 0 1px var(--win-accent);
+}
+
+.btn.btn-secondary.mcp-btn-on:hover:not(:disabled) {
+  background: var(--win-accent-glow, rgba(37, 99, 235, 0.18));
+  box-shadow: inset 0 0 0 1px var(--win-accent);
+}
+
+/* The compact tier, for buttons inside a card header or over a code block. */
+.btn.mcp-btn-sm {
+  height: 24px;
+  padding: 0 10px;
+  gap: 5px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+
+.mcp-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.mcp-switch-row .cm-switch {
+  margin-top: 0;
+}
+
+.mcp-switch-text {
+  font-size: 11.5px;
+  color: var(--win-text-primary);
 }
 
 .mcp-hint {
   margin: 0;
-  font-size: 10.5px;
+  font-size: 11px;
+  line-height: 1.45;
   color: var(--win-text-secondary);
-  line-height: 1.35;
+}
+
+.mcp-center {
+  text-align: center;
 }
 
 .mcp-error {
   margin: 0;
   font-size: 11px;
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
+}
+
+.mcp-error-box {
+  padding: 8px 10px;
+  border: 1px solid var(--win-status-deleted-border, #ef4444);
+  border-radius: 6px;
+  background: var(--win-status-deleted, rgba(239, 68, 68, 0.08));
+  white-space: pre-wrap;
 }
 
 .mcp-warn {
   margin: 0;
-  font-size: 10.5px;
-  color: var(--win-warning, #f59e0b);
-  line-height: 1.35;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--st-warn, #f59e0b);
 }
 
 .mcp-empty {
   margin: 0;
+  padding: 20px 0;
   font-size: 11.5px;
   font-style: italic;
-  color: var(--win-text-disabled);
-  padding: 16px 0;
   text-align: center;
+  color: var(--win-text-disabled);
 }
 
-/* Pickers */
-.mcp-pick-row {
-  display: flex;
+/* Client configuration: the label column sizes to its longest label, so a translated one never wraps. */
+.mcp-pick-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 8px 12px;
 }
 
-.mcp-pick-label {
-  width: 64px;
-  flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--win-text-secondary);
+.mcp-pick-grid .mcp-seg {
+  justify-self: start;
 }
 
-.mcp-client-tabs {
-  display: flex;
+/* Segmented picker. A borderless track with the chosen option lifted out of it: an extra border
+   around the track read as a pill inside a box. Track 28px = 2px padding + 24px option, the same
+   height as `.btn`, so a picker and a button sitting on one row line up. */
+.mcp-seg {
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  max-width: 100%;
 }
 
-.mcp-client-tab {
-  padding: 4px 10px;
-  border: 1px solid var(--win-border);
+.mcp-seg button {
+  height: 24px;
+  padding: 0 12px;
+  border: none;
   border-radius: 6px;
-  background: var(--win-bg-window);
+  background: transparent;
   color: var(--win-text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.12s ease;
+  font-family: var(--win-font-sans);
+  font-size: 11.5px;
+  font-weight: 500;
   white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
-.mcp-client-tab:hover {
-  background: var(--win-bg-hover);
+.mcp-seg button:hover:not(.on) {
   color: var(--win-text-primary);
 }
 
-.mcp-client-tab.active {
-  border-color: var(--win-accent);
-  background: var(--win-bg-hover);
-  color: var(--win-accent);
+.mcp-seg button:focus-visible {
+  outline: 2px solid var(--win-accent);
+  outline-offset: -2px;
+}
+
+.mcp-seg button.on {
+  background: var(--win-bg-card);
+  color: var(--win-text-primary);
   font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme='dark'] .mcp-seg button.on {
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
 .mcp-config-box {
   position: relative;
-  display: flex;
-  flex-direction: column;
 }
 
 .mcp-config {
   margin: 0;
-  padding: 8px 12px;
+  padding: 10px 12px;
+  padding-right: 120px;
+  min-height: 64px;
   border: 1px solid var(--win-border);
   border-radius: 6px;
   background: var(--win-bg-window);
   font-family: var(--win-font-mono);
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--win-text-primary);
+  white-space: pre;
   overflow-x: auto;
-  overflow-y: hidden;
 }
 
-/* Shared Connections Card */
+.btn.mcp-config-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+/* Shared connections */
 .mcp-conn-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-height: 200px;
-  overflow-y: auto;
+  gap: 6px;
 }
 
 .mcp-conn-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 6px 8px;
+  gap: 6px;
+  padding: 8px 10px;
   border: 1px solid var(--win-border);
   border-radius: 6px;
   background: var(--win-bg-window);
-  transition: background 0.15s ease;
-}
-
-.mcp-conn-item:hover {
-  background: var(--win-bg-hover);
+  transition: border-color 0.15s ease;
 }
 
 .mcp-conn-item.selected {
   border-color: var(--win-accent);
 }
 
-.mcp-conn-label {
+.mcp-conn-main {
   display: flex;
   align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  user-select: none;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mcp-conn-main .cm-switch {
+  margin-top: 0;
+}
+
+.mcp-conn-main .cm-switch:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .mcp-conn-db {
+  min-width: 0;
   font-size: 12px;
   font-weight: 600;
   color: var(--win-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-conn-schema {
+  font-family: var(--win-font-mono);
+  font-size: 10.5px;
+  color: var(--win-text-secondary);
 }
 
 .mcp-dialect-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-hover);
   font-size: 9.5px;
   font-weight: 700;
   text-transform: uppercase;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--win-bg-hover);
   color: var(--win-text-secondary);
-  border: 1px solid var(--win-border);
 }
 
-/* The write tick sits indented under its share tick, at the same 24px the reach line uses, so the
-   two secondary lines of one connection share an edge and read as belonging to it. */
+.mcp-dialect-badge.ro {
+  border-color: var(--st-warn, #f59e0b);
+  color: var(--st-warn, #f59e0b);
+  background: transparent;
+}
+
+/* Secondary lines of one connection share the 46px edge: switch width + gap. */
 .mcp-conn-write {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: 24px;
+  margin-left: 46px;
   font-size: 11.5px;
-  color: var(--win-text-secondary);
+  color: var(--win-text-primary);
   cursor: pointer;
   user-select: none;
 }
 
-.mcp-conn-write input:disabled + span {
+.mcp-conn-write.disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.mcp-conn-write-hint {
-  margin: 0 0 0 24px;
+.mcp-conn-write-hint,
+.mcp-reach {
+  margin: 0 0 0 46px;
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.45;
+}
+
+.mcp-conn-write-hint {
   color: var(--win-text-secondary);
 }
 
 .mcp-reach {
-  margin: 0 0 0 24px;
-  font-size: 11px;
-  color: var(--win-warning, #f59e0b);
+  color: var(--st-warn, #f59e0b);
 }
 
 .mcp-reach.ok {
-  color: #10b981;
+  color: var(--win-status-added-border, #10b981);
 }
 
-/* Policy Grid */
+/* Policy grid */
 .mcp-policy-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 8px;
 }
 
 .mcp-policy-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
+  gap: 4px;
+  padding: 10px 12px;
   background: var(--win-bg-window);
   border: 1px solid var(--win-border);
   border-radius: 6px;
 }
 
 .mcp-policy-item-title {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: var(--win-text-disabled);
-  letter-spacing: 0.5px;
-}
-
-.mcp-policy-item-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11.5px;
   font-weight: 600;
   color: var(--win-text-primary);
 }
 
-/* Log View */
-.mcp-log-container {
+.mcp-policy-item-title svg {
+  color: var(--win-accent);
+}
+
+.mcp-policy-item-value {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--win-text-secondary);
+}
+
+/* Log */
+.mcp-toolbar {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 6px;
 }
 
@@ -17449,71 +19132,146 @@ input.rename-input {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  max-height: 320px;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  background: var(--win-bg-window);
+  max-height: 60vh;
   overflow-y: auto;
 }
 
-.mcp-log-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--win-bg-window);
-  border: 1px solid var(--win-border);
-  border-radius: 6px;
-  font-size: 11px;
+.mcp-log-item+.mcp-log-item {
+  border-top: 1px solid var(--win-border);
 }
 
 .mcp-log-item.denied {
-  border-color: rgba(239, 68, 68, 0.4);
-  background: rgba(239, 68, 68, 0.04);
+  box-shadow: inset 3px 0 0 var(--st-danger, #ef4444);
+}
+
+.mcp-log-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  font-family: var(--win-font-sans);
+  font-size: 11px;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.mcp-log-row:hover:not(:disabled) {
+  background: var(--win-bg-hover);
+}
+
+.mcp-log-row:disabled {
+  cursor: default;
+}
+
+.mcp-log-chevron {
+  flex-shrink: 0;
+  color: var(--win-text-disabled);
+  transition: transform 0.12s ease;
+}
+
+.mcp-log-row:disabled .mcp-log-chevron {
+  visibility: hidden;
+}
+
+.mcp-log-item.open .mcp-log-chevron {
+  transform: rotate(90deg);
 }
 
 .mcp-log-time {
-  color: var(--win-text-secondary);
-  font-variant-numeric: tabular-nums;
-  font-size: 10.5px;
   flex-shrink: 0;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--win-text-secondary);
 }
 
 .mcp-log-tool {
-  font-weight: 600;
-  font-size: 11px;
-  color: var(--win-accent);
-  background: var(--win-bg-hover);
+  flex-shrink: 0;
   padding: 1px 6px;
   border-radius: 4px;
-  flex-shrink: 0;
+  background: var(--win-bg-hover);
+  font-family: var(--win-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--win-accent);
 }
 
 .mcp-log-sql {
-  font-family: var(--win-font-mono);
-  color: var(--win-text-primary);
   flex: 1;
   min-width: 0;
+  font-family: var(--win-font-mono);
+  color: var(--win-text-primary);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .mcp-log-outcome {
+  flex-shrink: 0;
   margin-left: auto;
-  font-size: 10.5px;
-  font-weight: 600;
   padding: 2px 6px;
   border-radius: 4px;
-  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
 }
 
 .mcp-log-outcome.ok {
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.1);
+  color: var(--win-status-added-border, #10b981);
+  background: var(--win-status-added, rgba(16, 185, 129, 0.1));
 }
 
 .mcp-log-outcome.denied {
-  color: var(--win-danger, #ef4444);
-  background: rgba(239, 68, 68, 0.1);
+  color: var(--st-danger, #ef4444);
+  background: var(--win-status-deleted, rgba(239, 68, 68, 0.1));
+}
+
+.mcp-log-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 10px 10px 30px;
+}
+
+.mcp-log-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+
+.mcp-log-meta code {
+  font-family: var(--win-font-mono);
+  color: var(--win-text-primary);
+}
+
+.mcp-log-message {
+  margin: 0;
+  font-size: 11px;
+  color: var(--st-danger, #ef4444);
+  white-space: pre-wrap;
+}
+
+.mcp-log-full-sql {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  background: var(--win-bg-card);
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--win-text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ==========================================================================
@@ -17704,15 +19462,15 @@ input.rename-input {
 
 .media-dim-badge {
   font-size: 11px;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--win-font-mono, monospace);
   color: var(--win-text-secondary, #94a3b8);
   font-weight: 500;
 }
 
 .media-size-badge {
   font-size: 11px;
-  color: var(--win-text-muted, #64748b);
-  font-family: var(--font-mono, monospace);
+  color: var(--win-text-disabled, #64748b);
+  font-family: var(--win-font-mono, monospace);
 }
 
 /* --- Fullscreen Lightbox Modal --- */
@@ -17921,7 +19679,7 @@ input.rename-input {
 }
 
 .media-zoom-label {
-  font-family: var(--font-mono, monospace);
+  font-family: var(--win-font-mono, monospace);
   font-size: 11px;
   min-width: 48px;
   justify-content: center;
@@ -18058,7 +19816,7 @@ input.rename-input {
   gap: 10px;
   flex-wrap: wrap;
   border-bottom: 1px solid var(--win-border, rgba(255, 255, 255, 0.06));
-  background: var(--win-bg-panel, rgba(20, 24, 33, 0.7));
+  background: var(--win-bg-card, rgba(20, 24, 33, 0.7));
   backdrop-filter: blur(8px);
   flex-shrink: 0;
 }
@@ -18254,7 +20012,7 @@ input.rename-input {
   display: flex;
   flex-direction: column;
   padding: 4px 10px;
-  background: var(--win-bg-panel, rgba(255, 255, 255, 0.03));
+  background: var(--win-bg-card, rgba(255, 255, 255, 0.03));
   border: 1px solid var(--win-border, rgba(255, 255, 255, 0.08));
   border-radius: 6px;
   min-width: 120px;
@@ -18272,7 +20030,7 @@ input.rename-input {
   font-size: 14px;
   font-weight: 700;
   color: var(--win-text-primary, #f1f5f9);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--win-font-mono, monospace);
   margin-top: 1px;
 }
 
@@ -18712,7 +20470,7 @@ input.rename-input {
 }
 
 .db-compare-primary-run-btn:hover:not(:disabled) {
-  background: var(--win-accent-hover, #2563eb);
+  background: var(--win-accent-secondary, #2563eb);
   box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
   transform: translateY(-1px);
 }
@@ -18870,13 +20628,14 @@ input.rename-input {
    costs no accessible name), then the two purely informational count pills go. The search box is
    shrinkable instead of stepped, since it degrades continuously. */
 @container er-canvas (max-width: 1080px) {
+
   /* Only the icon+label buttons: Full / Keys only / Compact render bare text, not a <span>, so
      they keep their labels — they have no icon, and hiding the text would leave empty boxes.
 
      The picker trigger is exempt until step 2, where the relations pill goes: the two are both
      counts sitting next to each other, and stripping one's word a whole step before the other
      read as `23   22 relations`, which looks like a mistake rather than a narrow window. */
-  .er-toolbar-btn:not(.er-picker-trigger) > span {
+  .er-toolbar-btn:not(.er-picker-trigger)>span {
     display: none;
   }
 
@@ -18889,8 +20648,9 @@ input.rename-input {
    trigger drops to its icon and number. The tables count itself is never lost — that is what let
    the old `23 tables` pill be REPLACED by this button instead of kept beside it. */
 @container er-canvas (max-width: 920px) {
+
   .er-stat-pill,
-  .er-picker-trigger > span {
+  .er-picker-trigger>span {
     display: none;
   }
 }
@@ -18900,6 +20660,7 @@ input.rename-input {
    — Shift+1 fits the view and Shift+2 the selection. Leaves ~545px of row, i.e. a canvas of about
    570px: a window of ~870px with the sidebar open, narrower than this app is usable at. */
 @container er-canvas (max-width: 660px) {
+
   .er-toolbar-divider,
   .er-btn-optional {
     display: none;
@@ -19138,6 +20899,16 @@ input.rename-input {
   color: var(--win-text-disabled);
   padding: 4px 8px;
   letter-spacing: 0.5px;
+}
+
+/* The warning under "Mermaid code copied!" when the text is past Mermaid's render limits. */
+.er-menu-item-warn {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--st-warn);
+  white-space: normal;
 }
 
 .er-menu-item {
@@ -20018,9 +21789,20 @@ input.rename-input {
 }
 
 @keyframes pm-pulse {
-  0% { transform: scale(0.95); opacity: 0.8; }
-  50% { transform: scale(1.2); opacity: 1; }
-  100% { transform: scale(0.95); opacity: 0.8; }
+  0% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
 }
 
 .pm-controls-right {
@@ -20439,7 +22221,9 @@ input.rename-input {
 }
 
 @keyframes pm-spin {
-  100% { transform: rotate(360deg); }
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 .pm-detail-drawer {
@@ -20680,7 +22464,7 @@ input.rename-input {
 }
 
 .tp-state-error {
-  color: var(--win-danger, #ef4444);
+  color: var(--st-danger, #ef4444);
   max-width: 480px;
   text-align: center;
   word-break: break-word;
@@ -20845,8 +22629,8 @@ input.rename-input {
   font-size: 11.5px;
 }
 
-.tp-row + .tp-row {
-  border-top: 1px solid var(--win-border-subtle, var(--win-border-light));
+.tp-row+.tp-row {
+  border-top: 1px solid var(--win-border-light, var(--win-border-light));
 }
 
 .tp-row-full {
@@ -20972,4 +22756,718 @@ input.rename-input {
 .tp-cmt {
   color: var(--win-text-disabled);
   font-style: italic;
+}
+
+/* ---------------------------------------------------------------------------
+   Master Password: the lock overlay and the settings dialog.
+
+   The overlay covers the real title bar, so it carries its own drag strip and
+   window buttons -- an app that cannot be moved or closed while locked is stuck,
+   not secured. `.title-bar-btn` is reused rather than copied so the three
+   buttons keep matching the real ones.
+   --------------------------------------------------------------------------- */
+.vault-lock {
+  position: fixed;
+  inset: 0;
+  z-index: 2000000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--win-bg-popover, #1c202a);
+  /* Opaque, not translucent: the point of the lock is that what is behind it
+     cannot be read, and a blurred screenshot of a grid is still a leak. */
+}
+
+.vault-lock-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 0 12px;
+  -webkit-app-region: drag;
+}
+
+.vault-lock-bar-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+.vault-lock-bar-btns {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.vault-lock-card {
+  width: min(360px, 88vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: center;
+}
+
+.vault-lock-icon {
+  align-self: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--win-accent);
+  background: color-mix(in srgb, var(--win-accent) 14%, transparent);
+}
+
+.vault-lock-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+
+.vault-lock-sub,
+.vault-lock-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--win-text-secondary);
+}
+
+.vault-lock-hint {
+  text-align: left;
+  color: var(--win-text-disabled);
+}
+
+.vault-lock-remember {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+}
+
+.vault-lock-error {
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: left;
+  color: var(--st-danger, #ef4444);
+}
+
+.vault-lock-submit {
+  width: 100%;
+  justify-content: center;
+}
+
+.vault-lock-forgot {
+  align-self: center;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  font-size: 11.5px;
+  color: var(--win-text-disabled);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.vault-lock-forgot:hover {
+  color: var(--win-text-secondary);
+}
+
+/* ---- The settings dialog ---- */
+.vault-note {
+  display: flex;
+  gap: 9px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--win-accent) 9%, transparent);
+  color: var(--win-text-secondary);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.vault-note p {
+  margin: 0;
+}
+
+.vault-note-limit {
+  margin-top: 6px !important;
+  color: var(--win-text-disabled);
+}
+
+.vault-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+}
+
+.vault-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+}
+
+.vault-hint {
+  margin: -6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--win-text-disabled);
+}
+
+.vault-warn {
+  padding: 8px 11px;
+  border-radius: 6px;
+  border-left: 3px solid var(--st-danger, #ef4444);
+  background: color-mix(in srgb, var(--st-danger, #ef4444) 10%, transparent);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--win-text-secondary);
+}
+
+.vault-on {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--st-ok, #10b981);
+}
+
+.vault-error {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--st-danger, #ef4444);
+}
+
+.vault-ok {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--st-ok, #10b981);
+}
+
+.vault-sep {
+  height: 1px;
+  background: var(--win-border);
+}
+
+/* The "Change password" disclosure. A row, not a `.btn`: it opens a section of this dialog rather
+   than acting on the vault, and at button weight it competed with the three real actions in the
+   footer. The caret is the only thing that says which state it is in. */
+.vault-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 0;
+  border: none;
+  background: transparent;
+  color: var(--win-text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vault-disclosure:hover:not(:disabled) {
+  color: var(--win-text-primary);
+}
+
+.vault-disclosure:disabled {
+  color: var(--win-text-disabled);
+  cursor: not-allowed;
+}
+
+.vault-disclosure-caret {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+
+.vault-disclosure-caret.is-open {
+  transform: rotate(90deg);
+}
+
+/* The wrapper exists so the section can be scrolled to as one thing; it repeats `ModalBody`'s own
+   14px gap, which the fields lost the moment they stopped being its direct children. */
+.vault-change-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+/* ─── Live templates in the Snippet panel (SqlSnippetPanel.tsx) ─── */
+.snippet-abbr {
+  font-family: var(--win-font-mono);
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-card);
+  color: var(--win-accent);
+}
+
+.snippet-field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+input[type="text"].snippet-abbr-input {
+  width: 200px;
+  font-family: var(--win-font-mono);
+}
+
+.snippet-field-help {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--win-text-disabled);
+}
+
+.snippet-field-help.is-error {
+  color: var(--st-danger, #ef4444);
+}
+
+/* ─── Local history dialog (LocalHistoryDialog.tsx) ─── */
+.sql-toolbar-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+.lh-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.lh-seg {
+  display: inline-flex;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.lh-seg button {
+  padding: 4px 12px;
+  font-size: 11.5px;
+  border: none;
+  background: transparent;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+}
+
+.lh-seg button + button {
+  border-left: 1px solid var(--win-border);
+}
+
+.lh-seg button.is-on {
+  background: var(--win-accent);
+  color: #ffffff;
+}
+
+.lh-body {
+  display: flex;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.lh-list {
+  width: 300px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+}
+
+.lh-item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid var(--win-border);
+  background: transparent;
+  color: var(--win-text-primary);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.lh-item:hover {
+  background: var(--win-bg-hover);
+}
+
+.lh-item.is-on {
+  background: color-mix(in srgb, var(--win-accent) 14%, transparent);
+  box-shadow: inset 3px 0 0 var(--win-accent);
+}
+
+.lh-item-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--win-text-secondary);
+}
+
+.lh-reason {
+  font-size: 10.5px;
+  color: var(--win-accent);
+}
+
+.lh-item-title {
+  margin-top: 3px;
+  font-family: var(--win-font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lh-item-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--win-text-disabled);
+}
+
+.lh-tag {
+  padding: 0 5px;
+  border: 1px solid var(--win-border);
+  border-radius: 4px;
+}
+
+.lh-diff {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.lh-diff-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 10px;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+  background: var(--win-bg-tab-bar);
+  border-bottom: 1px solid var(--win-border);
+}
+
+.lh-diff > section,
+.lh-diff > div:last-child {
+  flex: 1;
+  min-height: 0;
+}
+
+.lh-empty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--win-text-disabled);
+}
+
+.lh-spacer {
+  flex: 1;
+}
+
+/* ---- ImportTableDataDialog: importing a file into an existing table ---- */
+.imp-file {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--win-text-secondary);
+}
+
+.imp-file strong {
+  color: var(--win-text-primary);
+  word-break: break-all;
+}
+
+.imp-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  font-size: 11.5px;
+}
+
+.imp-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--win-text-secondary);
+}
+
+.imp-options select,
+.imp-map select {
+  height: 26px;
+  font-size: 11.5px;
+  background: var(--win-bg-input, var(--win-bg-card));
+  color: var(--win-text-primary);
+  border: 1px solid var(--win-border);
+  border-radius: 4px;
+  padding: 0 6px;
+}
+
+.imp-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.imp-map,
+.imp-issues {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--win-border);
+  border-radius: 4px;
+}
+
+.imp-issues {
+  max-height: 200px;
+}
+
+.imp-map table,
+.imp-issues table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.imp-map th,
+.imp-issues th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  font-weight: 600;
+  padding: 6px 8px;
+  background: var(--win-bg-tab-bar);
+  color: var(--win-text-secondary);
+  border-bottom: 1px solid var(--win-border);
+}
+
+.imp-map td,
+.imp-issues td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--win-border-light, var(--win-border));
+  vertical-align: middle;
+}
+
+.imp-map select {
+  width: 100%;
+  max-width: 240px;
+}
+
+.imp-map tr.is-disabled td {
+  opacity: 0.55;
+}
+
+.imp-col-name {
+  font-weight: 600;
+  color: var(--win-text-primary);
+}
+
+.imp-badge {
+  margin-left: 6px;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  color: var(--win-accent);
+  border: 1px solid var(--win-accent);
+}
+
+.imp-type,
+.imp-sample,
+.imp-value {
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  color: var(--win-text-secondary);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imp-problems {
+  color: var(--st-danger, #ef4444);
+  font-weight: 600;
+}
+
+.imp-muted {
+  color: var(--win-text-secondary);
+  font-size: 11px;
+}
+
+.imp-summary {
+  font-size: 12px;
+  color: var(--win-text-primary);
+}
+
+.imp-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--win-text-secondary);
+}
+
+.imp-mode strong {
+  color: var(--win-text-primary);
+}
+
+.imp-banner {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--win-text-primary);
+  background: var(--win-bg-hover);
+  border: 1px solid var(--win-border);
+}
+
+.imp-banner.is-error {
+  color: var(--st-danger, #ef4444);
+}
+
+/* A new table: its name, and each column's (editable) type in the mapping table. */
+.imp-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--win-text-secondary);
+}
+
+.imp-name input[type='text'],
+.imp-map input.imp-type-input {
+  height: 26px;
+  font-size: 11.5px;
+  padding: 0 8px;
+  border-radius: 4px;
+  border: 1px solid var(--win-border);
+  background: var(--win-bg-input);
+  color: var(--win-text-primary);
+}
+
+.imp-name input[type='text'] {
+  flex: 1;
+  max-width: 320px;
+  font-family: var(--win-font-mono);
+}
+
+.imp-map input.imp-type-input {
+  width: 100%;
+  max-width: 180px;
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+}
+
+/* ---- ImportFilePicker ---- */
+.ifp-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+}
+
+.ifp-readonly,
+.ifp-path {
+  height: 30px;
+  font-size: 11px;
+  width: 100%;
+}
+
+.ifp-readonly {
+  background: var(--win-bg-hover);
+}
+
+.ifp-path {
+  flex: 1;
+  cursor: pointer;
+}
+
+.ifp-row {
+  display: flex;
+  gap: 8px;
+}
+
+.ifp-row .btn {
+  white-space: nowrap;
+}
+
+.ifp-hint {
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--win-text-secondary);
+  background: var(--win-bg-window);
+  border: 1px solid var(--win-border);
+  border-radius: 4px;
+}
+
+.ifp-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+
+.ifp-meta b {
+  color: var(--win-text-primary);
+}
+
+.ifp-error {
+  padding: 8px 10px;
+  font-size: 11px;
+  border-radius: 4px;
+  color: var(--st-danger);
+  background: rgba(255, 107, 107, 0.08);
+  border: 1px solid rgba(255, 107, 107, 0.35);
+}
+/* DuckDB: shown while data files are dragged over the window (Sidebar's native drop listener). */
+.duck-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.duck-drop-card {
+  padding: 22px 32px;
+  border: 2px dashed var(--win-accent);
+  border-radius: 12px;
+  background: var(--win-bg-card);
+  color: var(--win-text-primary);
+  font-size: 14px;
+  font-weight: 600;
 }

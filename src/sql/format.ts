@@ -2,13 +2,14 @@
 // to reliably preserve CTEs, nested subqueries, CASE WHEN, window functions, etc.
 import { format as sqlFormat } from 'sql-formatter';
 
-export type SqlDialect = 'mysql' | 'postgresql' | 'sqlite' | 'sql';
+export type SqlDialect = 'mysql' | 'postgresql' | 'sqlite' | 'duckdb' | 'sql';
 
 export function formatterDialect(dbType?: string): SqlDialect {
   switch (dbType) {
     case 'mysql': return 'mysql';
     case 'postgres': return 'postgresql';
     case 'sqlite': return 'sqlite';
+    case 'duckdb': return 'duckdb';
     default: return 'sql';
   }
 }

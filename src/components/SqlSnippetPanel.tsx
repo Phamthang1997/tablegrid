@@ -1,19 +1,27 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Search, Plus, X, Info, Check, Copy, Trash2, ChevronDown, Sparkles, BookOpen, ExternalLink
+  Search, Plus, X, Info, Check, Copy, Trash2, ChevronDown, Sparkles, BookOpen, ExternalLink, Download, Upload
 } from 'lucide-react';
 import { searchDocs, getDocSummary, getDocDescription, getParamDesc, normalizeEngine } from '../utils/docsService';
 import type { DocEntry } from '../docsData/types';
+import { ABBR_RE, BUILTIN_TEMPLATES, CUSTOM_SNIPPETS_KEY, customBodyToSnippet, snippetPreview } from '../sql/liveTemplates';
+import { SHARE_ERROR_KEY, buildShareFile, newSnippets, parseShareFile, shareFileName } from '../utils/queryShare';
+import { pickSaveFilePath, saveExportFileAtPath } from '../utils/fileSave';
+import { fileStamp } from '../utils/exportHelper';
 
 export interface SqlSnippet {
   id: string;
   name: string;
-  category: 'DML' | 'DDL' | 'Flow Control' | 'Aggregate' | 'Comment' | 'Custom';
+  category: 'DML' | 'DDL' | 'Flow Control' | 'Aggregate' | 'Comment' | 'Custom' | 'Live Template';
   description: string;
   template: string;
   isCustom?: boolean;
+  /** Live-template abbreviation: typing it in the editor and pressing Tab expands `template`. */
+  abbr?: string;
+  /** `template` is Monaco snippet syntax (a built-in live template), not plain SQL. */
+  isSnippetSyntax?: boolean;
   docEntry?: DocEntry;
 }
 
@@ -139,16 +147,35 @@ const DEFAULT_SNIPPETS: SqlSnippet[] = [
   },
 ];
 
-const LOCAL_STORAGE_CUSTOM_KEY = 'tablegrid.sql_custom_snippets';
+/** The categories a custom snippet may have — the Add dialog's list, and what an import falls back to. */
+const CUSTOM_CATEGORIES = ['DML', 'DDL', 'Flow Control', 'Aggregate', 'Comment', 'Custom'] as const;
+
+// Shared with the editor's completion, which reads the abbreviations from the same list.
+const LOCAL_STORAGE_CUSTOM_KEY = CUSTOM_SNIPPETS_KEY;
+
+// The built-in live templates, listed so their abbreviations can be discovered rather than guessed.
+const LIVE_TEMPLATE_SNIPPETS: SqlSnippet[] = BUILTIN_TEMPLATES.map((tpl, i) => {
+  const preview = snippetPreview(tpl.body);
+  return {
+    id: `live_${i}`,
+    name: tpl.abbr,
+    category: 'Live Template',
+    description: preview.split('\n')[0] + (tpl.dialects ? ` (${tpl.dialects.join(', ')})` : ''),
+    template: tpl.body,
+    abbr: tpl.abbr,
+    isSnippetSyntax: true,
+  };
+});
 
 interface SqlSnippetPanelProps {
   dbType?: string;
-  onInsertSnippet: (template: string) => void;
+  /** `asSnippet`: insert through Monaco's snippet engine, so `${1:x}` becomes a tab stop. */
+  onInsertSnippet: (template: string, asSnippet?: boolean) => void;
   onClose: () => void;
 }
 
 export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInsertSnippet, onClose }) => {
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const [customSnippets, setCustomSnippets] = useState<SqlSnippet[]>(() => {
     try {
       const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(LOCAL_STORAGE_CUSTOM_KEY) : null;
@@ -170,6 +197,14 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
   const [newCategory, setNewCategory] = useState<'DML' | 'DDL' | 'Flow Control' | 'Aggregate' | 'Comment' | 'Custom'>('Custom');
   const [newDesc, setNewDesc] = useState('');
   const [newTemplate, setNewTemplate] = useState('');
+  const [newAbbr, setNewAbbr] = useState('');
+  const abbrError = (() => {
+    const a = newAbbr.trim();
+    if (!a) return null;
+    if (!ABBR_RE.test(a)) return t('liveTemplates.abbrInvalid');
+    if (customSnippets.some(c => (c.abbr || '').toLowerCase() === a.toLowerCase())) return t('liveTemplates.abbrTaken', { abbr: a });
+    return null;
+  })();
 
   // Leverage docsService to generate engine-specific snippets automatically
   const engineDocs = useMemo(() => {
@@ -206,7 +241,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
   }, [dbType, i18n.language]);
 
   const allSnippets = useMemo(() => {
-    return [...DEFAULT_SNIPPETS, ...engineDocs, ...customSnippets];
+    return [...DEFAULT_SNIPPETS, ...LIVE_TEMPLATE_SNIPPETS, ...engineDocs, ...customSnippets];
   }, [engineDocs, customSnippets]);
 
   const saveCustomSnippets = (updated: SqlSnippet[]) => {
@@ -220,7 +255,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
 
   const handleAddSnippet = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim() || !newTemplate.trim()) return;
+    if (!newTitle.trim() || !newTemplate.trim() || abbrError) return;
 
     const newSnippet: SqlSnippet = {
       id: `custom_${Date.now()}`,
@@ -229,6 +264,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
       description: newDesc.trim() || 'Custom user SQL snippet',
       template: newTemplate,
       isCustom: true,
+      abbr: newAbbr.trim() || undefined,
     };
 
     saveCustomSnippets([...customSnippets, newSnippet]);
@@ -236,6 +272,67 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
     setNewTitle('');
     setNewDesc('');
     setNewTemplate('');
+    setNewAbbr('');
+  };
+
+  // ---- Export / import of the user's own snippets (queryShare.ts holds the format and the rules) ----
+  //
+  // Only custom snippets travel: the built-in ones, the live templates and the engine docs are in
+  // every copy of the app already.
+  const snippetFileInputRef = useRef<HTMLInputElement>(null);
+  const [transferMsg, setTransferMsg] = useState<{ text: string; error: boolean } | null>(null);
+  const flash = (text: string, error = false) => {
+    setTransferMsg({ text, error });
+    setTimeout(() => setTransferMsg(null), 4000);
+  };
+
+  const handleExportSnippets = async () => {
+    if (customSnippets.length === 0) {
+      flash(t('liveTemplates.errNoCustomSnippets'), true);
+      return;
+    }
+    const path = await pickSaveFilePath(shareFileName(fileStamp(), 'snippets'), 'json', t('fileDialog.jsonFilter'));
+    if (!path) return;
+    const text = buildShareFile({ snippets: customSnippets }, new Date().toISOString());
+    const written = await saveExportFileAtPath(path, text, 'application/json');
+    flash(written ? t('liveTemplates.snippetsExported', { n: customSnippets.length, path }) : t('sqlEditor.sqlFileDownloaded'));
+  };
+
+  const onSnippetFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const parsed = parseShareFile(await file.text());
+      if (!parsed.ok) {
+        flash(t(SHARE_ERROR_KEY[parsed.error]), true);
+        return;
+      }
+      const { added, skipped, abbrDropped } = newSnippets(customSnippets, parsed.data.snippets);
+      const base = Date.now();
+      const imported: SqlSnippet[] = added.map((s, i) => ({
+        id: `custom_${base}_${i}`,
+        name: s.name,
+        // Only the categories a custom snippet can have; anything else (a newer build's category,
+        // a hand-edited file) lands under Custom rather than in a filter nobody can select.
+        category: (CUSTOM_CATEGORIES as readonly string[]).includes(s.category)
+          ? (s.category as SqlSnippet['category'])
+          : 'Custom',
+        description: s.description || 'Custom user SQL snippet',
+        template: s.template,
+        isCustom: true,
+        abbr: s.abbr,
+        isSnippetSyntax: s.isSnippetSyntax,
+      }));
+      if (imported.length > 0) saveCustomSnippets([...customSnippets, ...imported]);
+      flash(t('liveTemplates.snippetsImported', {
+        added: imported.length,
+        skipped: skipped + parsed.dropped,
+        abbr: abbrDropped,
+      }));
+    } catch (err: any) {
+      flash(t('sqlEditor.errSqlFileRead', { message: String(err?.message ?? err) }), true);
+    }
   };
 
   const handleDeleteCustomSnippet = (id: string, e: React.MouseEvent) => {
@@ -297,7 +394,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
                 setSelectedDoc(engineDocs[0].docEntry || null);
               }
             }}
-            title="Xem tài liệu hướng dẫn SQL (DocsViewer)"
+            title={t('liveTemplates.openDocs')}
             style={{
               background: 'transparent',
               border: 'none',
@@ -313,7 +410,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
 
           {/* Icon Parentheses / Snippet (Active Accent) */}
           <div
-            title="SQL Snippets Library"
+            title={t('liveTemplates.snippetLibrary')}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -328,9 +425,35 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
           </div>
         </div>
 
+        <div className="snippet-header-actions">
+          <button
+            type="button"
+            className="snippet-header-btn"
+            onClick={() => snippetFileInputRef.current?.click()}
+            title={t('liveTemplates.importSnippets')}
+            aria-label={t('liveTemplates.importSnippets')}
+          >
+            <Upload size={14} />
+          </button>
+          <button
+            type="button"
+            className="snippet-header-btn"
+            onClick={() => void handleExportSnippets()}
+            title={t('liveTemplates.exportSnippets')}
+            aria-label={t('liveTemplates.exportSnippets')}
+          >
+            <Download size={14} />
+          </button>
+          <input
+            ref={snippetFileInputRef}
+            type="file"
+            accept=".json,application/json"
+            className="sql-hidden-file-input"
+            onChange={onSnippetFilePicked}
+          />
         <button
           onClick={onClose}
-          title="Đóng panel Snippet"
+          title={t('liveTemplates.closePanel')}
           style={{
             background: 'transparent',
             border: 'none',
@@ -344,7 +467,12 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
         >
           <X size={15} />
         </button>
+        </div>
       </div>
+
+      {transferMsg && (
+        <div className={`snippet-transfer-msg${transferMsg.error ? ' is-error' : ''}`}>{transferMsg.text}</div>
+      )}
 
       {/* Category Dropdown & Add Button */}
       <div
@@ -375,6 +503,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
             }}
           >
             <option value="All Labels">All Labels</option>
+            <option value="Live Template">{t('liveTemplates.category')}</option>
             <option value="DML">DML</option>
             <option value="DDL">DDL</option>
             <option value="Flow Control">Flow Control</option>
@@ -407,7 +536,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
             borderRadius: '4px',
             border: '1px solid var(--win-border)',
             background: 'var(--win-bg-card)',
-            color: '#10b981',
+            color: 'var(--st-ok)',
             cursor: 'pointer',
             flexShrink: 0,
           }}
@@ -432,8 +561,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
           filteredSnippets.map((sn) => (
             <div
               key={sn.id}
-              onClick={() => onInsertSnippet(sn.template)}
-              onDoubleClick={() => onInsertSnippet(sn.template)}
+              onClick={() => onInsertSnippet(sn.isCustom ? customBodyToSnippet(sn.template) : sn.template, !!(sn.isSnippetSyntax || sn.isCustom))}
               title="Bấm hoặc nhấp kép để chèn vào Editor"
               style={{
                 display: 'flex',
@@ -458,11 +586,11 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
                   height: '28px',
                   borderRadius: '4px',
                   border: '1px solid #93c5fd',
-                  background: '#eff6ff',
+                  background: 'var(--win-accent-subtle)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: '#10b981',
+                  color: 'var(--st-ok)',
                   fontWeight: 700,
                   fontSize: '11px',
                   flexShrink: 0,
@@ -481,6 +609,9 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
                   <span style={{ fontSize: '10px', color: 'var(--win-text-disabled)' }}>
                     {sn.category}
                   </span>
+                  {sn.abbr && (
+                    <kbd className="snippet-abbr" title={t('liveTemplates.abbrBadgeTitle', { abbr: sn.abbr })}>{sn.abbr}</kbd>
+                  )}
                 </div>
 
                 <div
@@ -539,7 +670,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
                     style={{
                       background: 'transparent',
                       border: 'none',
-                      color: '#ef4444',
+                      color: 'var(--st-danger)',
                       cursor: 'pointer',
                       padding: '2px',
                     }}
@@ -880,6 +1011,25 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
               </div>
 
               <div>
+                <label className="snippet-field-label" htmlFor="snippet-abbr">
+                  {t('liveTemplates.abbrLabel')}
+                </label>
+                <input
+                  id="snippet-abbr"
+                  type="text"
+                  className="snippet-abbr-input"
+                  value={newAbbr}
+                  onChange={(e) => setNewAbbr(e.target.value)}
+                  placeholder={t('liveTemplates.abbrPlaceholder')}
+                  maxLength={24}
+                  spellCheck={false}
+                />
+                <div className={abbrError ? 'snippet-field-help is-error' : 'snippet-field-help'}>
+                  {abbrError ?? t('liveTemplates.abbrHelp')}
+                </div>
+              </div>
+
+              <div>
                 <label style={{ fontSize: '11.5px', fontWeight: 600, color: 'var(--win-text-secondary)', display: 'block', marginBottom: '6px' }}>
                   Nội dung SQL Template *
                 </label>
@@ -919,6 +1069,7 @@ export const SqlSnippetPanel: React.FC<SqlSnippetPanelProps> = ({ dbType, onInse
                 <button
                   type="submit"
                   className="btn btn-primary"
+                  disabled={!!abbrError}
                   style={{ padding: '6px 20px', fontSize: '12px' }}
                 >
                   Lưu Snippet

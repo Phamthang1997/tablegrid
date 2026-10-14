@@ -1,0 +1,309 @@
+/* Masking controls (MaskingControls.tsx), shared by the export and copy dialogs. */
+
+.mask-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+}
+
+.mask-section.on {
+  border-color: var(--win-accent);
+  background: var(--win-accent-subtle);
+}
+
+.mask-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--win-text-primary);
+  cursor: pointer;
+}
+
+.mask-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--win-text-secondary);
+}
+
+.mask-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--win-text-primary);
+}
+
+.mask-summary > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.mask-summary.warn > span {
+  color: var(--st-warn);
+}
+
+.mask-summary .btn,
+.mask-preview-head .btn,
+.mask-dialog + .modal-footer .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.mask-spacer {
+  flex: 1;
+}
+
+.mask-layout {
+  display: flex;
+  gap: 12px;
+  min-height: 380px;
+  max-height: 60vh;
+}
+
+.mask-tables {
+  width: 200px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--win-border);
+  padding-right: 8px;
+}
+
+.mask-tables-head {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--win-text-secondary);
+  padding: 2px 6px 6px;
+}
+
+.mask-table {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--win-text-primary);
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mask-table:hover {
+  background: var(--win-bg-hover);
+}
+
+.mask-table.on {
+  background: var(--win-accent-subtle);
+  color: var(--win-accent);
+}
+
+.mask-table-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mask-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--win-accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.mask-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mask-cols {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.mask-cols th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 5px 8px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--win-text-secondary);
+  background: var(--win-bg-tab-bar);
+  border-bottom: 1px solid var(--win-border);
+}
+
+.mask-cols td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--win-border);
+  vertical-align: middle;
+  color: var(--win-text-primary);
+}
+
+.mask-cols tr.masked td:first-child {
+  box-shadow: inset 3px 0 0 var(--win-accent);
+}
+
+.mask-cols .mono {
+  font-family: var(--win-font-mono);
+}
+
+.mask-cols .dim {
+  color: var(--win-text-secondary);
+}
+
+.mask-cols select.form-input,
+.mask-opt .form-input {
+  height: 26px;
+  font-size: 11px;
+  padding: 0 6px;
+}
+
+.mask-key {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--st-warn);
+  border-radius: 4px;
+  color: var(--st-warn);
+  font-family: var(--win-font-sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.mask-opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mask-opt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--win-text-secondary);
+  white-space: nowrap;
+}
+
+.mask-opt input[type='number'] {
+  width: 56px;
+}
+
+.mask-opt.wide .form-input {
+  width: 130px;
+}
+
+.mask-opt.check {
+  cursor: pointer;
+}
+
+.mask-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mask-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+}
+
+.mask-preview-head > span {
+  flex: 1;
+}
+
+.mask-preview-grid {
+  overflow-x: auto;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+}
+
+.mask-preview-grid table {
+  border-collapse: collapse;
+  font-family: var(--win-font-mono);
+  font-size: 11px;
+  min-width: 100%;
+}
+
+.mask-preview-grid th {
+  padding: 4px 10px;
+  text-align: left;
+  color: var(--win-text-secondary);
+  background: var(--win-bg-tab-bar);
+  border-bottom: 1px solid var(--win-border);
+  white-space: nowrap;
+}
+
+.mask-preview-grid td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--win-border);
+  vertical-align: top;
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mask-before {
+  color: var(--win-text-secondary);
+  text-decoration: line-through;
+}
+
+.mask-after {
+  color: var(--st-ok);
+}
+
+.mask-warn,
+.mask-error {
+  padding: 7px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.mask-warn {
+  background: color-mix(in srgb, var(--st-warn) 14%, transparent);
+  color: var(--st-warn);
+}
+
+.mask-error {
+  background: color-mix(in srgb, var(--st-danger) 12%, transparent);
+  color: var(--st-danger);
+}
+
+.mask-spin {
+  animation: mask-spin 0.9s linear infinite;
+}
+
+@keyframes mask-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

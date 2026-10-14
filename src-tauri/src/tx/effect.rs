@@ -251,6 +251,7 @@ pub fn dialect_of(conn: &DbConnection) -> &'static str {
         DbKind::Sqlite(_) => "sqlite",
         DbKind::Postgres(_) => "postgres",
         DbKind::Mysql(_) => "mysql",
+        DbKind::DuckDb(_) => "duckdb",
     }
 }
 

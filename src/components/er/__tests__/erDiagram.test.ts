@@ -10,8 +10,17 @@ import {
   HEADER_HEIGHT,
   ROW_HEIGHT,
 } from '../erLayoutEngine';
-import { exportToMermaid, exportToDbml, exportToSql, generateFullDiagramSvg } from '../erExportHelper';
-import type { ERTable, ERRelationship, ERLayoutPositions } from '../erTypes';
+import {
+  exportToMermaid,
+  exportToDbml,
+  exportToSql,
+  generateFullDiagramSvg,
+  mermaidType,
+  mermaidTooLarge,
+  MERMAID_MAX_TEXT,
+  MERMAID_MAX_EDGES,
+} from '../erExportHelper';
+import type { ERColumn, ERTable, ERRelationship, ERLayoutPositions } from '../erTypes';
 
 const mockTables: ERTable[] = [
   {
@@ -330,8 +339,9 @@ describe('erExportHelper', () => {
   it('exports valid Mermaid ER diagram syntax', () => {
     const mermaid = exportToMermaid(mockTables, mockRelationships);
     expect(mermaid).toContain('erDiagram');
-    expect(mermaid).toContain('store ||--o{ customer : "fk_customer_store"');
-    expect(mermaid).toContain('customer ||--o{ payment : "fk_payment_customer"');
+    // The FK columns are NOT NULL and not part of the child's key: mandatory, non-identifying.
+    expect(mermaid).toContain('store ||..o{ customer : "fk_customer_store"');
+    expect(mermaid).toContain('customer ||..o{ payment : "fk_payment_customer"');
     expect(mermaid).toContain('customer {');
     expect(mermaid).toContain('int customer_id PK');
     expect(mermaid).toContain('int store_id FK');
@@ -375,5 +385,99 @@ describe('erExportHelper', () => {
     expect(width).toBe(600);
     expect(height).toBe(400);
     expect(svgString).toContain('No tables to display');
+  });
+});
+
+describe('exportToMermaid — what Mermaid accepts and what the schema says', () => {
+  const col = (name: string, over: Partial<ERColumn> = {}): ERColumn => ({
+    name,
+    type: 'int',
+    isPrimaryKey: false,
+    isForeignKey: false,
+    ...over,
+  });
+  const rel = (sourceTable: string, sourceColumn: string, targetTable: string, name?: string): ERRelationship => ({
+    id: `${sourceTable}.${sourceColumn}->${targetTable}`,
+    name,
+    sourceTable,
+    sourceColumn,
+    targetTable,
+    targetColumn: 'id',
+  });
+
+  it('keeps type parameters and cleans what Mermaid cannot spell', () => {
+    expect(mermaidType('varchar(255)')).toBe('varchar(255)');
+    expect(mermaidType('numeric(10,2)')).toBe('numeric(10_2)');
+    expect(mermaidType('timestamp without time zone')).toBe('timestamp_without_time_zone');
+    expect(mermaidType("enum('a','b')")).toBe('enum');
+    expect(mermaidType('int[]')).toBe('int[]');
+    expect(mermaidType('')).toBe('text');
+    expect(mermaidType('"char"')).toBe('char');
+  });
+
+  it('aliases a name Mermaid cannot take bare, and keeps ids unique', () => {
+    const out = exportToMermaid(
+      [
+        { id: 'a', name: 'bookings.flights', columns: [col('id', { isPrimaryKey: true })] },
+        { id: 'b', name: 'Khách hàng', columns: [col('mã khách', { comment: 'Mã "nội bộ"' })] },
+        { id: 'c', name: 'bookings_flights', columns: [col('id')] },
+      ],
+      []
+    );
+    expect(out).toContain('    bookings_flights["bookings.flights"] {');
+    expect(out).toContain('    Kh_ch_h_ng["Khách hàng"] {');
+    // The plain table that collides with the sanitised id gets a suffix, not a clash — and an
+    // alias, so it still shows its real name.
+    expect(out).toContain('    bookings_flights_2["bookings_flights"] {');
+    // A column name that is not a word is sanitised, with the original kept in the comment.
+    expect(out).toContain(`int m_kh_ch "mã khách — Mã 'nội bộ'"`);
+  });
+
+  it('reads optionality, one-to-one and identifying from the FK column', () => {
+    const tables: ERTable[] = [
+      { id: 'parent', name: 'parent', columns: [col('id', { isPrimaryKey: true })] },
+      {
+        id: 'child',
+        name: 'child',
+        columns: [col('id', { isPrimaryKey: true }), col('parent_id', { isForeignKey: true, nullable: true })],
+      },
+      // Shares its parent's key: a one-to-one, identifying relationship.
+      { id: 'detail', name: 'detail', columns: [col('parent_id', { isPrimaryKey: true, isForeignKey: true })] },
+      // Part of a composite key: identifying, still one-to-many.
+      {
+        id: 'link',
+        name: 'link',
+        columns: [col('parent_id', { isPrimaryKey: true, isForeignKey: true }), col('other_id', { isPrimaryKey: true })],
+      },
+    ];
+    const out = exportToMermaid(tables, [
+      rel('child', 'parent_id', 'parent', 'fk_child'),
+      rel('detail', 'parent_id', 'parent', 'fk_detail'),
+      rel('link', 'parent_id', 'parent', 'fk_link'),
+    ]);
+    expect(out).toContain('    parent |o..o{ child : "fk_child"');
+    expect(out).toContain('    parent ||--o| detail : "fk_detail"');
+    expect(out).toContain('    parent ||--o{ link : "fk_link"');
+  });
+
+  it('draws only relationships between exported tables, once per constraint', () => {
+    const tables: ERTable[] = [
+      { id: 'a', name: 'a', columns: [col('id', { isPrimaryKey: true })] },
+      { id: 'b', name: 'b', columns: [col('a_x', { isForeignKey: true }), col('a_y', { isForeignKey: true })] },
+    ];
+    const out = exportToMermaid(tables, [
+      rel('b', 'a_x', 'a', 'fk_ab'),
+      rel('b', 'a_y', 'a', 'fk_ab'), // the second column of the same composite FK
+      rel('b', 'a_x', 'hidden', 'fk_hidden'), // a table outside the export
+    ]);
+    expect(out.match(/fk_ab/g)).toHaveLength(1);
+    expect(out).not.toContain('hidden');
+  });
+
+  it('flags a diagram past Mermaid\'s default render limits', () => {
+    expect(mermaidTooLarge('erDiagram\n    a ||..o{ b : "x"')).toBe(false);
+    expect(mermaidTooLarge('x'.repeat(MERMAID_MAX_TEXT + 1))).toBe(true);
+    const edges = Array.from({ length: MERMAID_MAX_EDGES + 1 }, (_, i) => `    a ||..o{ b : "r${i}"`);
+    expect(mermaidTooLarge(['erDiagram', ...edges].join('\n'))).toBe(true);
   });
 });

@@ -1,7 +1,5 @@
 //! Quoting identifiers and literals per dialect. Every place that builds SQL from a table/column name goes through here.
 
-use serde_json::Value;
-
 use super::conn::{DbConnection, DbKind};
 
 /// Defaults a Postgres schema to `public`, so a connection that never reported one behaves exactly
@@ -70,23 +68,15 @@ pub(crate) fn fk_checks_sql(conn: &DbConnection, on: bool) -> &'static str {
                 "PRAGMA foreign_keys = OFF"
             }
         }
-    }
-}
-
-// Format one JSON value as a SQL literal (following the same convention as commit_changes/export):
-// null -> NULL, string -> '...' (single quotes escaped), everything else (numbers/bools) -> to_string().
-pub(crate) fn sql_literal(v: Option<&Value>) -> String {
-    match v {
-        None | Some(Value::Null) => "NULL".to_string(),
-        Some(Value::String(s)) => format!("'{}'", s.replace('\'', "''")),
-        Some(other) => other.to_string(),
+        // Unreachable in practice: the callers run these on an `Exec`, which refuses DuckDB. A
+        // no-op rather than a panic keeps it that way if one day it is reached.
+        DbKind::DuckDb(_) => "SELECT 1",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use std::sync::{Arc, Mutex};
 
     // `connect_lazy` builds a pool without touching the network, which is all these need: the
@@ -169,16 +159,5 @@ mod tests {
         );
         assert_eq!(fk_checks_sql(&sqlite(), false), "PRAGMA foreign_keys = OFF");
         assert_eq!(fk_checks_sql(&sqlite(), true), "PRAGMA foreign_keys = ON");
-    }
-
-    /// An absent key and an explicit JSON null must both become `NULL`, not the string `"null"` —
-    /// they are what the grid sends for a cleared cell.
-    #[test]
-    fn sql_literal_covers_null_string_and_number() {
-        assert_eq!(sql_literal(None), "NULL");
-        assert_eq!(sql_literal(Some(&json!(null))), "NULL");
-        assert_eq!(sql_literal(Some(&json!("o'brien"))), "'o''brien'");
-        assert_eq!(sql_literal(Some(&json!(42))), "42");
-        assert_eq!(sql_literal(Some(&json!(true))), "true");
     }
 }

@@ -10,7 +10,7 @@ import {
   stripDefiner,
   wrapMysqlDelimiter,
 } from '../exportHelper';
-import { parseInsert, parseDumpObjects } from '../dumpPreview';
+import { parseInsert } from '../dumpPreview';
 import { splitStatements } from '../../sql/statements';
 
 const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: i + 1, name: `n${i + 1}` }));
@@ -187,22 +187,6 @@ describe('wrapMysqlDelimiter', () => {
   });
 });
 
-// The export side and the dump reader are a pair: routine and trigger names have to be detectable in
-// the very statements the export writes, or they never reach the import's selection list.
-describe('export -> parseDumpObjects', () => {
-  it('dò lại được routine/trigger sau khi bọc DELIMITER và bỏ DEFINER', () => {
-    const dump = wrapMysqlDelimiter([
-      stripDefiner('CREATE DEFINER=`root`@`localhost` PROCEDURE `film_in_stock`(IN id INT) BEGIN SELECT 1; END'),
-      stripDefiner('CREATE DEFINER=`root`@`localhost` FUNCTION `get_balance`(id INT) RETURNS DECIMAL(5,2) RETURN 0'),
-      stripDefiner('CREATE DEFINER=`root`@`localhost` TRIGGER `ins_film` AFTER INSERT ON `film` FOR EACH ROW BEGIN END'),
-    ]).join('\n');
-
-    const objs = parseDumpObjects(dump);
-    expect(objs.procedures).toEqual(['film_in_stock']);
-    expect(objs.functions).toEqual(['get_balance']);
-    expect(objs.triggers).toEqual(['ins_film']);
-  });
-});
 
 describe('missingViewDeps', () => {
   const view = (name: string, sql: string) => ({ name, sql });

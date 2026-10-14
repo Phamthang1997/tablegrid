@@ -11,7 +11,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next';
 import { AlertTriangle, Download, Save, Square, Upload } from 'lucide-react';
 import { activeConnId, dbHelper } from '../../utils/dbHelper';
-import { runApproved } from '../../utils/safeMode';
+import { approveJob, connKeyOfConn, openJobDoor, type JobApproval } from '../../utils/safeMode';
+import { cancelJob, startJob, type JobProgress } from '../../utils/jobs';
 import { pickSaveFilePath, saveExportFileAtPath } from '../../utils/fileSave';
 import {
   EXPORT_KEY_CAP,
@@ -63,15 +64,15 @@ export const RedisTransferDialog: React.FC<RedisTransferDialogProps> = ({
   const [tab, setTab] = useState<'export' | 'import'>(initialTab);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<TransferProgress | null>(null);
-  // Abort flag stored in ref to ensure immediate visibility inside the async transfer loop.
-  
-  const stopRef = useRef(false);
+  const [runError, setRunError] = useState<string | null>(null);
+  // The run is a job (`jobs.ts`); Stop cancels it, and the loops read `ctx.cancelled()` directly.
+  const jobIdRef = useRef<string | null>(null);
 
   // ---- Export ----
   const [prefix, setPrefix] = useState(initialPrefix);
   const [typeFilter, setTypeFilter] = useState(initialTypeFilter);
   const [exported, setExported] = useState<{
-    text: string; keys: number; missing: number; filtered: number; capped: boolean; stopped: boolean;
+    keys: number; missing: number; filtered: number; capped: boolean; stopped: boolean;
   } | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
 
@@ -96,63 +97,105 @@ export const RedisTransferDialog: React.FC<RedisTransferDialogProps> = ({
       setReplace(false);
       setImported(null);
       setProgress(null);
+      setRunError(null);
       setRunning(false);
     });
-    stopRef.current = false;
   }, [open, initialTab, initialPrefix, initialTypeFilter]);
 
   const pattern = useMemo(() => prefixPattern(prefix), [prefix]);
 
-  const runExport = useCallback(async () => {
-    stopRef.current = false;
-    setRunning(true);
-    setExported(null);
-    setSavedPath(null);
-    try {
-      const res = await buildRedisExport(
-        {
-          pattern,
-          db: dbIndex,
-          typeFilter: typeFilter || undefined,
-          // `createdAt` timestamp fixed at export initiation for deterministic testing.
-          
-          createdAt: new Date().toISOString(),
-          onProgress: setProgress,
-          shouldStop: () => stopRef.current,
-        },
-        {
-          scan: (p, cursor, count) => dbHelper.redisScanKeys(p, cursor, count),
-          dump: (keys) => dbHelper.redisDumpKeys(keys),
-        },
-      );
-      setExported({
-        text: res.text,
-        keys: res.keys,
-        missing: res.missing.length,
-        filtered: res.filtered,
-        capped: res.capped,
-        stopped: res.stopped,
-      });
-    } catch (e: any) {
-      onError(String(e?.message ?? e));
-    } finally {
-      setRunning(false);
-      setProgress(null);
-    }
-  }, [pattern, dbIndex, typeFilter, onError]);
+  /** What the tray shows for a transfer's progress — the same words as the dialog's status line. */
+  const jobProgress = useCallback((p: TransferProgress): JobProgress => ({
+    label: p.phase === 'dump'
+      ? t('redis.transferDumping', { n: p.done.toLocaleString() })
+      : p.phase === 'restore'
+        ? t('redis.transferRestoring', { done: p.done.toLocaleString(), total: (p.total ?? 0).toLocaleString() })
+        : t('redis.transferScanning', { n: p.done.toLocaleString() }),
+    current: p.total ? p.done : undefined,
+    total: p.total,
+  }), [t]);
 
-  const saveFile = useCallback(async () => {
-    if (!exported) return;
+  /**
+   * Export as a **background job**. The file is chosen FIRST and written by the job itself: the
+   * export used to live in this dialog's state until the user pressed Save, so closing the dialog —
+   * or just switching tabs of the app — threw away a scan of 100k keys. The dialog still shows the
+   * run while it is open (one run, read from two places, like the Data Generator); closing it
+   * leaves the job running in the tray.
+   *
+   * The connection id is fixed here: `redis_*` commands otherwise take the ambient id, and a job
+   * that outlives this dialog must not follow the user to another server.
+   */
+  const runExport = useCallback(async () => {
     const name = suggestExportFileName(dbIndex, prefix, new Date().toISOString());
     const path = await pickSaveFilePath(name, 'ndjson', t('redis.transferFileFilter'));
     if (!path) return;
-    try {
-      await saveExportFileAtPath(path, exported.text, 'application/x-ndjson');
-      setSavedPath(path);
-    } catch (e: any) {
-      onError(t('redis.transferSaveErr', { message: String(e?.message ?? e) }));
-    }
-  }, [exported, dbIndex, prefix, t, onError]);
+    const connId = activeConnId();
+    const pat = pattern;
+    const types = typeFilter || undefined;
+    setRunning(true);
+    setRunError(null);
+    setExported(null);
+    setSavedPath(null);
+    setProgress(null);
+    jobIdRef.current = startJob({
+      kind: 'redis-transfer',
+      title: t('jobs.titleRedisExport', { n: `db${dbIndex} ${pat}` }),
+      db: `db${dbIndex}`,
+      conn: connKeyOfConn(connId),
+      lockKey: `${connId}|db${dbIndex}`,
+      run: async (ctx) => {
+        try {
+          const res = await buildRedisExport(
+            {
+              pattern: pat,
+              db: dbIndex,
+              typeFilter: types,
+              // `createdAt` timestamp fixed at export initiation for deterministic testing.
+              createdAt: new Date().toISOString(),
+              onProgress: (p) => {
+                setProgress(p);
+                ctx.report(jobProgress(p));
+              },
+              // A stopped export still writes what it has: the file then carries no footer, and
+              // `parseRedisExport` reports it as truncated rather than passing it off as complete.
+              shouldStop: () => ctx.cancelled(),
+            },
+            {
+              scan: (p, cursor, count) => dbHelper.redisScanKeys(p, cursor, count, undefined, connId),
+              dump: (keys) => dbHelper.redisDumpKeys(keys, connId),
+            },
+          );
+          setExported({
+            keys: res.keys,
+            missing: res.missing.length,
+            filtered: res.filtered,
+            capped: res.capped,
+            stopped: res.stopped,
+          });
+          if (res.keys === 0) return { message: t('redis.transferExportEmpty') };
+          await saveExportFileAtPath(path, res.text, 'application/x-ndjson');
+          setSavedPath(path);
+          const notes = [
+            res.missing.length > 0 ? t('redis.transferMissing', { n: res.missing.length.toLocaleString() }) : '',
+            res.capped ? t('redis.transferCapped', { n: EXPORT_KEY_CAP.toLocaleString() }) : '',
+            res.stopped ? t('redis.transferStopped') : '',
+          ].filter(Boolean);
+          return {
+            message: t('redis.transferSaved', { path }),
+            path,
+            dir: path.replace(/[\\/][^\\/]*$/, ''),
+            warning: notes.length ? notes.join('\n') : undefined,
+          };
+        } catch (e: any) {
+          setRunError(String(e?.message ?? e));
+          throw e;
+        } finally {
+          setRunning(false);
+          setProgress(null);
+        }
+      },
+    });
+  }, [pattern, dbIndex, prefix, typeFilter, t, jobProgress]);
 
   const pickFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = e.target.files?.[0] || null;
@@ -169,34 +212,82 @@ export const RedisTransferDialog: React.FC<RedisTransferDialogProps> = ({
     }
   }, [onError, t]);
 
+  /**
+   * Import as a **background job**, asked about ONCE, now (`approveJob`) — not when the job reaches
+   * the front of the queue. The batches then pass through the door opened for the job's duration.
+   * There is no private connection here: Redis has no manual-transaction session to leak into, so
+   * what a job needs is only an id that stays put, which `connId` fixed at submit already is.
+   */
   const runImport = useCallback(async () => {
     if (!parsed) return;
-    stopRef.current = false;
-    setRunning(true);
-    setImported(null);
+    const connId = activeConnId();
     const detail = t(
       replace ? 'redis.transferApproveReplace' : 'redis.transferApprove',
       { n: parsed.entries.length.toLocaleString(), db: dbIndex },
     );
+    let approval: JobApproval;
     try {
-      // Batch wrapped under a single Safe Mode approval to avoid repeated modal prompts.
-      
-      const res = await runApproved('redis_restore_keys', activeConnId(), detail, () =>
-        applyRedisImport(
-          parsed.entries as RedisDumpEntry[],
-          { restore: (entries, rep) => dbHelper.redisRestoreKeys(entries, rep) },
-          { replace, onProgress: setProgress, shouldStop: () => stopRef.current },
-        ));
-      setImported(res);
-      // Invokes callback even on abort: keys already restored are persisted in database.
-      if (res.restored > 0) onImported();
-    } catch (e: any) {
-      onError(String(e?.message ?? e));
-    } finally {
-      setRunning(false);
-      setProgress(null);
+      approval = await approveJob('redis_restore_keys', connId, detail);
+    } catch {
+      return;
     }
-  }, [parsed, replace, dbIndex, t, onImported, onError]);
+    const entries = parsed.entries as RedisDumpEntry[];
+    const rep = replace;
+    setRunning(true);
+    setRunError(null);
+    setImported(null);
+    setProgress(null);
+    jobIdRef.current = startJob({
+      kind: 'redis-transfer',
+      title: t('jobs.titleRedisImport', { n: `db${dbIndex}` }),
+      db: `db${dbIndex}`,
+      conn: connKeyOfConn(connId),
+      write: true,
+      lockKey: `${connId}|db${dbIndex}`,
+      run: async (ctx) => {
+        const closeDoor = openJobDoor(approval, connId);
+        try {
+          const res = await applyRedisImport(
+            entries,
+            { restore: (batch, r) => dbHelper.redisRestoreKeys(batch, r, connId) },
+            {
+              replace: rep,
+              onProgress: (p) => {
+                setProgress(p);
+                ctx.report(jobProgress(p));
+              },
+              shouldStop: () => ctx.cancelled(),
+            },
+          );
+          setImported(res);
+          // Invokes callback even on abort: keys already restored are persisted in database.
+          if (res.restored > 0) onImported();
+          return {
+            message: t('redis.transferImportDone', {
+              restored: res.restored.toLocaleString(),
+              skipped: res.skipped.toLocaleString(),
+              failed: res.failed.length.toLocaleString(),
+            }),
+            warning: res.failed.length
+              ? res.failed.slice(0, FAILED_SHOWN).map((f) => `${f.key} — ${f.error}`).join('\n')
+              : undefined,
+          };
+        } catch (e: any) {
+          setRunError(String(e?.message ?? e));
+          throw e;
+        } finally {
+          closeDoor();
+          setRunning(false);
+          setProgress(null);
+        }
+      },
+    });
+  }, [parsed, replace, dbIndex, t, onImported, jobProgress]);
+
+  /** Stop = cancel the job; the loops read `ctx.cancelled()` between batches. */
+  const stop = () => {
+    if (jobIdRef.current) cancelJob(jobIdRef.current);
+  };
 
   if (!open) return null;
 
@@ -209,7 +300,6 @@ export const RedisTransferDialog: React.FC<RedisTransferDialogProps> = ({
       title={t('redis.transferTitle')}
       icon={<Upload size={14} />}
       onClose={onClose}
-      closeDisabled={running}
       width="560px"
       zIndex={10000}
     >
@@ -420,30 +510,27 @@ export const RedisTransferDialog: React.FC<RedisTransferDialogProps> = ({
             )}
           </>
         )}
+        {runError && (
+          <div className="redis-dialog-warn">
+            <AlertTriangle size={12} className="redis-dialog-warn-icon" />
+            <span>{runError}</span>
+          </div>
+        )}
       </ModalBody>
 
       <ModalFooter>
+        {/* Close is offered while running too: the run is a background job and carries on in the tray. */}
+        <button className="btn btn-secondary" onClick={onClose}>{t('common.close')}</button>
         {running ? (
-          <button
-            className="btn btn-secondary redis-value-save danger"
-            onClick={() => { stopRef.current = true; }}
-          >
+          <button className="btn btn-secondary redis-value-save danger" onClick={stop}>
             <Square size={10} /> {t('redis.transferStop')}
           </button>
         ) : (
           <>
-            <button className="btn btn-secondary" onClick={onClose}>{t('common.close')}</button>
             {tab === 'export' ? (
-              <>
-                {exported && exported.keys > 0 && (
-                  <button className="btn btn-secondary redis-value-save" onClick={saveFile}>
-                    <Save size={11} /> {t('redis.transferSave')}
-                  </button>
-                )}
-                <button className="btn btn-primary redis-value-save" onClick={runExport}>
-                  <Download size={11} /> {t('redis.transferRunExport')}
-                </button>
-              </>
+              <button className="btn btn-primary redis-value-save" onClick={runExport}>
+                <Save size={11} /> {t('redis.transferRunExport')}
+              </button>
             ) : (
               <button
                 className="btn btn-primary redis-value-save"

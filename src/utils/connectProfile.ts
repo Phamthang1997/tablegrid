@@ -12,6 +12,7 @@
 
 import { dbHelper } from './dbHelper';
 import { SECRET_FIELDS, mergeSecrets } from './secretFields';
+import { refreshVaultStatus } from './vault';
 import i18n from '../i18n';
 import type { SavedProfile } from '../components/ConnectionManager';
 import type { DbConnectionConfig } from './dbHelper';
@@ -53,6 +54,11 @@ export async function configWithSecrets(
     const secrets = await dbHelper.getSecrets(profile.id, SECRET_FIELD_LIST);
     return { config: mergeSecrets(profile.config, secrets) as DbConnectionConfig };
   } catch (e: any) {
+    // One reason the store can refuse is a master password that locked itself while the app was
+    // idle. ASK the backend rather than reading the message — the text is translated at the
+    // `dbHelper` boundary, so matching it would break on the first language switch — and a locked
+    // answer puts the lock screen back up on its own.
+    void refreshVaultStatus();
     return {
       config: profile.config as DbConnectionConfig,
       warning: i18n.t('connection.errReadSecrets', { message: e?.message || String(e) }),

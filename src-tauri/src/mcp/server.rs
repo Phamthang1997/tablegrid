@@ -144,6 +144,8 @@ impl McpServer {
         // Take the entry OUT under the lock, then await outside it. A std::sync::Mutex guard must
         // never be held across an await (CODING_STANDARDS.md 6.3).
         let running = self.lock().take();
+        // Parked writes first: they belong to clients this stop is cutting off.
+        super::approval::refuse_all();
         if let Some(r) = running {
             r.cancel.cancel();
             let _ = r.task.await;
