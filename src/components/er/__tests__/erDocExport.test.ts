@@ -69,6 +69,11 @@ describe('exportToMarkdownDoc', () => {
     expect(doc).toContain('Rows: ~599');
   });
 
+  it('doubles a backslash so one written before a pipe cannot unescape it', () => {
+    const t: ERTable = { id: 't', name: 't', columns: [col('p', { type: 'text', nullable: true, comment: 'C:\\|x' })] };
+    expect(exportToMarkdownDoc([t], [], labels)).toContain('| `p` | text | yes |  |  | C:\\\\\\|x |');
+  });
+
   it('lists who references a table, and says so when nobody does', () => {
     expect(doc).toContain('**Referenced by:** [customer](#customer).store_id (fk_customer_store)');
     expect(doc).toContain('**Referenced by:** none');

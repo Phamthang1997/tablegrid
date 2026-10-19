@@ -42,9 +42,12 @@ export interface ErDocLabels {
 /** Tables beside the one a section is about, at most, in its diagram. */
 export const NEIGHBOURS_MAX = 12;
 
-/** A Markdown table cell: `|` would end the cell, and a newline the row. */
+/**
+ * A Markdown table cell: `|` would end the cell, and a newline the row. Backslashes are doubled
+ * first, because GFM reads `\\|` as an escaped backslash followed by a cell-ending pipe.
+ */
 function cell(text: string | undefined | null): string {
-  return (text ?? '').replace(/\r?\n/g, ' ').replace(/\|/g, '\\|').trim();
+  return (text ?? '').replace(/\r?\n/g, ' ').replace(/\\/g, '\\\\').replace(/\|/g, '\\|').trim();
 }
 
 /**
