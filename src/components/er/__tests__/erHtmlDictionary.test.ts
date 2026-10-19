@@ -69,7 +69,7 @@ const rels: ERRelationship[] = [
 
 /** The page with its inlined style and script cut out, so assertions read the rendered data only. */
 function body(html: string): string {
-  return html.replace(/<style>[\s\S]*?<\/style>/, '').replace(/<script>[\s\S]*?<\/script>/, '');
+  return html.replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/gi, '').replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, '');
 }
 
 describe('exportToHtmlDictionary', () => {
