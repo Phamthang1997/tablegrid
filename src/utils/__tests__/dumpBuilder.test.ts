@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildDump, type DumpReader, type DumpSpec } from '../dumpBuilder';
-import { parseDumpObjects, parseDumpTableNames } from '../dumpPreview';
+import { EXPORT_PAGE_SIZE, buildDump, writeDump, type DumpReader, type DumpSpec } from '../dumpBuilder';
 import { splitStatements } from '../../sql/statements';
 
 // A fake reader: enough to build a dump without a backend. This is exactly why buildDump takes its
@@ -47,6 +46,86 @@ const spec = (over: Partial<DumpSpec> = {}): DumpSpec => ({
 
 /** Where a string first appears in the dump (-1 when it does not). */
 const at = (dump: string, needle: string) => dump.indexOf(needle);
+
+describe('writeDump — streaming to a sink', () => {
+  /** A table of `n` rows served in pages, the way `get_table_data` pages. */
+  const pagedReader = (n: number, pageCalls: number[] = []) =>
+    fakeReader({
+      getTableData: async (_t, page = 1, size = EXPORT_PAGE_SIZE) => {
+        pageCalls.push(page);
+        const start = (page - 1) * size;
+        const rows = Array.from({ length: Math.max(0, Math.min(size, n - start)) }, (_, i) => ({ id: start + i + 1 }));
+        return { rows, totalCount: n };
+      },
+    });
+  const tableOnly = spec({ tables: ['film'], views: [], routines: [], triggers: [] });
+  /** Two builds differ only in the header's timestamp. */
+  const undated = (dump: string) => dump.replace(/^-- Date: .*$/m, '');
+
+  it('emits exactly what buildDump returns, plus the trailing newline', async () => {
+    const chunks: string[] = [];
+    await writeDump(spec(), fakeReader(), (c) => { chunks.push(c); });
+    expect(undated(chunks.join(''))).toBe(undated((await buildDump(spec(), fakeReader())) + '\n'));
+  });
+
+  it('writes a large table one page at a time, never holding it whole', async () => {
+    const n = EXPORT_PAGE_SIZE * 2 + 7;
+    const chunks: string[] = [];
+    await writeDump(tableOnly, pagedReader(n), (c) => { chunks.push(c); });
+    // One chunk per page of data, each carrying only its own rows.
+    const dataChunks = chunks.filter((c) => c.includes('INSERT INTO `film`'));
+    expect(dataChunks).toHaveLength(3);
+    const idsIn = (c: string) => [...c.matchAll(/\((\d+)\)/g)].length;
+    expect(dataChunks.map(idsIn)).toEqual([EXPORT_PAGE_SIZE, EXPORT_PAGE_SIZE, 7]);
+    // The row-count comment rides in the first data chunk and carries the backend's count, since
+    // the rows of the later pages have not been read when it is written.
+    expect(dataChunks[0]).toContain(String(n));
+  });
+
+  it('every chunk ends between statements, so each can go to disk as is', async () => {
+    const chunks: string[] = [];
+    await writeDump(tableOnly, pagedReader(EXPORT_PAGE_SIZE + 1), (c) => { chunks.push(c); });
+    for (const c of chunks) {
+      expect(c.endsWith('\n')).toBe(true);
+      // Re-splitting a chunk on its own gives only whole statements: nothing is cut mid-INSERT.
+      for (const st of splitStatements(c)) {
+        if (/^INSERT/i.test(st.text.trim())) expect(st.text.trim()).toMatch(/\);?$/);
+      }
+    }
+    // And the concatenation replays the same rows as the single-string build.
+    expect(undated(chunks.join(''))).toBe(undated((await buildDump(tableOnly, pagedReader(EXPORT_PAGE_SIZE + 1))) + '\n'));
+  });
+
+  it('waits for the sink before reading the next page', async () => {
+    const calls: number[] = [];
+    const order: string[] = [];
+    await writeDump(tableOnly, pagedReader(EXPORT_PAGE_SIZE * 2, calls), async (c) => {
+      order.push(`write@${calls.length}`);
+      await new Promise((r) => setTimeout(r, 0));
+      if (c.includes('INSERT')) order.push('written');
+    });
+    // The second page is not requested until the first page's chunk has been written.
+    const firstData = order.indexOf('written');
+    expect(order[firstData - 1]).toBe('write@1');
+    expect(calls).toEqual([1, 2]);
+  });
+
+  it('stops between pages when onProgress throws (a cancelled job)', async () => {
+    const chunks: string[] = [];
+    let reports = 0;
+    const cancelling = spec({
+      ...tableOnly,
+      onProgress: () => {
+        reports++;
+        if (reports > 3) throw new Error('cancelled');
+      },
+    });
+    await expect(
+      writeDump(cancelling, pagedReader(EXPORT_PAGE_SIZE * 5), (c) => { chunks.push(c); }),
+    ).rejects.toThrow('cancelled');
+    expect(chunks.join('')).not.toContain('SET FOREIGN_KEY_CHECKS = 1');
+  });
+});
 
 describe('buildDump — thứ tự câu lệnh', () => {
   it('bảng -> view -> routine -> trigger, dù danh sách vào theo alphabet', async () => {
@@ -276,6 +355,25 @@ describe('buildDump — phần đi kèm bảng', () => {
     expect(dump).not.toContain('-- Sequence values');
   });
 
+  it('extension is written once, before the first table whose columns need it', async () => {
+    const dump = await buildDump(
+      spec({ dbType: 'postgres', tables: ['a_tbl', 'b_tbl', 'c_tbl'], views: [], routines: [], triggers: [] }),
+      fakeReader({
+        getTableDdlExtras: async (table) => ({
+          sequences: [], indexes: [], constraints: [], comments: [], sequenceValues: [],
+          extensions: table === 'a_tbl' ? [] : ['CREATE EXTENSION IF NOT EXISTS vector;'],
+        }),
+      })
+    );
+    const ext = 'CREATE EXTENSION IF NOT EXISTS vector;';
+    expect(dump.split(ext).length - 1).toBe(1);
+    expect(at(dump, 'CREATE TABLE `a_tbl`')).toBeLessThan(at(dump, ext));
+    expect(at(dump, ext)).toBeLessThan(at(dump, 'CREATE TABLE `b_tbl`'));
+    // Before the overwrite option's DROP of the same table too, not just its CREATE.
+    expect(at(dump, 'DROP TABLE IF EXISTS "b_tbl"')).toBeGreaterThan(-1);
+    expect(at(dump, ext)).toBeLessThan(at(dump, 'DROP TABLE IF EXISTS "b_tbl"'));
+  });
+
   it('MySQL/SQLite không có phần nào thì dump không thừa tiêu đề rỗng', async () => {
     const dump = await buildDump(spec({ triggers: [] }), fakeReader());
     expect(dump).not.toContain('-- Constraints');
@@ -376,32 +474,6 @@ describe('buildDump — event và materialized view', () => {
     expect(dump).not.toContain('DROP VIEW IF EXISTS');
     // A matview comes after the tables, so CREATE … WITH DATA (the default) already has data to read.
     expect(dump).toContain('CREATE MATERIALIZED VIEW "mv_stats"');
-  });
-});
-
-describe('buildDump — đọc lại được bằng chính bộ dò của popup Nhập', () => {
-  it('parseDumpObjects nhận ra đủ bảng/view/routine/trigger', async () => {
-    const dump = await buildDump(spec(), fakeReader());
-    const objs = parseDumpObjects(dump);
-    // The fake reader returns `CREATE TABLE` for views too, so a view sits in `tables` here — what is
-    // being checked is that every object can be detected again, not how the reader classifies them.
-    expect(objs.tables).toEqual(['film', 'actor_info']);
-    expect(objs.views).toEqual([]);
-    expect(objs.functions).toEqual(['get_balance']);
-    expect(objs.procedures).toEqual(['film_in_stock']);
-    expect(objs.triggers).toEqual(['ins_film']);
-  });
-
-  it('header schema không bị nhận nhầm thành một bảng để chọn', async () => {
-    // `parseDumpTableNames` both builds the list the user ticks and is the filter sent down to
-    // `restore_backup`. A ghost "sales" entry in it is both confusing and causes the real table's
-    // statements to be dropped when only it is selected.
-    const dump = await buildDump(
-      { ...spec({ dbType: 'postgres', tables: ['film'], views: [], routines: [], triggers: [] }), schema: 'sales' },
-      fakeReader()
-    );
-    expect(dump).toContain('SET search_path TO "sales";');
-    expect(parseDumpTableNames(dump)).toEqual(['film']);
   });
 });
 

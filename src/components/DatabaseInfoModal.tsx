@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { dbHelper, type DatabaseStats, type AllDatabasesStats, type AllDatabasesSizeItem } from '../utils/dbHelper';
-import { RefreshCw, HardDrive, Hash, Table, Search, ExternalLink, ShieldCheck, Database, Server, ScanSearch, Lock, Layers, Eye, Braces, Cog, ChevronRight, ChevronDown, Columns3 } from 'lucide-react';
+import { RefreshCw, HardDrive, Hash, Table, Search, ExternalLink, ShieldCheck, Database, Server, ScanSearch, Lock, Gauge, Layers, Eye, Braces, Cog, ChevronRight, ChevronDown, Columns3 } from 'lucide-react';
 import { Modal } from './Modal';
+import { IndexHealthPanel } from './diagnostics/IndexHealthPanel';
 
-type InfoTab = 'current' | 'all';
+type InfoTab = 'current' | 'all' | 'indexes';
 /** The object group being viewed in the "Current database" tab. */
 type ObjKind = 'all' | 'table' | 'view' | 'function' | 'procedure';
 
@@ -82,6 +83,8 @@ interface DatabaseInfoModalProps {
   /** See the note of the same name in `Sidebar.tsx`: it opens another connection rather than swapping the pool in place. */
   onDatabaseOpened?: (connId: string, name: string, schema?: string | null) => void;
   asTab?: boolean;
+  /** Opens SQL in a new query tab — the Index tab hands its DROP statements over this way. */
+  onOpenSql?: (sql: string) => void;
 }
 
 export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
@@ -90,6 +93,7 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
   onClose,
   onSelectTable,
   initialTab = 'current',
+  onOpenSql,
   onDatabaseOpened,
   asTab = false,
 }) => {
@@ -465,6 +469,11 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
               icon: <Server size={13} />,
               label: allStats ? t('dbInfo.tabAllCount', { n: scopedDatabases.length }) : t('dbInfo.tabAll'),
             },
+            {
+              key: 'indexes' as const,
+              icon: <Gauge size={13} />,
+              label: t('indexHealth.tab'),
+            },
             // Not named `t` — that is the translation function.
           ]).map((item) => (
             <button
@@ -481,6 +490,7 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
               <span>{item.label}</span>
             </button>
           ))}
+          {tab !== 'indexes' && (
           <button
             className="btn btn-secondary dbi-refresh-btn"
             onClick={() => (tab === 'all' ? fetchAllStats(true) : fetchStats())}
@@ -490,6 +500,7 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
             <RefreshCw size={12} className={busy ? 'loading-spinner' : ''} />
             <span>{busy ? t('dbInfo.loading') : t('dbInfo.refresh')}</span>
           </button>
+          )}
         </div>
 
         {/* Content Body */}
@@ -819,6 +830,8 @@ export const DatabaseInfoModal: React.FC<DatabaseInfoModalProps> = ({
             )}
           </div>
           </>)}
+
+          {tab === 'indexes' && <IndexHealthPanel connId={connId} onOpenSql={onOpenSql} />}
 
           {tab === 'all' && (<>
           {allError && (

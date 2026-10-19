@@ -59,6 +59,11 @@ pub async fn ping_connections() -> Result<Value, String> {
                 .unwrap_or(false),
             DbKind::Postgres(pool) => sqlx::query("SELECT 1;").execute(pool).await.is_ok(),
             DbKind::Mysql(pool) => sqlx::query("SELECT 1;").execute(pool).await.is_ok(),
+            // Same shared-handle truth as SQLite: a ping waits behind a long scan, and says so.
+            DbKind::DuckDb(arc) => arc
+                .lock()
+                .map(|c| c.execute_batch("SELECT 1;").is_ok())
+                .unwrap_or(false),
         };
         json!({ "connId": &*id, "ok": ok, "latencyMs": started.elapsed().as_millis() as u64 })
     }))
@@ -122,6 +127,24 @@ async fn probe_session_info(conn: &DbConnection) -> SessionInfo {
                     c.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
                         .ok()
                 })
+                .unwrap_or_default();
+            (
+                version,
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            )
+        }
+        DbKind::DuckDb(arc) => {
+            let version = arc
+                .lock()
+                .ok()
+                .and_then(|c| {
+                    c.query_row("SELECT version()", [], |r| r.get::<_, String>(0))
+                        .ok()
+                })
+                .map(|v| format!("DuckDB {v}"))
                 .unwrap_or_default();
             (
                 version,
@@ -326,6 +349,11 @@ pub async fn get_connection_status(
             DbKind::Mysql(pool) => {
                 let _ = sqlx::query("SELECT 1;").execute(pool).await;
             }
+            DbKind::DuckDb(arc) => {
+                if let Ok(conn) = arc.lock() {
+                    let _ = conn.execute_batch("SELECT 1;");
+                }
+            }
         }
         let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -351,14 +379,28 @@ pub async fn get_connection_status(
             tls_version,
         } = session;
 
-        let host = config
-            .as_ref()
-            .and_then(|c| c.get("host"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("localhost")
-            .to_string();
+        let host = if db_type == "duckdb" {
+            // A DuckDB file has no host; "localhost" read as a server the user never configured.
+            let path = config
+                .as_ref()
+                .and_then(|c| c.get("filePath"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            match std::path::Path::new(path).file_name() {
+                Some(name) if !path.is_empty() => name.to_string_lossy().into_owned(),
+                _ => "in-memory".to_string(),
+            }
+        } else {
+            config
+                .as_ref()
+                .and_then(|c| c.get("host"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("localhost")
+                .to_string()
+        };
 
-        let conn_type = if db_type == "sqlite" {
+        let conn_type = if db_type == "sqlite" || db_type == "duckdb" {
             "loc".to_string()
         } else if has_ssh
             || config

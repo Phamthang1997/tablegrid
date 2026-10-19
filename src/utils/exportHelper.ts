@@ -382,6 +382,130 @@ export function buildDatabaseFile(
   return { name: `${base}.zip`, data: buildZip(entries), mime: 'application/zip' };
 }
 
+// ---- Streaming writers ----
+//
+// The same files as `buildCsv` / `buildJson` / `buildSql` / `buildDatabaseFile`'s JSON, produced a
+// page of rows at a time so a large table can go straight to disk (`openFileSink` in `fileSave.ts`)
+// instead of being held in memory whole — docs/background-jobs-plan.md, Phase 3. Every writer is
+// held to one rule, pinned by `exportHelper.test.ts`: concatenating what it returns gives the SAME
+// BYTES as the one-shot builder, so a streamed file and an in-memory one cannot drift apart.
+//
+// XLSX has no writer here: the format is a zip whose directory comes last, so the workbook has to
+// exist whole before a byte of it can be written.
+
+/** A table written a page at a time. `page` and `finish` return the text to append, possibly empty. */
+export interface TextTableWriter {
+  page(rows: any[]): string;
+  finish(): string;
+}
+
+/** `JSON.stringify(value, null, 2)`, as it appears nested `pad` deep inside an enclosing value. */
+function indentedJson(value: any, pad: string): string {
+  return JSON.stringify(value, null, 2)
+    .split('\n')
+    .map((line) => pad + line)
+    .join('\n');
+}
+
+/**
+ * A JSON array written element by element. `pad` is the indent of the array itself (empty at the
+ * top level, two spaces as a value inside `{ "table": [...] }`), matching `JSON.stringify(…, 2)`.
+ */
+function jsonArrayWriter(pad: string): TextTableWriter {
+  let count = 0;
+  return {
+    page(rows) {
+      let out = '';
+      for (const row of rows) {
+        out += (count === 0 ? '[\n' : ',\n') + indentedJson(row, pad + '  ');
+        count++;
+      }
+      return out;
+    },
+    finish() {
+      return count === 0 ? '[]' : `\n${pad}]`;
+    },
+  };
+}
+
+/**
+ * One table's CSV, JSON or INSERT script, a page at a time.
+ *
+ * `colNames` may be empty — a table opened without a grid, whose schema read returned nothing — in
+ * which case the columns are those of the first row, exactly as the one-shot export decides them.
+ */
+export function createTableFileWriter(
+  format: 'csv' | 'json' | 'sql',
+  tableName: string,
+  colNames: string[],
+  dbType: string,
+): TextTableWriter {
+  if (format === 'json') return jsonArrayWriter('');
+
+  let cols = colNames;
+  let started = false;
+  let rowsWritten = 0;
+  const start = (firstRow?: any): string => {
+    started = true;
+    if (cols.length === 0 && firstRow) cols = Object.keys(firstRow);
+    // A BOM so Excel reads the UTF-8 correctly — the same header `buildCsv` writes.
+    return format === 'csv' ? '﻿' + cols.map(csvCell).join(',') : '';
+  };
+
+  return {
+    page(rows) {
+      if (rows.length === 0) return '';
+      let out = started ? '' : start(rows[0]);
+      if (format === 'csv') {
+        for (const r of rows) out += '\r\n' + cols.map((c) => csvCell(r?.[c])).join(',');
+      } else {
+        // `buildSql` joins its statements with '\n'; a page's statements are joined the same way.
+        out += (rowsWritten > 0 ? '\n' : '') + buildSql(tableName, cols, rows, dbType);
+      }
+      rowsWritten += rows.length;
+      return out;
+    },
+    finish() {
+      const head = started ? '' : start();
+      // An empty table: `buildSql` writes a comment saying so, and `buildCsv` just the header.
+      if (format === 'sql' && rowsWritten === 0) return head + buildSql(tableName, cols, [], dbType);
+      return head;
+    },
+  };
+}
+
+/**
+ * `buildDatabaseFile`'s JSON — `{ "table": [rows], … }` — one table and one page at a time.
+ * Call `table(name)` before the pages of each table, then `finish()` once.
+ */
+export function createDatabaseJsonWriter(): {
+  table(name: string): string;
+  page(rows: any[]): string;
+  finish(): string;
+} {
+  let tables = 0;
+  let current: TextTableWriter | null = null;
+  const closeTable = () => {
+    const out = current ? current.finish() : '';
+    current = null;
+    return out;
+  };
+  return {
+    table(name) {
+      const out = closeTable() + (tables === 0 ? '{\n' : ',\n') + `  ${JSON.stringify(name)}: `;
+      tables++;
+      current = jsonArrayWriter('  ');
+      return out;
+    },
+    page(rows) {
+      return current ? current.page(rows) : '';
+    },
+    finish() {
+      return tables === 0 ? '{}' : closeTable() + '\n}';
+    },
+  };
+}
+
 // ---- Entry point: export and download the whole file ----
 // fileName: the downloaded file's name, without an extension. Left empty -> the table name is used.
 // tableName still drives the contents (INSERT INTO / sheet names), so fileName does not replace it.

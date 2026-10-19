@@ -16,6 +16,7 @@ const TIERS: [string, string][] = [
   ['bảng nối được theo FK', rankSort('1z', 'address')],
   ['bảng', rankSort('2', 'film')],
   ['tên bảng trong scope', rankSort('3', 'f')],
+  ['live template', '3t_sel'],
   ['từ khoá hay dùng', rankSort('4', 'SELECT')],
   ['từ khoá khác', rankSort('5', 'SAVEPOINT')],
   ['mẫu câu theo dialect', 'z_sel'],

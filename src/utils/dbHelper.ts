@@ -1,3 +1,5 @@
+import type { LockGraph } from './lockTree';
+import type { IndexFacts } from './indexAnalysis';
 import { invoke as rawInvoke, Channel } from '@tauri-apps/api/core';
 import i18n from '../i18n';
 import { translateBackendError, translateResultErrors } from './backendErrors';
@@ -8,6 +10,7 @@ import {
   registerConnection,
 } from './safeMode';
 import { getStmtTimeoutForConfig } from './stmtTimeout';
+import { withHostKeyTrust, type HostKeyChallenge } from './sshHostKeys';
 import type {
   CompareSide,
   DataCompareResult,
@@ -22,6 +25,16 @@ import type {
   GenTargets,
 } from './dataGenHelper';
 import type { ProcessListSummary, KillResult } from './processMonitorTypes';
+import type { DumpScan } from './dumpPreview';
+import type {
+  CoerceOptions,
+  FileCheck,
+  FileDetect,
+  FileProbe,
+  ImportStepResult,
+  MappedColumn,
+  SourceOptions,
+} from './tableImport';
 
 /**
  * Which backend connection commands act on. Set from `connect()`'s response, cleared by
@@ -56,7 +69,7 @@ export interface OpenConnection {
   connId: string;
   db: string;
   /** `redis` since Redis shares the registry — the rail draws both from one list (§2.3). */
-  dialect: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+  dialect: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
   serverId: string;
   schema: string | null;
   /** WRITE statements waiting to be committed on this connection — the rail's badge (§4.2b). */
@@ -73,6 +86,21 @@ export interface OpenConnection {
 }
 
 /** State of the built-in MCP server. `url` is empty while stopped, so no one copies a dead address. */
+/**
+ * The master password's three booleans. Mirrors `credentials/vault.rs`'s `VaultStatus`.
+ *
+ * `enabled && !unlocked` is the only state that hides the app behind the lock screen, and it is
+ * derived here rather than sent as a fourth field so there is no way for the two to disagree.
+ */
+export interface VaultStatus {
+  /** A vault file exists, i.e. the master password is turned on. */
+  enabled: boolean;
+  /** The derived key is in the backend's memory, i.e. secrets are readable right now. */
+  unlocked: boolean;
+  /** The key is parked in the OS keyring, so launching this machine's app does not ask. */
+  remembered: boolean;
+}
+
 export interface McpStatus {
   running: boolean;
   port: number;
@@ -135,6 +163,25 @@ async function invoke<T = any>(cmd: string, args?: Record<string, unknown>): Pro
     // Error, so the message does not gain an "Error: " prefix.
     throw typeof err === 'string' ? translateBackendError(err) : err;
   }
+}
+
+/** The key an SSH server presented the last time it was refused — see `utils/sshHostKeys.ts`. */
+function readHostKeyChallenge(host: string, port: number): Promise<HostKeyChallenge | null> {
+  return invoke<HostKeyChallenge | null>('ssh_host_key_challenge', { host, port });
+}
+
+/**
+ * Every connect that can open an SSH session goes through this, so an untrusted host key becomes a
+ * question to the user and a retry rather than an error. `failed` reads a resolved result, for the
+ * methods that answer `{ success: false }` instead of throwing.
+ */
+function withSshTrust<T>(
+  config: Pick<DbConnectionConfig, 'sshEnabled' | 'sshHost' | 'sshPort'>,
+  attempt: () => Promise<T>,
+  failed?: (result: T) => boolean,
+): Promise<T> {
+  if (!config.sshEnabled) return attempt();
+  return withHostKeyTrust(readHostKeyChallenge, config.sshHost, config.sshPort, attempt, failed);
 }
 
 /**
@@ -242,7 +289,8 @@ export interface CheckConstraintInfo {
 }
 
 export interface DbConnectionConfig {
-  type: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+  type: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
+  /** The file of a file database: SQLite, or DuckDB (where an empty path is an in-memory database). */
   sqlitePath?: string;
   host?: string;
   port?: number;
@@ -571,17 +619,60 @@ function translateWarnings<T extends { warnings?: string[] }>(res: T): T {
   return res;
 }
 
+/** The config shape `connect_db` reads, built from the frontend's `DbConnectionConfig`. */
+function sqlConnectConfig(config: DbConnectionConfig): Record<string, unknown> {
+  return {
+    dbType: config.type,
+    filePath: config.sqlitePath,
+    host: config.host,
+    port: config.port,
+    user: config.user,
+    password: config.password,
+    database: config.database,
+    useSsh: config.sshEnabled,
+    sshHost: config.sshHost,
+    sshPort: config.sshPort,
+    sshUser: config.sshUser,
+    sshAuthType: config.sshAuthType,
+    sshPassword: config.sshPassword,
+    sshKeyPath: config.sshKeyPath,
+    sshKeyContent: config.sshKeyContent,
+    sshPassphrase: config.sshPassphrase,
+    sslEnabled: config.sslEnabled,
+    sslMode: config.sslMode,
+    sslKeyPath: config.sslKeyPath,
+    sslCertPath: config.sslCertPath,
+    sslCaPath: config.sslCaPath,
+    // The statement time limit is stored per server in localStorage (the Safe Mode popover),
+    // not in the profile. It is read here so a freshly opened connection carries the right limit
+    // from its very first statement — `setStatementTimeout` is only for changing it mid-session.
+    statementTimeoutSecs: getStmtTimeoutForConfig(config),
+    authMethod: config.authMethod,
+    awsAuthType: config.awsAuthType,
+    awsAccessKeyId: config.awsAccessKeyId,
+    awsSecretAccessKey: config.awsSecretAccessKey,
+    awsSessionToken: config.awsSessionToken,
+    awsProfile: config.awsProfile,
+    awsRegion: config.awsRegion,
+  };
+}
+
+export interface ConnectResult {
+  success: boolean;
+  message: string;
+  database?: string;
+  schema?: string | null;
+  /** The connection id just minted. Redis returns one too, since it shares the registry (§2.3). */
+  connId?: string;
+}
+
 export const dbHelper = {
-  async connect(
-    config: DbConnectionConfig,
-  ): Promise<{
-    success: boolean;
-    message: string;
-    database?: string;
-    schema?: string | null;
-    /** The connection id just minted. Redis returns one too, since it shares the registry (§2.3). */
-    connId?: string;
-  }> {
+  async connect(config: DbConnectionConfig): Promise<ConnectResult> {
+    return withSshTrust(config, () => dbHelper.connectOnce(config), (r) => !r.success);
+  },
+
+  /** `connect` without the host key prompt; call `connect`. */
+  async connectOnce(config: DbConnectionConfig): Promise<ConnectResult> {
     // Redis goes through its own redis_* commands, not SQL's connect_db.
     if (config.type === 'redis') {
       try {
@@ -631,42 +722,7 @@ export const dbHelper = {
       }
     }
     try {
-      const mappedConfig = {
-        dbType: config.type,
-        filePath: config.sqlitePath,
-        host: config.host,
-        port: config.port,
-        user: config.user,
-        password: config.password,
-        database: config.database,
-        useSsh: config.sshEnabled,
-        sshHost: config.sshHost,
-        sshPort: config.sshPort,
-        sshUser: config.sshUser,
-        sshAuthType: config.sshAuthType,
-        sshPassword: config.sshPassword,
-        sshKeyPath: config.sshKeyPath,
-        sshKeyContent: config.sshKeyContent,
-        sshPassphrase: config.sshPassphrase,
-        sslEnabled: config.sslEnabled,
-        sslMode: config.sslMode,
-        sslKeyPath: config.sslKeyPath,
-        sslCertPath: config.sslCertPath,
-        sslCaPath: config.sslCaPath,
-        // The statement time limit is stored per server in localStorage (the Safe Mode popover),
-        // not in the profile. It is read here so a freshly opened connection carries the right limit
-        // from its very first statement — `setStatementTimeout` is only for changing it mid-session.
-        statementTimeoutSecs: getStmtTimeoutForConfig(config),
-        authMethod: config.authMethod,
-        awsAuthType: config.awsAuthType,
-        awsAccessKeyId: config.awsAccessKeyId,
-        awsSecretAccessKey: config.awsSecretAccessKey,
-        awsSessionToken: config.awsSessionToken,
-        awsProfile: config.awsProfile,
-        awsRegion: config.awsRegion,
-      };
-
-      const res: any = await invoke('connect_db', { config: mappedConfig });
+      const res: any = await invoke('connect_db', { config: sqlConnectConfig(config) });
       if (res.success) {
         // The backend mints the id and hands it back; it is never derived from `config`, which
         // carries credentials (multi-connection-plan §4.3). Every later command carries it.
@@ -716,6 +772,67 @@ export const dbHelper = {
       forgetConnection(target);
       return { success: false };
     }
+  },
+
+  /**
+   * Opens a SQL connection for a background job from a config, not from an open connection
+   * (Connection Manager's Backup/Restore works from its form).
+   *
+   * Unlike `connect()` it leaves the ambient id alone — the job runs in the background, and pointing
+   * the app at its private connection used to send the user's next action there — and the backend
+   * registers it as a job connection, so it never shows in the rail. Close it with
+   * `closeJobConnection`.
+   */
+  async connectJob(config: DbConnectionConfig): Promise<{
+    success: boolean;
+    message: string;
+    schema?: string | null;
+    connId?: string;
+  }> {
+    return withSshTrust(config, () => dbHelper.connectJobOnce(config), (r) => !r.success);
+  },
+
+  /** `connectJob` without the host key prompt; call `connectJob`. */
+  async connectJobOnce(config: DbConnectionConfig): Promise<{
+    success: boolean;
+    message: string;
+    schema?: string | null;
+    connId?: string;
+  }> {
+    try {
+      const res: any = await invoke('connect_db', { config: sqlConnectConfig(config), job: true });
+      if (!res.success || !res.connId) {
+        return { success: false, message: res.message || i18n.t('db.errConnect') };
+      }
+      // Safe Mode still needs to know which server this id is on: a job connection is not exempt
+      // from the mode, it is asked about once, up front (`jobConnection.ts`).
+      registerConnection(res.connId, config);
+      return { success: true, message: i18n.t('db.connected'), schema: res.schema ?? null, connId: res.connId };
+    } catch (err: any) {
+      return { success: false, message: i18n.t('db.errBackendUnreachable', { message: String(err) }) };
+    }
+  },
+
+  /**
+   * A connection of its own for a background job, on the same server and database as
+   * `sourceConnId` — see `open_job_connection` for why a job must not run on the user's id.
+   * Throws on failure: the caller is a job, and a thrown string is what settles it as an error.
+   */
+  async openJobConnection(sourceConnId: string): Promise<{ connId: string; schema: string | null }> {
+    const res: any = await invoke('open_job_connection', { connId: sourceConnId });
+    // Same server, so the same Safe Mode policy — a job is not a way around it.
+    inheritConnection(sourceConnId, res.connId);
+    return { connId: res.connId, schema: res.schema ?? null };
+  },
+
+  /** Closes a job's connection. Never throws: it runs in a `finally`, after the job's real outcome. */
+  async closeJobConnection(connId: string): Promise<void> {
+    try {
+      await invoke('close_job_connection', { connId });
+    } catch {
+      // The backend refuses only a user connection, which a job never holds.
+    }
+    forgetConnection(connId);
   },
 
   async getConnectionStatus(): Promise<ConnectionStatus> {
@@ -948,8 +1065,9 @@ export const dbHelper = {
     constraints: string[];
     comments: string[];
     sequenceValues: string[];
+    extensions: string[];
   }> {
-    const empty = { sequences: [], indexes: [], constraints: [], comments: [], sequenceValues: [] };
+    const empty = { sequences: [], indexes: [], constraints: [], comments: [], sequenceValues: [], extensions: [] };
     try {
       const res: any = await invoke('get_table_ddl_extras', { connId, tableName });
       return {
@@ -958,6 +1076,7 @@ export const dbHelper = {
         constraints: res.constraints || [],
         comments: res.comments || [],
         sequenceValues: res.sequenceValues || [],
+        extensions: res.extensions || [],
       };
     } catch (err) {
       console.warn('[dbHelper] get_table_ddl_extras failed:', err);
@@ -1071,6 +1190,26 @@ export const dbHelper = {
         };
       }
       return { success: false, error: i18n.t('db.errNoQueryData') };
+    } catch (err: any) {
+      return { success: false, error: i18n.t('db.errQuery', { message: String(err) }) };
+    }
+  },
+
+  /**
+   * A k-NN query with `hnsw.ef_search` / `ivfflat.probes` applied to it alone (`SET LOCAL` inside a
+   * transaction that is always rolled back — see `vector_search.rs`). Same result shape as
+   * `executeQuery`. Settings left undefined keep the server's values.
+   */
+  async vectorSearch(
+    connId: string,
+    sql: string,
+    params: any[],
+    settings: { efSearch?: number; probes?: number } = {},
+  ): Promise<{ success: boolean; data?: any[]; columns?: string[]; error?: string }> {
+    try {
+      const res: any = await invoke('pg_vector_search', { connId, sql, params, settings });
+      const first = res?.results?.[0];
+      return { success: true, data: first?.data || [], columns: first?.columns || [] };
     } catch (err: any) {
       return { success: false, error: i18n.t('db.errQuery', { message: String(err) }) };
     }
@@ -1292,6 +1431,74 @@ export const dbHelper = {
     await invoke('secret_delete_many', { profileId, fields });
   },
 
+  // ---- Master Password (the vault behind the three methods above) ----
+  // Turning it on moves every secret out of the OS keyring and into an encrypted file whose key is
+  // derived from the password and never written to disk. See src-tauri/src/credentials/vault.rs.
+  //
+  // Nothing here reads or reports the derived key: the frontend only ever learns three booleans.
+  // The `locked` state is discovered by ASKING (`vaultStatus`) after a secret call fails, never by
+  // matching the error text — that text is translated at this very boundary, so comparing it would
+  // break the moment the UI language changes.
+
+  async vaultStatus(): Promise<VaultStatus> {
+    return await invoke('vault_status');
+  },
+
+  /**
+   * Turns the master password on. `profileIds` × `fields` is the set to migrate out of the keyring;
+   * only localStorage knows which profiles exist, so the list has to come from here.
+   */
+  async vaultEnable(
+    password: string,
+    remember: boolean,
+    profileIds: string[],
+    fields: string[],
+  ): Promise<VaultStatus> {
+    return await invoke('vault_enable', { password, remember, profileIds, fields });
+  },
+
+  async vaultUnlock(password: string, remember: boolean): Promise<VaultStatus> {
+    return await invoke('vault_unlock', { password, remember });
+  },
+
+  async vaultLock(): Promise<VaultStatus> {
+    return await invoke('vault_lock');
+  },
+
+  async vaultDisable(password: string): Promise<VaultStatus> {
+    return await invoke('vault_disable', { password });
+  },
+
+  async vaultChangePassword(oldPassword: string, newPassword: string): Promise<VaultStatus> {
+    return await invoke('vault_change_password', { oldPassword, newPassword });
+  },
+
+  async vaultSetRemember(remember: boolean): Promise<VaultStatus> {
+    return await invoke('vault_set_remember', { remember });
+  },
+
+  /** Throws the vault away, secrets and all — the answer to a forgotten password. */
+  async vaultReset(): Promise<VaultStatus> {
+    return await invoke('vault_reset');
+  },
+
+  /** Trust the key an SSH server was refused with. `fingerprint` is the one the user was shown. */
+  async sshTrustHostKey(host: string, port: number, fingerprint: string): Promise<void> {
+    await invoke('ssh_trust_host_key', { host, port, fingerprint });
+  },
+
+  /**
+   * Deletes a scheduled backup's oldest files in `dir` beyond the newest `keep` — only names the
+   * scheduler itself writes (`<prefix>-YYYYMMDD-HHMMSS.sql[.gz]`); see `backup_prune.rs`.
+   */
+  async pruneBackups(
+    dir: string,
+    prefix: string,
+    keep: number,
+  ): Promise<{ deleted: string[]; failed: { name: string; error: string }[] }> {
+    return await invoke('prune_backups', { dir, prefix, keep });
+  },
+
   // ---- SSH Terminal ----
   // Opens an SSH session plus a PTY/shell. The server pushes its output back over a Channel
   // (onMessage).
@@ -1302,9 +1509,11 @@ export const dbHelper = {
     rows: number,
     onMessage: (msg: SshTerminalMessage) => void
   ): Promise<void> {
-    const channel = new Channel<SshTerminalMessage>();
-    channel.onmessage = onMessage;
-    await invoke('open_ssh_terminal', {
+    // A fresh Channel per attempt: a retry after trusting the host key is a new session.
+    const open = async () => {
+      const channel = new Channel<SshTerminalMessage>();
+      channel.onmessage = onMessage;
+      await invoke('open_ssh_terminal', {
       profileConfig: {
         sshHost: profileConfig.sshHost,
         sshPort: profileConfig.sshPort,
@@ -1320,6 +1529,8 @@ export const dbHelper = {
       rows,
       channel,
     });
+    };
+    await withSshTrust({ ...profileConfig, sshEnabled: true }, open);
   },
 
   async sendSshInput(sessionId: string, data: string): Promise<void> {
@@ -1422,7 +1633,7 @@ export const dbHelper = {
   //
   // Each dialect uses exactly ONE statement; nothing here relies on driver multi-statement support.
   async detectLogPaths(connId: string, 
-    dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis'
+    dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis'
   ): Promise<{ paths: { label: string; path: string }[]; error?: string }> {
     const isAbs = (s: string) => /^([/~]|[A-Za-z]:[\\/])/.test(s);
     const paths: { label: string; path: string }[] = [];
@@ -1475,7 +1686,7 @@ export const dbHelper = {
   // (SUPER/superuser). kind: mysql 'general'|'slow'; postgres 'statements'|'collector'.
   // needsRestart = true means it takes effect only after restarting the server by hand.
   async enableLogging(connId: string, 
-    dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis',
+    dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis',
     kind: string
   ): Promise<{ success: boolean; message: string; needsRestart: boolean }> {
     let sql = '';
@@ -1493,7 +1704,7 @@ export const dbHelper = {
     return { success: res.success, message: res.error || '', needsRestart };
   },
 
-  async disableLogging(connId: string, dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis', kind: string): Promise<{ success: boolean; message: string }> {
+  async disableLogging(connId: string, dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis', kind: string): Promise<{ success: boolean; message: string }> {
     let sql = '';
     if (dbType === 'mysql') {
       sql = kind === 'general' ? "SET GLOBAL general_log='OFF';" : "SET GLOBAL slow_query_log='OFF';";
@@ -1573,15 +1784,6 @@ export const dbHelper = {
       return { response: res.reply || '' };
     } catch {
       return { response: i18n.t('db.errAiUnreachable') };
-    }
-  },
-
-  async importNewTable(tableName: string, rows: any[]): Promise<{ success: boolean; error?: string }> {
-    try {
-      const res: any = await invoke('import_new_table', { tableName, rows });
-      return { success: !!res.success, error: res.message };
-    } catch (err: any) {
-      return { success: false, error: err.toString() };
     }
   },
 
@@ -1788,15 +1990,34 @@ export const dbHelper = {
   // the Channel every ~20 statements, so the UI can draw a real progress bar instead of an
   // indeterminate one.
   async restoreBackup(
-    sqlContent: string,
+    /**
+     * The dump: its text (a dump built in memory — copy database), or a file on disk, which Rust
+     * reads and splits itself so a file of any size never becomes one string (`dump_file.rs`).
+     * `mysqlScript` is `scanDumpFile`'s answer, passed back so the file is not read twice.
+     */
+    source: string | { path: string; mysqlScript?: boolean },
     tables: string[],
     onProgress?: (msg: { type: string; done?: number; total?: number; statementsCount?: number }) => void,
     /** Skip a failing statement and carry on instead of rolling everything back (see `restore_backup`). */
     continueOnError?: boolean,
     /** The target connection, explicitly — the same reason as `generateData`: a background job can sit in the queue. */
     connId?: string,
+    /**
+     * Replay every statement, ignoring `tables` (which is then passed empty).
+     *
+     * Only for a dump this app built itself — see `run_all` in `restore_backup`. A user-supplied file
+     * must keep the filter: it is the only thing standing between "restore these four tables" and
+     * "replay the whole file".
+     */
+    runAll?: boolean,
+    /** Statements run before the dump's own: the overwrite option's `DROP … IF EXISTS` list. */
+    prepend?: string[],
   ): Promise<{
     success: boolean;
+    /** Stopped by `cancelRestore` and rolled back. `success` is false, `error` empty. */
+    cancelled?: boolean;
+    /** Only with `cancelled`: the dialect, because on MySQL the DDL that ran stays committed. */
+    dialect?: string;
     statementsCount?: number;
     activeDatabase?: string;
     error?: string;
@@ -1809,14 +2030,21 @@ export const dbHelper = {
       // messages are simply dropped.
       const channel = new Channel<any>();
       if (onProgress) channel.onmessage = onProgress;
+      const file = typeof source === 'string' ? null : source;
       const res: any = await invoke('restore_backup', withConnId({
-        sqlContent,
+        sqlContent: file ? null : source,
+        filePath: file ? file.path : null,
+        mysqlScript: file?.mysqlScript ?? null,
+        prepend: prepend?.length ? prepend : null,
         tables,
         onProgress: channel,
         continueOnError: !!continueOnError,
+        runAll: !!runAll,
       }, connId));
       return {
         success: !!res.success,
+        cancelled: !!res.cancelled,
+        dialect: res.dialect,
         statementsCount: res.statementsCount,
         activeDatabase: res.activeDatabase,
         error: res.message,
@@ -1828,16 +2056,139 @@ export const dbHelper = {
     }
   },
 
-  async importTableData(connId: string, name: string, rows: any[]): Promise<{ success: boolean; error?: string }> {
+  /**
+   * Reads a dump file from disk and reports what the restore screens show — tables, objects, the
+   * target database, planned counts and a preview — without the file entering the webview.
+   * Resolves to `null` when a newer scan started before this one finished. Throws on failure.
+   */
+  async scanDumpFile(
+    path: string,
+    onProgress?: (p: { bytesDone: number; bytesTotal: number }) => void,
+  ): Promise<DumpScan | null> {
+    const channel = new Channel<any>();
+    if (onProgress) channel.onmessage = onProgress;
+    const res: any = await invoke('scan_dump_file', { path, onProgress: channel });
+    return res?.superseded ? null : (res as DumpScan);
+  },
+
+  /**
+   * Asks the restore running on `connId` to stop; it rolls back and its own `restoreBackup` call
+   * answers `cancelled: true`. Best effort, like `cancelDataGeneration`.
+   */
+  async cancelRestore(connId: string): Promise<void> {
     try {
-      const res: any = await invoke('import_table_data', { connId, name, rows });
-      return { success: !!res.success, error: res.message };
-    } catch (err: any) {
-      return { success: false, error: err.toString() };
+      await invoke('cancel_restore', { connId });
+    } catch {
+      // Nothing for the user to act on — the job's own call reports how it ended.
     }
   },
 
+  /**
+   * What a file to import is — CSV / JSON / Excel / a SQL dump, plain, gzipped or inside a zip —
+   * from its bytes first and its name second (`import_file/source.rs`). Throws on failure.
+   */
+  async importFileDetect(path: string): Promise<FileDetect> {
+    return (await invoke('import_file_detect', { path })) as FileDetect;
+  },
+
+  /**
+   * The file's header and first rows, read in Rust from its PATH — the file never enters the
+   * webview. For a SQL dump only the `FileDetect` part comes back. Throws on failure.
+   */
+  async importFileProbe(path: string, options: SourceOptions): Promise<FileProbe> {
+    return (await invoke('import_file_probe', { path, options })) as FileProbe;
+  },
+
+  /**
+   * A dry run over the whole file. Resolves to null when `importFileCheckCancel(checkId)` stopped
+   * it. Throws on failure.
+   */
+  async importFileCheck(
+    checkId: string,
+    path: string,
+    options: SourceOptions,
+    spec: { columns: MappedColumn[]; coerce: CoerceOptions; infer?: boolean },
+    onProgress?: (p: { bytesDone: number; bytesTotal: number; rows: number }) => void,
+  ): Promise<FileCheck | null> {
+    const channel = new Channel<any>();
+    if (onProgress) channel.onmessage = onProgress;
+    const res: any = await invoke('import_file_check', { checkId, path, options, spec, onProgress: channel });
+    return res?.cancelled ? null : (res as FileCheck);
+  },
+
+  /** Stops a dry run. Best effort: the run itself answers how it ended. */
+  async importFileCheckCancel(checkId: string): Promise<void> {
+    try {
+      await invoke('import_file_check_cancel', { checkId });
+    } catch {
+      // Nothing to stop.
+    }
+  },
+
+  /**
+   * Starts a one-transaction import (`table_import.rs`) that reads its rows from `source` itself.
+   * Run on a job connection. `columns` are the INSERT columns, in `source.columns` order. With
+   * `create`, the import creates the table first (and a rollback removes it). Throws on failure.
+   */
+  async importBegin(
+    connId: string,
+    table: string,
+    columns: string[],
+    mode: 'atomic' | 'skip',
+    schema: string | null | undefined,
+    source: { path: string; options: SourceOptions; columns: MappedColumn[]; coerce: CoerceOptions },
+    create?: { name: string; type: string }[] | null,
+  ): Promise<{ handle: string }> {
+    const res: any = await invoke('import_begin', {
+      connId,
+      table,
+      columns,
+      mode,
+      schemaOverride: schema || null,
+      source,
+      create: create || null,
+    });
+    return { handle: res.handle };
+  },
+
+  /** Reads, converts and inserts the next `maxRows` rows of the import's file. Throws on failure. */
+  async importStep(handle: string, maxRows: number): Promise<ImportStepResult> {
+    const res: any = await invoke('import_step', { handle, maxRows });
+    return {
+      inserted: res.inserted ?? 0,
+      failed: res.failed || [],
+      badRows: res.badRows ?? 0,
+      issues: res.issues || [],
+      stopped: !!res.stopped,
+      done: !!res.done,
+      rowsRead: res.rowsRead ?? 0,
+      bytesDone: res.bytesDone ?? 0,
+      bytesTotal: res.bytesTotal ?? 0,
+    };
+  },
+
+  /** COMMIT (or ROLLBACK when `commit` is false). Throws on failure. */
+  async importFinish(handle: string, commit: boolean): Promise<{ inserted: number }> {
+    const res: any = await invoke('import_finish', { handle, commit });
+    return { inserted: res.inserted ?? 0 };
+  },
+
+  /** Rolls back and forgets. Never throws — it runs in a `finally`. */
+  async importAbort(handle: string): Promise<void> {
+    try {
+      await invoke('import_abort', { handle });
+    } catch {
+      // Nothing left to undo.
+    }
+  },
+
+
   async getDatabasesList(config: DbConnectionConfig): Promise<{ success: boolean; databases: string[]; error?: string }> {
+    return withSshTrust(config, () => dbHelper.getDatabasesListOnce(config), (r) => !r.success);
+  },
+
+  /** `getDatabasesList` without the host key prompt; call `getDatabasesList`. */
+  async getDatabasesListOnce(config: DbConnectionConfig): Promise<{ success: boolean; databases: string[]; error?: string }> {
     try {
       const mappedConfig = {
         dbType: config.type,
@@ -1905,10 +2256,12 @@ export const dbHelper = {
     pattern: string,
     cursor: number,
     count: number,
-    typeFilter?: string
+    typeFilter?: string,
+    /** Explicit for a background job, which may run after the ambient id moved on. */
+    connId?: string,
   ): Promise<{ success: boolean; cursor: number; keys: RedisKeyItem[]; error?: string }> {
     try {
-      const res: any = await invoke('redis_scan_keys', { pattern, cursor, count, typeFilter: typeFilter || null });
+      const res: any = await invoke('redis_scan_keys', withConnId({ pattern, cursor, count, typeFilter: typeFilter || null }, connId));
       return { success: !!res.success, cursor: res.cursor ?? 0, keys: res.keys || [] };
     } catch (err: any) {
       return { success: false, cursor: 0, keys: [], error: err.toString() };
@@ -2403,14 +2756,14 @@ export const dbHelper = {
   // already merged `currentConnId` in.
 
   /** DUMP + PTTL + TYPE for a batch of keys. `payload` is base64. */
-  async redisDumpKeys(keys: string[]): Promise<{
+  async redisDumpKeys(keys: string[], connId?: string): Promise<{
     success: boolean;
     entries: { key: string; type: string; ttlMs: number; payload: string }[];
     missing: string[];
     error?: string;
   }> {
     try {
-      const res: any = await invoke('redis_dump_keys', { keys });
+      const res: any = await invoke('redis_dump_keys', withConnId({ keys }, connId));
       return { success: !!res.success, entries: res.entries || [], missing: res.missing || [] };
     } catch (err: any) {
       return { success: false, entries: [], missing: [], error: err.toString() };
@@ -2425,6 +2778,7 @@ export const dbHelper = {
   async redisRestoreKeys(
     entries: { key: string; type: string; ttlMs: number; payload: string }[],
     replace: boolean,
+    connId?: string,
   ): Promise<{
     success: boolean;
     restored: number;
@@ -2433,7 +2787,7 @@ export const dbHelper = {
     error?: string;
   }> {
     try {
-      const res: any = await invoke('redis_restore_keys', { entries, replace });
+      const res: any = await invoke('redis_restore_keys', withConnId({ entries, replace }, connId));
       return {
         success: !!res.success,
         restored: res.restored ?? 0,
@@ -2568,6 +2922,15 @@ export const dbHelper = {
     return translateWarnings(await invoke<GenTargets>('get_generation_targets'));
   },
 
+  /**
+   * Masks one page of rows about to be exported (`datagen/mask.rs`). `columns` maps a column to
+   * its rule; columns without one come back untouched. Throws rather than returning a row it could
+   * not mask — the caller's export must stop, not write the original value.
+   */
+  async maskRows(key: string, columns: Record<string, { kind: string; options?: Record<string, unknown> }>, rows: any[]): Promise<any[]> {
+    return invoke<any[]>('mask_rows', { key, columns, rows });
+  },
+
   /** Generates `limit` sample rows of ONE table without writing to the database. */
   async previewGeneratedData(spec: GenSpec, table: string, limit = 100): Promise<GenPreview> {
     return translateWarnings(
@@ -2606,6 +2969,19 @@ export const dbHelper = {
     } catch {
       // Cancelling is "best effort": an error here leaves the user nothing to act on.
     }
+  },
+
+  /**
+   * Who waits for whom (`database/commands/locks.rs`): the edges, the sessions on them, and on MySQL
+   * the last deadlock InnoDB recorded. The tree is built by `utils/lockTree.ts`.
+   */
+  async getLockGraph(connId: string): Promise<LockGraph> {
+    return invoke<LockGraph>('get_lock_graph', { connId });
+  },
+
+  /** The indexes of the current database/schema with their usage and size (`stats/index_usage.rs`). */
+  async getIndexFacts(connId: string): Promise<IndexFacts> {
+    return invoke<IndexFacts>('get_index_facts', { connId });
   },
 
   /** Fetches active database connections, processlist and lock activity. */

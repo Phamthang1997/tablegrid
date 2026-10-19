@@ -35,14 +35,26 @@ macro_rules! decode_pg_cell {
         // one-byte `"CHAR"` prints WITH quotes and is deliberately not matched), and `citext` is
         // there because sqlx lists it as string-compatible. Anything not named here takes the full
         // chain, unchanged — including every type this list has never heard of.
-        let text_like = match sqlx::Row::try_column(row, col) {
-            Ok(c) => matches!(
-                sqlx::TypeInfo::name(sqlx::Column::type_info(c)),
-                "TEXT" | "VARCHAR" | "CHAR" | "NAME" | "citext"
-            ),
-            Err(_) => false,
-        };
+        let type_name = sqlx::Row::try_column(row, col)
+            .map(|c| sqlx::TypeInfo::name(sqlx::Column::type_info(c)))
+            .unwrap_or("");
+        let text_like = matches!(type_name, "TEXT" | "VARCHAR" | "CHAR" | "NAME" | "citext");
         'cell: {
+            // pgvector arrives as packed binary numbers, which the raw-bytes fallback below would
+            // hand back as a byte list — see `database/pgvector.rs`. Checked first: no branch of
+            // the chain below is compatible with an extension type, so they would all fail anyway.
+            if let Some(kind) = $crate::database::pgvector::pgvector_kind(type_name) {
+                if let Ok(raw) = row.try_get_raw(col) {
+                    if raw.is_null() {
+                        break 'cell Value::Null;
+                    }
+                    if raw.format() == sqlx_postgres::PgValueFormat::Binary {
+                        if let Some(s) = raw.as_bytes().ok().and_then(|b| $crate::database::pgvector::pgvector_text(kind, b)) {
+                            break 'cell json!(s);
+                        }
+                    }
+                }
+            }
             if !text_like {
                 if let Ok(v) = row.try_get::<Option<i16>, _>(col) { break 'cell v.map(|x| json!(x)).unwrap_or(Value::Null); }
                 else if let Ok(v) = row.try_get::<Option<i32>, _>(col) { break 'cell v.map(|x| json!(x)).unwrap_or(Value::Null); }

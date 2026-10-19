@@ -1,6 +1,7 @@
 import React from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { TerminalPanel } from './components/TerminalPanel';
+import { SshHostKeyGate } from './components/SshHostKeyGate';
 import type { DbConnectionConfig } from './utils/dbHelper';
 
 // Root for standalone OS window containing only the Terminal (opened via openTerminalWindow -> ?term=<json>).
@@ -26,6 +27,8 @@ export const TerminalWindow: React.FC<{ raw: string }> = ({ raw }) => {
         inOwnWindow
         onClose={() => { void getCurrentWindow().close(); }}
       />
+      {/* This window has its own React root, so the SSH host key prompt must be mounted here too. */}
+      <SshHostKeyGate />
     </div>
   );
 };

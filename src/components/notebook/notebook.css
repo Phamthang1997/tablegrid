@@ -1,0 +1,416 @@
+/* The query notebook (NotebookTab.tsx). Theme tokens only: the tab lives inside the app. */
+
+.nb-root {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--win-bg-window);
+}
+
+.nb-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--win-border);
+  background: var(--win-bg-tab-bar);
+  flex-shrink: 0;
+}
+
+.nb-toolbar .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.nb-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--win-border);
+  margin: 0 4px;
+}
+
+.nb-spacer {
+  flex: 1;
+}
+
+.nb-hidden {
+  display: none;
+}
+
+.nb-banner {
+  margin: 10px 14px 0;
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.nb-banner.info {
+  background: var(--win-accent-subtle);
+  color: var(--win-text-primary);
+}
+
+.nb-banner.error {
+  background: color-mix(in srgb, var(--st-danger) 14%, transparent);
+  color: var(--st-danger);
+}
+
+.nb-cells {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nb-cell {
+  position: relative;
+  border: 1px solid var(--win-border);
+  border-radius: 8px;
+  background: var(--win-bg-card);
+}
+
+.nb-cell:focus-within {
+  border-color: var(--win-accent);
+}
+
+.nb-cell.has-error {
+  border-color: color-mix(in srgb, var(--st-danger) 60%, transparent);
+}
+
+.nb-cell-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--win-border);
+}
+
+.nb-md .nb-cell-bar {
+  border-bottom: 0;
+  opacity: 0;
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  justify-content: flex-end;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.nb-md:hover .nb-cell-bar,
+.nb-md:focus-within .nb-cell-bar {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.nb-md .nb-cell-bar > svg {
+  display: none;
+}
+
+.nb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--win-text-secondary);
+  cursor: pointer;
+}
+
+.nb-icon-btn:hover:not(:disabled) {
+  background: var(--win-bg-hover);
+  color: var(--win-text-primary);
+}
+
+.nb-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.nb-icon-btn.nb-run {
+  color: var(--st-ok);
+}
+
+.nb-name {
+  width: 120px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--win-text-primary);
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.nb-name:hover,
+.nb-name:focus {
+  border-color: var(--win-border);
+  background: var(--win-bg-input);
+  outline: none;
+}
+
+.nb-name.bad {
+  border-color: var(--st-danger);
+  color: var(--st-danger);
+}
+
+.nb-editor {
+  min-height: 38px;
+}
+
+.nb-note {
+  padding: 10px 16px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--win-text-primary);
+  cursor: text;
+}
+
+.nb-note > :first-child {
+  margin-top: 0;
+}
+
+.nb-note > :last-child {
+  margin-bottom: 0;
+}
+
+.nb-note h2,
+.nb-note h3,
+.nb-note h4,
+.nb-note h5,
+.nb-note h6 {
+  margin: 10px 0 6px;
+  line-height: 1.3;
+}
+
+.nb-note h2 {
+  font-size: 17px;
+}
+
+.nb-note h3 {
+  font-size: 15px;
+}
+
+.nb-note h4,
+.nb-note h5,
+.nb-note h6 {
+  font-size: 13px;
+}
+
+.nb-note p,
+.nb-note ul,
+.nb-note ol,
+.nb-note blockquote,
+.nb-note pre {
+  margin: 6px 0;
+}
+
+.nb-note ul,
+.nb-note ol {
+  padding-left: 22px;
+}
+
+.nb-note code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--win-bg-code);
+  font-family: var(--win-font-mono);
+  font-size: 12px;
+}
+
+.nb-note pre {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--win-bg-code);
+  overflow-x: auto;
+}
+
+.nb-note pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.nb-note blockquote {
+  padding: 4px 12px;
+  border-left: 3px solid var(--win-accent);
+  color: var(--win-text-secondary);
+}
+
+.nb-note hr {
+  border: 0;
+  border-top: 1px solid var(--win-border);
+}
+
+.nb-note a {
+  color: var(--win-accent);
+}
+
+.nb-note-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--win-bg-input);
+  color: var(--win-text-primary);
+  font-family: var(--win-font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+}
+
+.nb-dim {
+  color: var(--win-text-secondary);
+}
+
+.nb-result {
+  border-top: 1px solid var(--win-border);
+  padding: 6px 8px 8px;
+}
+
+.nb-result-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--win-text-secondary);
+  padding: 0 2px 6px;
+}
+
+.nb-error {
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--st-danger) 12%, transparent);
+  color: var(--st-danger);
+  font-family: var(--win-font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.nb-grid-wrap {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--win-border);
+  border-radius: 6px;
+}
+
+.nb-grid {
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: var(--win-font-mono);
+  min-width: 100%;
+}
+
+.nb-grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 5px 10px;
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--win-bg-tab-bar);
+  color: var(--win-text-secondary);
+  border-bottom: 1px solid var(--win-border);
+}
+
+.nb-grid td {
+  padding: 4px 10px;
+  white-space: nowrap;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--win-border);
+  color: var(--win-text-primary);
+}
+
+.nb-grid tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.nb-grid tbody tr:hover td {
+  background: var(--win-bg-hover);
+}
+
+.nb-grid td.nb-null {
+  color: var(--win-text-disabled);
+  font-style: italic;
+}
+
+/* The "+ SQL / + Note" pair on the lower edge of a cell, shown on hover. */
+.nb-insert {
+  position: absolute;
+  left: 50%;
+  bottom: -11px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  z-index: 2;
+  transition: opacity 0.12s ease;
+}
+
+.nb-cell:hover .nb-insert {
+  opacity: 1;
+}
+
+.nb-insert button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--win-border);
+  border-radius: 999px;
+  background: var(--win-bg-popover);
+  color: var(--win-text-secondary);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.nb-insert button:hover {
+  color: var(--win-text-primary);
+  border-color: var(--win-accent);
+}
+
+.nb-unsafe {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.nb-unsafe li {
+  margin: 6px 0;
+}
+
+.nb-unsafe code {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--win-font-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--win-text-secondary);
+}
+
+.nb-spin {
+  animation: nb-spin 0.9s linear infinite;
+}
+
+@keyframes nb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

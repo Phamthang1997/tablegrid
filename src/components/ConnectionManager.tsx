@@ -1,29 +1,32 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { activeConnId, dbHelper, setActiveConnId } from '../utils/dbHelper';
+import { dbHelper } from '../utils/dbHelper';
 import type { DbConnectionConfig } from '../utils/dbHelper';
-import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, Check, Cloud, DatabaseBackup, LogIn } from 'lucide-react';
-import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './DbIcons';
-import { encryptConnectionExport, decryptConnectionExport } from '../utils/cryptoHelper';
+import { Database, Server, CheckCircle2, AlertTriangle, Plus, Trash2, Save, Copy, Download, Upload, Lock, Key, TerminalSquare, Hash, FolderOpen, User, Link, Star, Eye, EyeOff, ShieldAlert, Search, X, ChevronDown, ChevronRight, RefreshCw, ShieldCheck, Network, ArrowLeft, ArrowRight, Check, Cloud, DatabaseBackup, LogIn, KeyRound, CalendarClock } from 'lucide-react';
+import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon, DuckDbIcon } from './DbIcons';
+import { isFileDb } from '../utils/dbCaps';
+import { encryptConnectionExport, decryptConnectionExport, CONNECTION_FILE_EXT, CONNECTION_FILE_ACCEPT } from '../utils/cryptoHelper';
 import { CONN_ENVS, envLabelKey, legacyEnvOfColor, normalizeEnv, type ConnEnv } from '../utils/connEnv';
 import {
-  parseDumpObjects,
-  parseDumpTableNames,
   buildDropStatements,
   addExistsHint,
-  dumpStatementObject,
-  stripLeadingSqlComments,
-  isSkippedDumpBody,
-  commentOnlyFromBody,
+  fileBaseName,
+  plannedFromScan,
+  type DumpScan,
 } from '../utils/dumpPreview';
-import { splitStatements } from '../sql/statements';
-import { buildDump, dumpReaderFor } from '../utils/dumpBuilder';
-import { gzipText, getLastExportDir, saveExportFile, pickOpenFile, pickSqliteDatabaseFile } from '../utils/fileSave';
+import { buildDump, writeDump } from '../utils/dumpBuilder';
+import { planDatabaseBackup } from '../utils/profileBackup';
+import { getLastExportDir, saveDumpToFolder, saveExportFileAtPath, pickOpenFile, pickSaveFilePath, pickSqliteDatabaseFile, pickDuckDbDatabaseFile } from '../utils/fileSave';
 import { fileBaseFromPath, fileStamp, safeFileBase } from '../utils/exportHelper';
 import { startJob } from '../utils/jobs';
+import { runOnJobConnection } from '../utils/jobConnection';
+import { approveJobForServer, type JobApproval } from '../utils/safeMode';
 import { connKey } from '../utils/connKey';
-import { formatRestoreEta, makeRestoreReporter } from '../utils/restoreProgress';
+import { formatRestoreEta, makeRestoreReporter, restoreCancelledResult } from '../utils/restoreProgress';
 import { ConfirmDialog } from './ConfirmDialog';
+import { MasterPasswordModal } from './MasterPasswordModal';
+import { BackupSchedulesDialog } from './BackupSchedulesDialog';
+import { refreshVaultStatus } from '../utils/vault';
 import {
   SECRET_FIELDS,
   hasInlineSecrets,
@@ -51,7 +54,7 @@ const LoadingSpinner: React.FC<{ size?: number; style?: React.CSSProperties; cla
       cx="12"
       cy="12"
       r="10"
-      stroke="var(--win-border-strong, #383b44)"
+      style={{ stroke: 'var(--win-border-strong)' }}
       strokeWidth="3"
       opacity="0.2"
     />
@@ -110,7 +113,7 @@ const FilePick: React.FC<{ id: string; value: string; label: string; onPick: (pa
 export interface SavedProfile {
   id: string;
   name: string;
-  type: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+  type: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
   config: any;
   /** The colour label, purely decorative. The environment lives in `env` — see `utils/connEnv.ts`. */
   color?: string;
@@ -147,12 +150,19 @@ interface ConnectionManagerProps {
    * user to back up a database other than the one they are looking at.
    */
   embedded?: boolean;
+  /**
+   * `'new'` turns the screen into a "create one connection" dialog: no saved-profile list (the quick
+   * switcher already lists those), no profile auto-selected on mount, a type picker first, and
+   * nothing written to the profile list until the connection succeeds — closing the dialog halfway
+   * leaves no half-filled profile behind.
+   */
+  variant?: 'manage' | 'new';
   // `profile` is the profile chosen for the connection, when there is one. App keeps the id and name
   // so the connection popover can edit name and colour and write them straight back into
   // tf_connection_profiles.
   onConnect: (
     dbName: string,
-    dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis',
+    dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis',
     color?: string,
     config?: DbConnectionConfig,
     // `env` lives here rather than becoming a seventh positional parameter: it is a property of the
@@ -180,10 +190,14 @@ const TYPE_META: Record<string, { label: string; color: string; Icon: React.FC<{
   postgres: { label: 'PostgreSQL', color: '#336791', Icon: PostgresIcon },
   mysql: { label: 'MySQL', color: '#00758F', Icon: MySqlIcon },
   redis: { label: 'Redis', color: '#DC382D', Icon: RedisIcon },
+  duckdb: { label: 'DuckDB', color: '#FFF000', Icon: DuckDbIcon },
 };
 
-export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, embedded = false, onConnect }) => {
+export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, embedded = false, variant = 'manage', onConnect }) => {
   const { t } = useTranslation();
+  const isNew = variant === 'new';
+  // New-connection dialog only: whether a successful Connect also adds the profile to the list.
+  const [saveToList, setSaveToList] = useState(true);
 
   // A switch rather than t(`...${mode}`): a key built at runtime is not checked
   // against the key tree declared in i18next.d.ts.
@@ -205,7 +219,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     fail: t('connection.ledFail'),
   };
 
-  const [activeType, setActiveType] = useState<'sqlite' | 'postgres' | 'mysql' | 'redis' | 'backup_restore'>('sqlite');
+  const [activeType, setActiveType] = useState<'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis' | 'backup_restore'>('sqlite');
   // Redis form state
   const [redisHost, setRedisHost] = useState('127.0.0.1');
   const [redisPort, setRedisPort] = useState(6379);
@@ -323,7 +337,14 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   const [brDropTable, setBrDropTable] = useState(true);
   const [brIncludeStructure, setBrIncludeStructure] = useState(true);
   const [brIncludeContent, setBrIncludeContent] = useState(true);
-  const [brFile, setBrFile] = useState<File | null>(null);
+  // The dump to restore, as a PATH: Rust reads it itself (`scan_dump_file`, then `restore_backup`),
+  // so the file never enters the webview. It used to be a `File` read with `readAsText` — which
+  // froze the window on a large dump and did not gunzip a `.gz` at all.
+  const [brDumpPath, setBrDumpPath] = useState<string | null>(null);
+  const [brScan, setBrScan] = useState<DumpScan | null>(null);
+  const [brScanPct, setBrScanPct] = useState<number | null>(null);
+  // A newer pick supersedes a scan still running; its answer must not land on the newer file.
+  const brScanSeq = useRef(0);
   // Drop same-named objects before running the dump (otherwise it fails with "already exists")
   const [brOverwrite, setBrOverwrite] = useState(false);
   // Skip a failing statement instead of rolling everything back — the same meaning as the checkbox in the Import dialog.
@@ -334,7 +355,6 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   const [brSelectedTables, setBrSelectedTables] = useState<string[]>([]);
   const [brParsing, setBrParsing] = useState(false);
 
-  const [brSqlText, setBrSqlText] = useState<string>('');
   const [availableDatabases, setAvailableDatabases] = useState<string[]>([]);
   const [loadingDbs, setLoadingDbs] = useState(false);
 
@@ -493,42 +513,48 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     }
   }, [brType, brPgHost, brPgPort, brPgUser, brPgPassword, brMyHost, brMyPort, brMyUser, brMyPassword, activeType]);
 
-  useEffect(() => {
-    const parseTables = async () => {
-      if (!brFile) {
-        setBrParsedTables([]);
-        setBrSelectedTables([]);
-        setBrSqlText('');
-        return;
-      }
-      setBrParsing(true);
-      setErrorMsg(null);
-      try {
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-          try {
-            const text = event.target?.result as string;
-            setBrSqlText(text);
-
-            // The same detector the Import dialog uses: it also recognises VIEWs (a dump writes them
-            // with CREATE VIEW / DROP VIEW, not DROP TABLE) and rejects temp tables inside routines.
-            const tables = parseDumpTableNames(text);
-            setBrParsedTables(tables);
-            setBrSelectedTables(tables);
-          } catch (e) {
-            console.error(e);
-          } finally {
-            setBrParsing(false);
-          }
-        };
-        reader.readAsText(brFile);
-      } catch (err: any) {
-        console.error('Lỗi đọc bảng từ file:', err);
+  const pickBrDump = async () => {
+    const path = await pickOpenFile({
+      title: t('connection.brPickFile'),
+      // A pg_dump -Fc/-Ft archive is read through pg_restore; what a file IS is decided by its
+      // bytes, not its name, so "All files" is offered too.
+      filters: [
+        { name: 'SQL dump / pg_dump archive', extensions: ['sql', 'gz', 'dump', 'backup', 'tar'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    });
+    if (!path) return;
+    const seq = ++brScanSeq.current;
+    setBrDumpPath(path);
+    setBrScan(null);
+    setBrParsedTables([]);
+    setBrSelectedTables([]);
+    setBrScanPct(0);
+    setBrParsing(true);
+    setErrorMsg(null);
+    try {
+      const scan = await dbHelper.scanDumpFile(path, (prog) => {
+        if (seq === brScanSeq.current && prog.bytesTotal) {
+          setBrScanPct(Math.floor((prog.bytesDone / prog.bytesTotal) * 100));
+        }
+      });
+      if (seq !== brScanSeq.current || !scan) return;
+      setBrScan(scan);
+      // The same detector the Import dialog uses: it also recognises VIEWs (a dump writes them
+      // with CREATE VIEW / DROP VIEW, not DROP TABLE) and rejects temp tables inside routines.
+      setBrParsedTables(scan.tables);
+      setBrSelectedTables(scan.tables);
+    } catch (err: any) {
+      if (seq !== brScanSeq.current) return;
+      setBrDumpPath(null);
+      setErrorMsg(t('importDialog.errReadFile', { message: err?.message || String(err) }));
+    } finally {
+      if (seq === brScanSeq.current) {
         setBrParsing(false);
+        setBrScanPct(null);
       }
-    };
-    parseTables();
-  }, [brFile]);
+    }
+  };
 
   // Connection Profiles States
   const [profiles, setProfiles] = useState<SavedProfile[]>([]);
@@ -540,6 +566,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   const [profileEnv, setProfileEnv] = useState<ConnEnv>('none');
   const [profileGroup, setProfileGroup] = useState('');
   const [secretError, setSecretError] = useState<string | null>(null); // an error while working with the OS secret store
+  const [showMasterPassword, setShowMasterPassword] = useState(false);
+  const [showBackupSchedules, setShowBackupSchedules] = useState(false);
 
   // The ONE place profiles are written: it always strips the secrets out of the config before
   // touching localStorage, and pushes them into the OS secret store at the same time. The in-memory
@@ -562,6 +590,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       setSecretError(null);
     } catch (e: any) {
       // The config was still saved; only the secrets failed to reach the OS store -> say so plainly.
+      void refreshVaultStatus();
       setSecretError(t('connection.errSaveSecrets', { message: e?.message || e }));
     }
     return stripped;
@@ -573,6 +602,10 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       const secrets = await dbHelper.getSecrets(profile.id, SECRET_FIELD_LIST);
       return mergeSecrets(profile.config, secrets);
     } catch (e: any) {
+      // A master password that locked itself is one reason the store refuses. Ask the backend
+      // rather than reading the message — see `utils/vault.ts` — and the lock screen comes back on
+      // its own if that is what happened.
+      void refreshVaultStatus();
       setSecretError(t('connection.errReadSecrets', { message: e?.message || e }));
       return profile.config;
     }
@@ -675,6 +708,17 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
         return;
       }
 
+      // Asking for the destination BEFORE reading any secret, for the same reason the plaintext
+      // warning above is asked first: cancelling the dialog must not have touched the keychain.
+      const baseName = exportScope === 'group' ? `TableGrid_${exportGroupTarget.replace(/[^a-zA-Z0-9]/g, '_')}_Connections` :
+        exportScope === 'single' ? `TableGrid_${exportSingleProfile?.name.replace(/[^a-zA-Z0-9]/g, '_')}_Connection` :
+          'TableGrid_All_Connections';
+      const targetPath = await pickSaveFilePath(baseName, CONNECTION_FILE_EXT, t('connection.exportFileFilter'));
+      if (!targetPath) {
+        setExporting(false);
+        return;
+      }
+
       // The in-memory profiles no longer hold secrets -> exporting with passwords means reading them
       // back from the OS secret store. Without them, the stripped version is used as-is.
       const processedProfiles = await Promise.all(
@@ -687,21 +731,14 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
 
       const encryptedText = await encryptConnectionExport(processedProfiles, exportFilePassword);
 
-      const blob = new Blob([encryptedText], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const filenameStr = exportScope === 'group' ? `TablePlus_${exportGroupTarget.replace(/[^a-zA-Z0-9]/g, '_')}_Connections.tableplusconnection` :
-        exportScope === 'single' ? `TablePlus_${exportSingleProfile?.name.replace(/[^a-zA-Z0-9]/g, '_')}_Connection.tableplusconnection` :
-          'TablePlus_All_Connections.tableplusconnection';
-      a.download = filenameStr;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // `false` = the direct write was refused and it fell back to a WebView download, so the path
+      // it returned is not where the file landed and must not be reported as if it were.
+      const writtenAtPath = await saveExportFileAtPath(targetPath, encryptedText, 'application/json');
 
       setShowExportModal(false);
-      setSuccessMsg(t('connection.exportSuccess', { n: processedProfiles.length }));
+      setSuccessMsg(writtenAtPath
+        ? `${t('connection.exportSuccess', { n: processedProfiles.length })} — ${targetPath}`
+        : t('connection.exportSuccess', { n: processedProfiles.length }));
     } catch (e: any) {
       alert(t('connection.errExport', { message: e.message }));
     } finally {
@@ -861,12 +898,18 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       config: res.config
     };
 
+    setShowImportUrlModal(false);
+    setImportUrlInput('');
+    // New-connection dialog: only a draft — it is saved when Connect succeeds, like one typed by hand.
+    // The password stays inline in the draft's config; persistProfiles strips it out on that save.
+    if (isNew) {
+      selectProfile(newProfile);
+      return;
+    }
+
     // A connection URL usually carries the password -> split it into the OS store as it is saved.
     await persistProfiles([...profiles, newProfile]);
     selectProfile(newProfile);
-
-    setShowImportUrlModal(false);
-    setImportUrlInput('');
     setSuccessMsg(t('connection.importUrlSuccess'));
   };
 
@@ -889,7 +932,9 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
         } else {
           setProfiles(parsed);
         }
-        if (parsed.length > 0) {
+        // The new-connection dialog starts empty: pre-filling it with the default profile is what
+        // made "New connection…" open onto the connection that was already open.
+        if (parsed.length > 0 && !isNew) {
           const defaultProf = parsed.find(p => p.id === savedDefaultId) || parsed[0];
           selectProfile(defaultProf);
         }
@@ -922,7 +967,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     setProfileGroup(profile.group || '');
 
     const config = await configWithSecrets(profile);
-    if (profile.type === 'sqlite') {
+    if (isFileDb(profile.type)) {
       setSqlitePath(config.sqlitePath || '');
     } else if (profile.type === 'redis') {
       setRedisHost(config.host || '127.0.0.1');
@@ -1029,13 +1074,17 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     sshPassphrase,
   });
 
-  const handleSaveProfile = async () => {
-    if (!activeProfileId) return;
+  // Upsert: the new-connection dialog's draft is not in `profiles` yet, and its first save appends it.
+  // `silent` skips the "saved" banner, for the save that rides along with a successful Connect.
+  const handleSaveProfile = async (silent = false): Promise<SavedProfile | null> => {
+    if (!activeProfileId) return null;
     const targetName = profileNameInput.trim() || t('connection.defaultProfileName');
 
     let config: any = {};
     if (activeType === 'sqlite') {
       config = { type: 'sqlite', sqlitePath };
+    } else if (activeType === 'duckdb') {
+      config = { type: 'duckdb', sqlitePath };
     } else if (activeType === 'redis') {
       config = buildRedisConfig();
     } else if (activeType === 'postgres') {
@@ -1100,37 +1149,53 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       };
     }
 
-    const updatedProfiles = profiles.map(p => {
-      if (p.id === activeProfileId) {
-        return { ...p, name: targetName, type: activeType as any, config, color: profileColor, env: profileEnv, group: profileGroup };
-      }
-      return p;
-    });
+    const fields = { name: targetName, type: activeType as any, config, color: profileColor, env: profileEnv, group: profileGroup };
+    const existing = profiles.find(p => p.id === activeProfileId);
+    const saved: SavedProfile = { ...(existing || {}), id: activeProfileId, ...fields };
+    const updatedProfiles = existing
+      ? profiles.map(p => (p.id === activeProfileId ? saved : p))
+      : [...profiles, saved];
 
     // The config comes from the form and so holds the password; persistProfiles splits it into the OS store before writing.
-    await persistProfiles(updatedProfiles);
-    setSuccessMsg(t('connection.saveSuccess'));
+    const stripped = await persistProfiles(updatedProfiles);
+    if (!silent) setSuccessMsg(t('connection.saveSuccess'));
+    return stripped.find(p => p.id === activeProfileId) || null;
   };
 
-  const handleCreateNewProfile = async (type: 'sqlite' | 'postgres' | 'mysql' | 'redis') => {
+  // A fresh profile for `type` with that engine's usual defaults. Not saved by itself.
+  const blankProfile = (type: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis'): SavedProfile => {
     // sslMode has to be in the config itself, not only in the state's initial value: selectProfile
-    // just below reads it back from the config, and without the field it falls back to DISABLED and
+    // reads it back from the config, and without the field it falls back to DISABLED and
     // overwrites whatever the form is showing.
-    const newProfile: SavedProfile = {
+    return {
       id: newProfileId(),
       name: t('connection.newProfileName', { type: type.toUpperCase() }),
       type,
       config: type === 'sqlite'
         ? { type, sqlitePath: 'new_database.db' }
+        // Empty is an in-memory database: somewhere to attach files without creating one first.
+        : type === 'duckdb'
+        ? { type, sqlitePath: '' }
         : type === 'postgres'
           ? { type, host: 'localhost', port: 5432, user: 'postgres', database: 'postgres', sslMode: 'PREFERRED' }
           : type === 'redis'
             ? { type, host: '127.0.0.1', port: 6379, user: '', password: '', dbIndex: 0 }
             : { type, host: 'localhost', port: 3306, user: 'root', database: '', sslMode: 'PREFERRED' }
     };
+  };
 
-    await persistProfiles([...profiles, newProfile]);
+  const handleCreateNewProfile = async (type: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis') => {
+    const newProfile = blankProfile(type);
+    // The new-connection dialog keeps it as a draft until Connect succeeds.
+    if (!isNew) await persistProfiles([...profiles, newProfile]);
     selectProfile(newProfile);
+  };
+
+  // New-connection dialog: back from the form to the type picker.
+  const handleBackToTypes = () => {
+    setActiveProfileId(null);
+    setErrorMsg(null);
+    setSuccessMsg(null);
   };
 
   const handleDeleteProfile = (id: string, e: React.MouseEvent) => {
@@ -1182,6 +1247,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
 
     if (activeType === 'sqlite') {
       config = { type: 'sqlite', sqlitePath };
+    } else if (activeType === 'duckdb') {
+      config = { type: 'duckdb', sqlitePath };
     } else if (activeType === 'postgres') {
       config = {
         type: 'postgres',
@@ -1260,8 +1327,10 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     if (res.success) {
       setSuccessMsg(res.message);
       setIsSuccessConnecting(true);
-      setConnectingDbName(res.database || (config.type === 'sqlite' ? config.sqlitePath : config.database) || 'Database');
-      const activeProfile = profiles.find(p => p.id === activeProfileId);
+      setConnectingDbName(res.database || (isFileDb(config.type) ? (config.sqlitePath || ':memory:') : config.database) || 'Database');
+      let activeProfile = profiles.find(p => p.id === activeProfileId);
+      // New-connection dialog: the draft is saved only now that it is known to work.
+      if (!activeProfile && isNew && saveToList) activeProfile = (await handleSaveProfile(true)) || undefined;
       // The environment comes from the FORM'S STATE, not from the saved profile.
       //
       // `config` just above is built from the form as well: host, port, user, SSL and the rest all go
@@ -1310,6 +1379,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     let config: DbConnectionConfig;
     if (activeType === 'sqlite') {
       config = { type: 'sqlite', sqlitePath };
+    } else if (activeType === 'duckdb') {
+      config = { type: 'duckdb', sqlitePath };
     } else if (activeType === 'postgres') {
       config = {
         type: 'postgres',
@@ -1435,7 +1506,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     }
 
     const isBackup = brAction === 'backup';
-    if (!isBackup && (!brFile || !brSqlText)) {
+    if (!isBackup && (!brDumpPath || !brScan)) {
       setErrorMsg(t('connection.errNoBackupFile'));
       return;
     }
@@ -1451,82 +1522,70 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       includeStructure: brIncludeStructure,
       includeContent: brIncludeContent,
     };
-    const dumpText = brSqlText;
+    const dumpPath = brDumpPath ?? '';
+    const dumpScan = brScan;
     const overwrite = brOverwrite;
     const dropStatements = brOverwrite ? [...brDropStatements] : [];
     const selectedTables = [...brSelectedTables];
     const continueOnError = brContinueOnError;
 
+    // Safe Mode asks now, by server — nothing is connected yet, and the job may wait in the queue.
+    // A backup only reads, so it is never asked about.
+    let approvals: JobApproval[] = [];
+    if (!isBackup) {
+      try {
+        approvals = [
+          await approveJobForServer('restore_backup', connKey(config), t('jobs.approveRestore', { n: dbLabel })),
+        ];
+      } catch {
+        return;
+      }
+    }
+    // Set once the job's connection is open; `onCancel` has to name it.
+    let restoreConnId = '';
+
     startJob({
       kind: isBackup ? 'dump' : 'restore',
       title: t(isBackup ? 'jobs.titleBackup' : 'jobs.titleRestore', { n: dbLabel }),
       db: dbLabel,
+      conn: connKey(config),
       write: !isBackup,
       lockKey: `br|${connKey(config)}|${dbLabel}`,
+      onCancel: () => {
+        if (restoreConnId) void dbHelper.cancelRestore(restoreConnId);
+      },
       run: async (ctx) => {
-        // This job opens a CONNECTION OF ITS OWN and closes it again — which this screen already did
-        // ("no existing connection required"), and which matches Phase 1 of the plan: a job does not
-        // share the user's connection, so it never turns FK checks off on the session they are
-        // browsing in.
-        const prevConnId = activeConnId();
-        let jobConnId = '';
-        try {
-          const connRes = await dbHelper.connect(config);
-          if (!connRes.success) {
-            throw new Error(t('connection.errConnectFailed', { message: connRes.message }));
-          }
-          // Every command carries the id just minted — not the workspace's `connId` prop: with
-          // nothing connected the prop is an empty string and `getTables` returns an empty array,
-          // i.e. it claims "this database has no tables"; with a connection open it points at a
-          // DIFFERENT database.
-          jobConnId = connRes.connId || activeConnId();
-          // `connect()` also changes the app's active connection. Put it back AT ONCE, because the job
-          // runs in the background: leaving the ambient id pointing at the job's private connection
-          // sends every other action the user takes to the wrong place.
-          setActiveConnId(prevConnId);
-
+        // This job opens a CONNECTION OF ITS OWN and closes it again ("no existing connection
+        // required"). `connectJob`, not `connect`: it leaves the app's active connection alone — this
+        // used to switch the ambient id to the job's connection and put it back afterwards, and any
+        // command the user issued in between went to the job's database — and the backend registers
+        // it as a job connection, so it never appears in the rail.
+        const connRes = await dbHelper.connectJob(config);
+        if (!connRes.success || !connRes.connId) {
+          throw new Error(t('connection.errConnectFailed', { message: connRes.message }));
+        }
+        // Every command carries the id just minted — not the workspace's `connId` prop: with nothing
+        // connected the prop is an empty string and `getTables` returns an empty array, i.e. it claims
+        // "this database has no tables"; with a connection open it points at a DIFFERENT database.
+        const jobConn = { connId: connRes.connId, schema: connRes.schema ?? null };
+        return runOnJobConnection(jobConn, approvals, async ({ connId: jobConnId }) => {
           if (isBackup) {
-            // The dump is built by the very code the "Export Database" dialog uses (buildDump): this
-            // used to call the Rust `export_multi_tables`, which treated views as tables (emitting
-            // DROP TABLE and INSERT INTO for a view), wrote one INSERT per row, and had no routines
-            // or triggers at all.
-            const list = await dbHelper.getTables(jobConnId);
-            const tables = list.map(item => item.name);
-            if (tables.length === 0) {
-              throw new Error(t('connection.errNoTablesToBackup'));
-            }
-            const [dbObjs, triggers] = await Promise.all([
-              dbHelper.getDatabaseObjects(jobConnId),
-              dbHelper.getAllTriggers(jobConnId),
-            ]);
-            ctx.throwIfCancelled();
-
-            const sqlText = await buildDump({
-              dbType: config.type,
-              tables,
-              views: list.filter(item => item.type === 'view').map(item => item.name),
-              routines: [
-                ...dbObjs.functions.map((name) => ({ name, kind: 'function' as const })),
-                ...dbObjs.procedures.map((name) => ({ name, kind: 'procedure' as const })),
-              ],
-              triggers: triggers.map((tr) => tr.name),
-              events: dbObjs.events,
+            // What goes into the dump is shared with the backup scheduler (`profileBackup.ts`); the
+            // schema is the one `connect` just reported as current — there is no schema picker here.
+            const { spec: dumpSpec, reader } = await planDatabaseBackup(
+              jobConnId,
+              config.type,
+              connRes.schema ?? null,
               sqlOptions,
-              // The schema `connect` just reported as current — the same one getTables() above read
-              // from. There is no schema picker on this screen, so this is always the first schema in
-              // search_path.
-              schema: connRes.schema,
-              onProgress: (p) => ctx.report(p),
-            }, dumpReaderFor(dbHelper, jobConnId));
-            ctx.throwIfCancelled();
-
-            ctx.report({ label: t('app.exportWriting') });
-            const payload = gzip ? await gzipText(sqlText) : sqlText;
-            const saved = await saveExportFile(
+              ctx,
+            );
+            // Streamed into the file as it is built — see saveDumpToFolder.
+            const saved = await saveDumpToFolder(
               getLastExportDir() || null,
               fileName,
-              payload,
-              gzip ? 'application/gzip' : 'text/plain;charset=utf-8'
+              gzip,
+              (emit) => writeDump(dumpSpec, reader, emit),
+              () => buildDump(dumpSpec, reader),
             );
             return {
               message: `${t('connection.backupSuccess')} — ${saved.path || fileName}`,
@@ -1538,8 +1597,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
 
           // Overwrite: prepend DROP ... IF EXISTS, and let those names through the backend's
           // per-table filter (it only runs statements mentioning a name from the list it was given).
-          const objs = overwrite ? parseDumpObjects(dumpText) : null;
-          const sqlToRun = dropStatements.length ? `${dropStatements.join('\n')}\n${dumpText}` : dumpText;
+          const objs = overwrite && dumpScan ? dumpScan.objects : null;
           const tablesToRun = objs
             ? [...new Set([...selectedTables, ...objs.views, ...objs.triggers, ...objs.procedures, ...objs.functions])]
             : selectedTables;
@@ -1547,12 +1605,15 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
           const toProgress = makeRestoreReporter(t);
           ctx.report({ label: t('connection.restorePreparing') });
           const resData = await dbHelper.restoreBackup(
-            sqlToRun,
+            { path: dumpPath, mysqlScript: dumpScan?.mysqlScript },
             tablesToRun,
             (msg) => ctx.report(toProgress(msg)),
             continueOnError,
             jobConnId,
+            false,
+            dropStatements,
           );
+          if (resData.cancelled) return restoreCancelledResult(t, resData);
           if (!resData.success) {
             throw new Error(addExistsHint(resData.error || t('connection.errRestore'), overwrite));
           }
@@ -1566,13 +1627,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
           return resData.failedCount
             ? { message: t('app.importDbPartial', { n: resData.statementsCount || 0, failed: resData.failedCount }) }
             : { message: t('connection.restoreSuccess', { n: resData.statementsCount || 0 }) };
-        } finally {
-          // Only the connection this job opened is closed. `disconnect()` without an argument closes
-          // the active one — that is, the connection the user is in the middle of using, in the case
-          // where `connect()` failed partway.
-          if (jobConnId) await dbHelper.disconnect(jobConnId);
-          setActiveConnId(prevConnId);
-        }
+        }, (id) => { restoreConnId = id; });
       },
     });
 
@@ -1617,6 +1672,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   // A summarised connection string (no password) — shown in the header for a quick check.
   const connectionUri = (() => {
     if (activeType === 'sqlite') return `sqlite://${sqlitePath}`;
+    if (activeType === 'duckdb') return `duckdb://${sqlitePath || ':memory:'}`;
     if (activeType === 'redis') return `${tlsOn ? 'rediss' : 'redis'}://${redisUser ? redisUser + '@' : ''}${redisHost}:${redisPort}/${redisDbIndex}`;
     if (activeType === 'postgres') return `postgres://${pgUser}@${pgHost}:${pgPort}/${pgDatabase}`;
     return `mysql://${myUser}@${myHost}:${myPort}/${myDatabase || ''}`;
@@ -1633,10 +1689,11 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
   const toggleGroup = (name: string) =>
     setCollapsedGroups((prev) => ({ ...prev, [name]: !prev[name] }));
 
-  const NEW_TYPES: { val: 'sqlite' | 'postgres' | 'mysql' | 'redis'; label: string }[] = [
+  const NEW_TYPES: { val: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis'; label: string }[] = [
     { val: 'sqlite', label: 'SQLite' },
     { val: 'postgres', label: 'PostgreSQL' },
     { val: 'mysql', label: 'MySQL' },
+    { val: 'duckdb', label: 'DuckDB' },
     { val: 'redis', label: 'Redis' },
   ];
 
@@ -1656,12 +1713,22 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     return (
       <div className="form-group">
         <label>{t('connection.databaseLabel')}</label>
-        <div className="input-icon-wrapper cm-combo two-btn">
+        <div className={`input-icon-wrapper cm-combo two-btn${showDbList ? ' open' : ''}`}>
+          {/* Clicking anywhere in the field opens the list, not only the chevron; the field stays
+              editable, and typing narrows the list it opened. */}
           <input
             type="text"
             className="form-input"
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onClick={() => {
+              if (showDbList) return;
+              setShowDbList(true);
+              if (!availableDatabases.length && !loadingDbs) fetchDatabases(fetchTarget);
+            }}
+            onChange={(e) => {
+              setValue(e.target.value);
+              if (availableDatabases.length) setShowDbList(true);
+            }}
             onKeyDown={(e) => { if (e.key === 'Escape') setShowDbList(false); }}
             placeholder={placeholder}
           />
@@ -1735,11 +1802,13 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
             <label>{t('connection.group')}</label>
             {/* A hand-built combobox instead of <datalist>: the native one adds an arrow of its own
                 and its popup cannot follow the app's theme. */}
-            <div className="cm-combo">
+            <div className={`cm-combo${showGroupList ? ' open' : ''}`}>
               <input
                 type="text"
                 className="form-input"
                 value={profileGroup}
+                // Like the Database field: a click in the field opens the list, typing keeps working.
+                onClick={() => { if (existingGroups.length) setShowGroupList(true); }}
                 onChange={(e) => setProfileGroup(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Escape') setShowGroupList(false); }}
                 placeholder={existingGroups.length ? t('connection.groupPlaceholderPick') : t('connection.groupPlaceholderNew')}
@@ -1841,6 +1910,17 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     }
   };
 
+  const handlePickDuckDbPath = async () => {
+    const file = await pickDuckDbDatabaseFile(sqlitePath || undefined);
+    if (file) {
+      setSqlitePath(file);
+      const filename = file.split(/[\\/]/).pop();
+      if (filename && (!profileNameInput.trim() || profileNameInput.toLowerCase().includes('duckdb'))) {
+        setProfileNameInput(filename.replace(/\.[^/.]+$/, ''));
+      }
+    }
+  };
+
   // ——— The "General" tab, per DB engine ———
   const renderGeneralTab = () => (
     <>
@@ -1875,6 +1955,35 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                 </button>
               </div>
               <span className="cm-hint">{t('connection.sqliteHint')}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeType === 'duckdb' && (
+        <div className="cm-section">
+          <div className="cm-section-title">{t('connection.duckSection')}</div>
+          <div className="cm-section-desc">{t('connection.duckDesc')}</div>
+          <div className="cm-fields">
+            <div className="form-group">
+              <label>{t('connection.duckPathLabel')}</label>
+              <div className="cm-file-row">
+                <div className="input-icon-wrapper">
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={sqlitePath}
+                    onChange={(e) => setSqlitePath(e.target.value)}
+                    placeholder={t('connection.duckPathPlaceholder')}
+                  />
+                  <FolderOpen size={14} className="input-icon" />
+                </div>
+                <button type="button" className="cm-file-btn" onClick={handlePickDuckDbPath} title={t('connection.pickFile')}>
+                  <FolderOpen size={12} />
+                  <span>{t('connection.pickFile')}</span>
+                </button>
+              </div>
+              <span className="cm-hint">{t('connection.duckHint')}</span>
             </div>
           </div>
         </div>
@@ -2331,46 +2440,20 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
     </div>
   );
 
-  // The dump is split ONCE per file, with everything the filter needs recorded up front. The count
-  // used to re-split the whole file every time the table selection changed, so on a large dump every
-  // tick froze the UI.
-  const brStatements = React.useMemo(() => {
-    if (!brSqlText) return [];
-    return splitStatements(brSqlText).map(({ text }) => {
-      const body = stripLeadingSqlComments(text);
-      const { commentOnly, willRun } = commentOnlyFromBody(text, body);
-      return {
-        table: dumpStatementObject(body),
-        skipped: isSkippedDumpBody(body),
-        commentOnly,
-        commentRuns: willRun,
-      };
-    });
-  }, [brSqlText]);
 
   // Does not depend on `brOverwrite`: toggling the overwrite checkbox is no reason to rescan the file.
   const brDropStatements = React.useMemo(
-    () => (brSqlText ? buildDropStatements(parseDumpObjects(brSqlText), brType) : []),
-    [brSqlText, brType]
+    () => (brScan ? buildDropStatements(brScan.objects, brType) : []),
+    [brScan, brType]
   );
 
   // How many statements a restore will run (the same per-table filter the backend uses), for the time estimate.
-  const brPlannedStatements = React.useMemo(() => {
-    // Do not name the parameter `t` — that is the translation function.
-    const selectedLower = new Set(brSelectedTables.map((name) => name.toLowerCase()));
-    let n = brOverwrite ? brDropStatements.length : 0;
-    for (const s of brStatements) {
-      // The same rule as the backend: skip LOCK/UNLOCK TABLES and the dump's transaction statements…
-      if (s.skipped) continue;
-      if (s.commentOnly) {
-        if (s.commentRuns) n++;
-        continue;
-      }
-      // …statements naming no table (SET/USE…) still run; the rest must belong to a selected table.
-      if (brParsedTables.length === 0 || !s.table || selectedLower.has(s.table.toLowerCase())) n++;
-    }
-    return n;
-  }, [brStatements, brDropStatements, brOverwrite, brParsedTables.length, brSelectedTables]);
+  const brPlannedStatements = React.useMemo(
+    () => (brScan
+      ? plannedFromScan(brScan.plan, brParsedTables, brSelectedTables, brOverwrite ? brDropStatements.length : 0)
+      : 0),
+    [brScan, brDropStatements, brOverwrite, brParsedTables, brSelectedTables]
+  );
 
   const brTargetDb = brType === 'postgres' ? brPgDatabase : brType === 'mysql' ? brMyDatabase : brSqlitePath;
 
@@ -2413,7 +2496,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
               <span style={{ color: 'var(--win-text-secondary)' }}>{t('connection.brRowStatements')}</span>
               <b>{brPlannedStatements.toLocaleString()}</b>
               <span style={{ color: 'var(--win-text-secondary)' }}>{t('connection.brRowFile')}</span>
-              <b>{brFile ? `${brFile.name} (${(brFile.size / 1024 / 1024).toFixed(2)} MB)` : ''}</b>
+              <b>{brDumpPath && brScan ? `${fileBaseName(brDumpPath)} (${(brScan.fileBytes / 1024 / 1024).toFixed(2)} MB)` : ''}</b>
               <span style={{ color: 'var(--win-text-secondary)' }}>{t('connection.brRowEta')}</span>
               <b>~{formatRestoreEta(t, brPlannedStatements / 800)}</b>
             </div>
@@ -2451,7 +2534,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                   const profId = e.target.value;
                   setSelectedBrProfileId(profId);
                   const selectedProf = profiles.find(p => p.id === profId);
-                  if (selectedProf) {
+                  if (selectedProf && selectedProf.type !== 'duckdb') {
                     setBrType(selectedProf.type === 'redis' ? 'sqlite' : selectedProf.type);
                     // The password lives in the OS store -> it has to be read back before the backup form can be filled.
                     const c = await configWithSecrets(selectedProf);
@@ -2474,7 +2557,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                 }}
               >
                 <option value="">{t('connection.brManual')}</option>
-                {profiles.map(p => (
+                {/* A DuckDB file is what gets queried, not something this screen backs up or restores into. */}
+                {profiles.filter(p => p.type !== 'duckdb').map(p => (
                   <option key={p.id} value={p.id}>{p.name} ({p.type.toUpperCase()})</option>
                 ))}
               </select>
@@ -2611,23 +2695,19 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
           <>
             <div className="cm-section-title">{t('connection.brFileSection')}</div>
             <div className="cm-fields">
-              <label className="cm-dropzone">
-                <input
-                  type="file"
-                  accept=".sql,.dump,.gz"
-                  onChange={(e) => setBrFile(e.target.files?.[0] || null)}
-                  style={{ display: 'none' }}
-                />
+              <button type="button" className="cm-dropzone" onClick={pickBrDump}>
                 <Upload size={18} />
                 <div>
-                  <div className="cm-dropzone-title">{brFile ? brFile.name : t('connection.brPickFile')}</div>
-                  <div className="cm-hint">{brFile ? t('connection.brFileSize', { size: (brFile.size / 1024 / 1024).toFixed(2) }) : t('connection.brPickHint')}</div>
+                  <div className="cm-dropzone-title">{brDumpPath ? fileBaseName(brDumpPath) : t('connection.brPickFile')}</div>
+                  <div className="cm-hint">{brScan ? t('connection.brFileSize', { size: (brScan.fileBytes / 1024 / 1024).toFixed(2) }) : t('connection.brPickHint')}</div>
+                  {brScan?.via && <div className="cm-hint">{t('importDialog.readVia', { tool: brScan.via })}</div>}
                 </div>
-              </label>
+              </button>
 
               {brParsing && (
                 <div className="cm-hint" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <LoadingSpinner size={11} /> {t('connection.brParsingTables')}
+                  {brScanPct !== null && brScanPct > 0 && <span>{brScanPct}%</span>}
                 </div>
               )}
 
@@ -2667,7 +2747,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
               {/* Replaying a dump onto a database that already has same-named tables makes MySQL
                   report 1050 "Table already exists" and abandon the whole restore. This option drops
                   them first. */}
-              {brFile && (
+              {brScan && (
                 <label className="cm-check" style={{ alignItems: 'flex-start' }}>
                   <input
                     type="checkbox"
@@ -2685,7 +2765,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
 
               {/* The same option as in the Import dialog — they share a translation key so the two
                   places cannot describe one behaviour in two different ways. */}
-              {brFile && (
+              {brScan && (
                 <label className="cm-check" style={{ alignItems: 'flex-start' }}>
                   <input
                     type="checkbox"
@@ -2733,8 +2813,9 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
       )}
 
       <div className="connection-card">
-        <div className="cm-shell">
+        <div className={`cm-shell ${isNew ? 'cm-newconn' : ''}`}>
           {/* ————— Sidebar: the list of saved connections ————— */}
+          {!isNew && (
           <aside className="cm-side">
             <div className="cm-side-head">
               <span className="cm-side-title">{t('connection.sideTitle', { n: profiles.length })}</span>
@@ -2744,9 +2825,18 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                   <button className="cm-icon-btn" title={t('connection.importFromFile')} onClick={() => document.getElementById('cm-import-file')?.click()}>
                     <Upload size={13} />
                   </button>
-                  <input id="cm-import-file" type="file" accept=".tableplusconnection,.tableforgeconnection,.json" onChange={handleFileImportSelect} className="cm-hidden-file" />
+                  <input id="cm-import-file" type="file" accept={CONNECTION_FILE_ACCEPT} onChange={handleFileImportSelect} className="cm-hidden-file" />
                   <button className="cm-icon-btn" title={t('connection.exportAll')} onClick={() => openExportModal('all')}>
                     <Download size={13} />
+                  </button>
+                  {/* The master password sits with these two because all three are about the whole
+                      SET of saved connections rather than about the one being edited. */}
+                  <button className="cm-icon-btn" title={t('vault.title')} onClick={() => setShowMasterPassword(true)}>
+                    <KeyRound size={13} />
+                  </button>
+                  {/* Schedules act on saved profiles, so they sit with the other whole-set actions. */}
+                  <button className="cm-icon-btn" title={t('backupSchedule.title')} onClick={() => setShowBackupSchedules(true)}>
+                    <CalendarClock size={13} />
                   </button>
                 </>
               )}
@@ -2903,10 +2993,45 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
               </div>
             )}
           </aside>
+          )}
 
           {/* ————— The main pane ————— */}
           <main className="cm-main">
-            {isBrMode ? (
+            {isNew ? (
+              hasProfile && (
+                <>
+                  {/* One compact row instead of the avatar header: the dialog's own title already
+                      says what this is, so the row only has to say which engine and offer a way back. */}
+                  <header className="cm-newconn-head">
+                    <button className="cm-icon-btn" title={t('connection.backToTypes')} onClick={handleBackToTypes}>
+                      <ArrowLeft size={15} />
+                    </button>
+                    <span className={`cm-badge sm ${activeType}`}><activeMeta.Icon size={13} /></span>
+                    <span className="cm-newconn-type">{activeMeta.label}</span>
+                    <button className="cm-uri" onClick={handleCopyUri} title={t('connection.copyUri')}>
+                      <span>{connectionUri}</span>
+                      {uriCopied ? <Check size={12} style={{ flexShrink: 0, color: 'var(--st-ok)' }} /> : <Copy size={12} style={{ flexShrink: 0, opacity: 0.7 }} />}
+                    </button>
+                  </header>
+                  {hasNetTabs && (
+                    <nav className="cm-tabs">
+                      <button className={`cm-tab ${formTab === 'general' ? 'active' : ''}`} onClick={() => setFormTab('general')}>
+                        <Server size={13} /> {t('connection.tabGeneral')}
+                        {authMethod === 'aws_iam' && isServerDb && <span className="cm-tab-dot" title={t('connection.tabDotAws')} />}
+                      </button>
+                      <button className={`cm-tab ${formTab === 'ssl' ? 'active' : ''}`} onClick={() => setFormTab('ssl')}>
+                        <ShieldCheck size={13} /> SSL
+                        {tlsOn && <span className="cm-tab-dot" title={t('connection.tabDotSsl', { mode: sslMode })} />}
+                      </button>
+                      <button className={`cm-tab ${formTab === 'ssh' ? 'active' : ''}`} onClick={() => setFormTab('ssh')}>
+                        <Network size={13} /> SSH Tunnel
+                        {sshEnabled && <span className="cm-tab-dot" title={t('connection.tabDotSsh')} />}
+                      </button>
+                    </nav>
+                  )}
+                </>
+              )
+            ) : isBrMode ? (
               <header className="cm-main-head">
                 <button className="cm-icon-btn lg" title={t('connection.backToList')} onClick={() => setActiveType(((profiles.find(p => p.id === activeProfileId)?.type) || 'sqlite') as any)}>
                   <ArrowLeft size={16} />
@@ -3001,7 +3126,46 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                   </div>
                 )}
 
-                {isBrMode
+                {isNew && !hasProfile
+                  ? (
+                    <div className="cm-type-pick">
+                      <div className="cm-blank-title">{t('connection.pickTypeTitle')}</div>
+                      <div className="cm-type-grid">
+                        {NEW_TYPES.map(nt => {
+                          const m = TYPE_META[nt.val];
+                          return (
+                            <button key={nt.val} className="cm-type-tile" onClick={() => handleCreateNewProfile(nt.val)}>
+                              <span className={`cm-badge ${nt.val}`}><m.Icon size={20} /></span>
+                              <span>{nt.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {/* Pasted in place rather than behind a second modal: here the URL is just another
+                          way to fill the form, so it goes straight to it. */}
+                      <div className="cm-type-or"><span>{t('connection.orPasteUrl')}</span></div>
+                      <div className="cm-type-url">
+                        <Link size={14} className="cm-type-url-icon" />
+                        <input
+                          type="text"
+                          value={importUrlInput}
+                          onChange={(e) => setImportUrlInput(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' && importUrlInput.trim()) handleImportUrlSubmit(); }}
+                          placeholder={t('connection.urlPlaceholder')}
+                          spellCheck={false}
+                        />
+                        <button
+                          className="cm-btn primary"
+                          onClick={handleImportUrlSubmit}
+                          disabled={!importUrlInput.trim()}
+                          title={t('connection.urlContinue')}
+                        >
+                          <ArrowRight size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                  : isBrMode
                   ? renderBackupRestore()
                   : !hasProfile
                     ? (
@@ -3020,20 +3184,38 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
             </div>
 
             <footer className="cm-foot">
-              {isBrMode ? (
+              {isNew ? (
+                hasProfile && (
+                  <>
+                    <label className="cm-check">
+                      <input type="checkbox" checked={saveToList} onChange={(e) => setSaveToList(e.target.checked)} />
+                      <span>{t('connection.saveToList')}</span>
+                    </label>
+                    <span className="cm-foot-msg" />
+                    <button className="cm-btn" onClick={handleTestConnection} disabled={isBusy}>
+                      {isTesting ? <LoadingSpinner size={13} /> : <CheckCircle2 size={13} />} {t('connection.test')}
+                    </button>
+                    <button className="cm-btn primary" onClick={() => handleConnect(false)} disabled={isBusy}>
+                      {isConnecting
+                        ? <><LoadingSpinner size={13} /> {t('connection.connecting')}</>
+                        : <><LogIn size={14} /> {t('connection.connect')}</>}
+                    </button>
+                  </>
+                )
+              ) : isBrMode ? (
                 <>
                   {/* No progress bar here any more: backup and restore run in the background and
                       their progress lives in the JobsTray on the title bar. See
                       docs/background-jobs-plan.md. */}
                   <span className="cm-foot-msg cm-hint">
-                    {brAction === 'restore' && brFile && brParsedTables.length > 0
+                    {brAction === 'restore' && brScan && brParsedTables.length > 0
                       ? t('connection.brFootSelected', { selected: brSelectedTables.length, total: brParsedTables.length })
                       : ''}
                   </span>
                   <button
                     className="cm-btn primary"
                     onClick={handleBrClick}
-                    disabled={brAction === 'restore' && (!brFile || (brParsedTables.length > 0 && brSelectedTables.length === 0))}
+                    disabled={brAction === 'restore' && (!brScan || brParsing || (brParsedTables.length > 0 && brSelectedTables.length === 0))}
                   >
                     {brAction === 'backup'
                       ? <><Download size={14} /> {t('connection.brStartBackup')}</>
@@ -3042,7 +3224,7 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
                 </>
               ) : hasProfile ? (
                 <>
-                  <button className="cm-btn" onClick={handleSaveProfile}>
+                  <button className="cm-btn" onClick={() => handleSaveProfile()}>
                     <Save size={13} /> {t('connection.saveChanges')}
                   </button>
                   <span className="cm-foot-msg" />
@@ -3145,6 +3327,12 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ connId, em
           onClose={() => setTerminalProfile(null)}
         />
       )}
+
+      {showMasterPassword && (
+        <MasterPasswordModal onClose={() => setShowMasterPassword(false)} />
+      )}
+
+      {showBackupSchedules && <BackupSchedulesDialog onClose={() => setShowBackupSchedules(false)} />}
 
       {/* ————— Modal: connection export options ————— */}
       {showExportModal && (

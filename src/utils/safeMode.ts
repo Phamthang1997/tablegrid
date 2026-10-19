@@ -49,6 +49,7 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   execute_query: 'sql',
   execute_multi_query: 'sql',
   execute_query_stream: 'sql',
+  pg_vector_search: 'sql',
 
   // --- Writes whose SQL is built in Rust from a payload ---
   alter_sequence: 'write',
@@ -61,8 +62,10 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   drop_table: 'write',
   drop_trigger: 'write',
   generate_data: 'write',
-  import_new_table: 'write',
-  import_table_data: 'write',
+  // The streamed import (table_import.rs). Only a step writes; begin/finish/abort open and close its
+  // transaction — begin also runs the CREATE TABLE of an import into a new table — and the whole
+  // import is approved once, at submit, through `approveJob` (whose detail says a table is created).
+  import_step: 'write',
   rename_database: 'write',
   rename_table: 'write',
   restore_backup: 'write',
@@ -141,6 +144,11 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   preview_alter_schema: 'internal',
   preview_create_database: 'internal',
   preview_generated_data: 'internal',
+  // Rewrites rows already read for an export; touches no database.
+  mask_rows: 'internal',
+  // Diagnostics: catalog and statistics reads, nothing is changed.
+  get_lock_graph: 'internal',
+  get_index_facts: 'internal',
   compare_data_overview: 'internal',
   compare_schemas: 'internal',
   compare_table_data: 'internal',
@@ -150,6 +158,10 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   connect_db: 'internal',
   disconnect_db: 'internal',
   open_database: 'internal',
+  // A background job's own connection: opening one runs no statement, and the job's writes are
+  // asked about once, when it is submitted — see `jobConnection.ts`.
+  open_job_connection: 'internal',
+  close_job_connection: 'internal',
   set_connection_read_only: 'internal',
   set_current_schema: 'internal',
   // Setting a statement time limit is a session setting, not a statement the user ran. Prompting
@@ -158,6 +170,17 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   set_statement_timeout: 'internal',
   cancel_query: 'internal',
   cancel_data_generation: 'internal',
+  cancel_restore: 'internal',
+  // Reads a dump file from disk; touches no database.
+  scan_dump_file: 'internal',
+  // Reading the file to import: no database is touched.
+  import_file_detect: 'internal',
+  import_file_probe: 'internal',
+  import_file_check: 'internal',
+  import_file_check_cancel: 'internal',
+  import_begin: 'internal',
+  import_finish: 'internal',
+  import_abort: 'internal',
 
   // --- Manual transaction. The pending-changes dialog is itself the confirmation. ---
   tx_any_pending: 'internal',
@@ -175,6 +198,10 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   close_ssh_terminal: 'internal',
   open_local_terminal: 'internal',
   open_ssh_terminal: 'internal',
+  // The host key prompt (`sshHostKeys.ts`): reading a refused key back and trusting it touch no
+  // database, and trusting already has its own dialog.
+  ssh_host_key_challenge: 'internal',
+  ssh_trust_host_key: 'internal',
   resize_local_terminal: 'internal',
   resize_ssh_terminal: 'internal',
   send_local_input: 'internal',
@@ -207,6 +234,18 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
   secret_delete_many: 'internal',
   secret_get_many: 'internal',
   secret_set_many: 'internal',
+  // The master password. Not database access at all, and the destructive ones
+  // (`vault_disable`, `vault_reset`) already ask for the password or a typed confirmation in their
+  // own dialog — a Safe Mode prompt on top would be a second question about the same act, worded
+  // in terms of a connection that is not involved.
+  vault_status: 'internal',
+  vault_unlock: 'internal',
+  vault_lock: 'internal',
+  vault_enable: 'internal',
+  vault_disable: 'internal',
+  vault_change_password: 'internal',
+  vault_set_remember: 'internal',
+  vault_reset: 'internal',
   // --- The built-in MCP server. Configuring it is not a statement anyone ran on a database, so
   //     these are `internal` - gating them would prompt while the user is setting up a guard.
   //     `mcp_regenerate_token` is the exception: it cuts off every client on the old token and
@@ -227,6 +266,9 @@ export const COMMAND_KINDS: Record<string, CommandKind> = {
 
   ai_chat: 'internal',
   open_url: 'internal',
+  // A scheduled backup's retention: deletes only that schedule's own old dump files, never database
+  // content, and the schedule was set up in its own dialog.
+  prune_backups: 'internal',
 };
 
 export function commandKind(cmd: string): CommandKind {
@@ -308,6 +350,17 @@ const keyByConn = new Map<string, string>();
 export function registerConnection(connId: string, config?: DbConnectionConfig | null): void {
   const key = connKey(config);
   if (connId && key) keyByConn.set(connId, key);
+}
+
+/**
+ * Which server a connection is on, as a `connKey` (`mysql:host:port`, or the normalized SQLite path).
+ *
+ * Read-only, and the only reason it is exported: `list_connections` returns an opaque `serverId`, so
+ * two connections both called `sakila` are indistinguishable in a picker without it. Never used to
+ * decide anything — `approveCommand` still resolves the key itself.
+ */
+export function serverKeyOf(connId: string): string | undefined {
+  return keyByConn.get(connId);
 }
 
 /** `open_database` mints a new id on the SAME server, so the mode carries over. */
@@ -565,8 +618,28 @@ export async function runApproved<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const key = batchKey(cmd, connId);
-  const mode = getSafeModeForKey(keyForCommand(cmd, connId));
-  const wouldAsk = mode !== 'silent' && commandKind(cmd) !== 'internal' && !openBatches.has(key);
+  if (!openBatches.has(key)) await askOnce(cmd, connId, detail);
+  const close = openDoor(key);
+  try {
+    return await run();
+  } finally {
+    close();
+  }
+}
+
+/** The one question behind `runApproved` and `approveJob`. Throws the "cancelled" string on no. */
+async function askOnce(cmd: string, connId: string, detail: string): Promise<void> {
+  return askOnceForServer(cmd, keyForCommand(cmd, connId), connId, detail);
+}
+
+async function askOnceForServer(
+  cmd: string,
+  serverKey: string,
+  connId: string,
+  detail: string,
+): Promise<void> {
+  const mode = getSafeModeForKey(serverKey);
+  const wouldAsk = mode !== 'silent' && commandKind(cmd) !== 'internal';
 
   // This door also covers the warning `approveCommand` prints when the dialog is not mounted, so it
   // has to print its own — otherwise a null confirmer becomes complete silence.
@@ -576,15 +649,65 @@ export async function runApproved<T>(
   if (wouldAsk && confirmer && !(await confirmer({ connId, mode, command: cmd, detail }))) {
     throw i18n.t('safeMode.cancelled');
   }
+}
 
+/** Depth-counted, so one of two overlapping runs finishing does not close the other's door. */
+function openDoor(key: string): () => void {
   openBatches.set(key, (openBatches.get(key) ?? 0) + 1);
-  try {
-    return await run();
-  } finally {
+  let closed = false;
+  return () => {
+    if (closed) return;
+    closed = true;
     const left = (openBatches.get(key) ?? 1) - 1;
     if (left > 0) openBatches.set(key, left);
     else openBatches.delete(key);
-  }
+  };
+}
+
+// ===== Background jobs =====
+//
+// A job is asked about ONCE, when the user submits it, and never while it runs
+// (docs/background-jobs-plan.md §4.4). The per-call gate would otherwise pop its dialog when the job
+// reaches the front of the queue — minutes later, over whatever the user is doing by then, about an
+// action they no longer have in front of them; and a question nobody sees leaves the job sitting at
+// 0% with no explanation.
+//
+// The door is keyed on the command and the JOB's own connection id (`open_job_connection` mints a
+// fresh one per job), which is what "the door carries the job" means in practice: no other job, and
+// nothing the user does, ever runs on that id.
+
+/** Proof that the user was asked. Only `approveJob` makes one, so a job cannot skip the question. */
+export interface JobApproval {
+  readonly cmd: string;
+}
+
+/**
+ * Ask now, on the server of `connId` (the connection the user is looking at — the job's own does
+ * not exist yet, and the mode is stored per server anyway). Throws the "cancelled" string when the
+ * user says no, so the caller can simply not queue the job.
+ */
+export async function approveJob(cmd: string, connId: string, detail: string): Promise<JobApproval> {
+  await askOnce(cmd, connId, detail);
+  return { cmd };
+}
+
+/**
+ * `approveJob` for a job that will open its connection from a config — Connection Manager's
+ * Backup/Restore, where nothing is connected yet when the user presses the button. `serverKey` is
+ * `connKey(config)`, the key the mode is stored under.
+ */
+export async function approveJobForServer(
+  cmd: string,
+  serverKey: string,
+  detail: string,
+): Promise<JobApproval> {
+  await askOnceForServer(cmd, serverKey, '', detail);
+  return { cmd };
+}
+
+/** Let the approved command through on the job's connection. Call the returned function when done. */
+export function openJobDoor(approval: JobApproval, jobConnId: string): () => void {
+  return openDoor(batchKey(approval.cmd, jobConnId));
 }
 
 /**

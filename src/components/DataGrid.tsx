@@ -1,6 +1,9 @@
-import React, { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
-import { clampMenu, type MenuRect } from '../utils/menuPosition';
+import { GridContextMenu, MenuHeading, MenuItem, MenuSeparator, MenuSub } from './GridContextMenu';
+import { ColumnStatsDialog, TransposeDialog, ValueEditorDialog } from './GridToolDialogs';
+import { VectorInspectorDialog, VectorSearchDialog } from './VectorDialogs';
+import { vectorKindOf } from '../utils/pgvector';
 import { resolveRowClick, resolveRowContextMenu } from '../utils/rowSelection';
 import { countKey, nextCountMode, seekColumn, seekViewKey } from '../utils/gridPaging';
 import { getCommitPreviewForKey, setCommitPreviewForKey } from '../utils/commitPreview';
@@ -23,17 +26,19 @@ import {
   Search, X, ChevronDown, FileUp, FileDown, BarChart2, Sliders
 } from 'lucide-react';
 import { StructureViewer } from './StructureViewer';
-import { parseXlsx } from '../utils/xlsxReader';
-import { collectColumns, inferColType } from '../utils/importPreview';
-import { ProgressBar, type ProgressState } from './ProgressBar';
 import { ImportFilePicker } from './ImportFilePicker';
 import { ExportTableDialog } from './ExportTableDialog';
+import { ImportTableDataDialog } from './ImportTableDataDialog';
+import type { FileDetect } from '../utils/tableImport';
 import ReactDOM from 'react-dom';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 import { LazyModalFallback } from './LazyEditorFallback';
 import { MediaCellPreview, MediaViewerModal, detectMedia, type MediaInfo } from './media';
 import { DataVisualizer } from './chart';
 import { TablePropertiesView } from './TablePropertiesView';
+import { SearchHighlight } from './SearchHighlight';
+import { rowMatchesQuery } from '../utils/gridSearch';
+import { dbCaps } from '../utils/dbCaps';
 
 // Lazy because `RowDocumentModal` has a JSON tab built on `@monaco-editor/react`: a static import
 // here is a static path from the entry to Monaco, and it undoes the `React.lazy` of `SqlEditor` and
@@ -42,9 +47,6 @@ import { TablePropertiesView } from './TablePropertiesView';
 // `npm run build-frontend`.
 const RowDocumentModal = React.lazy(() =>
   import('./RowDocumentModal').then((m) => ({ default: m.RowDocumentModal })));
-
-/** Rows per batch when importing into a table, so progress can be reported. */
-const IMPORT_BATCH_SIZE = 500;
 
 // The platform's modifier symbol, so only one shortcut is ever shown.
 const modKey = /Mac|iPod|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl+';
@@ -63,13 +65,13 @@ const LoadingSpinner: React.FC<{ size?: number; style?: React.CSSProperties }> =
       cx="12"
       cy="12"
       r="10"
-      stroke="var(--win-border-strong, #383b44)"
+      style={{ stroke: 'var(--win-border-strong)' }}
       strokeWidth="3"
       opacity="0.2"
     />
     <path
       d="M12 2C6.47715 2 2 6.47715 2 12C2 13.5683 2.36155 15.0506 3.00769 16.3718"
-      stroke="var(--win-accent)"
+      style={{ stroke: 'var(--win-accent)' }}
       strokeWidth="3"
       strokeLinecap="round"
     />
@@ -128,7 +130,7 @@ interface DataGridProps {
   /** The connection this component acts on. Passed explicitly, never read from the ambient id (§4.1). */
   connId: string;
   tableName: string;
-  dbType: 'sqlite' | 'postgres' | 'mysql';
+  dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb';
   initialViewMode?: GridViewMode;
   initialFilter?: { column: string; value: any };
   readOnly?: boolean;
@@ -154,56 +156,6 @@ interface FilterRow {
   value: string;
 }
 
-function parseCSV(text: string): string[][] {
-  const result: string[][] = [];
-  let row: string[] = [];
-  let cell = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const nextChar = text[i + 1];
-
-    if (inQuotes) {
-      if (char === '"') {
-        if (nextChar === '"') {
-          cell += '"';
-          i++; // skip next quote
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        cell += char;
-      }
-    } else {
-      if (char === '"') {
-        inQuotes = true;
-      } else if (char === ',' || char === '\t') {
-        row.push(cell.trim());
-        cell = '';
-      } else if (char === '\n' || char === '\r') {
-        if (char === '\r' && nextChar === '\n') {
-          i++;
-        }
-        row.push(cell.trim());
-        if (row.length > 1 || row[0] !== '') {
-          result.push(row);
-        }
-        row = [];
-        cell = '';
-      } else {
-        cell += char;
-      }
-    }
-  }
-
-  if (cell !== '' || row.length > 0) {
-    row.push(cell.trim());
-    result.push(row);
-  }
-
-  return result;
-}
 
 export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, initialViewMode = 'data', initialFilter, readOnly = false, onDirtyChange, tableSchema }) => {
   const { t, i18n } = useTranslation();
@@ -381,23 +333,13 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     colName: string; cellValue: any;
   } | null>(null);
 
-  // The context menu's position after its real size has been measured (so it cannot overflow the window)
-  const cellMenuRef = useRef<HTMLDivElement>(null);
-  const [cellMenuPos, setCellMenuPos] = useState<MenuRect | null>(null);
-
-  useLayoutEffect(() => {
-    if (!contextMenu) {
-      setCellMenuPos(null);
-      return;
-    }
-    const el = cellMenuRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setCellMenuPos(clampMenu(contextMenu.x, contextMenu.y, r.width, r.height, window.innerWidth, window.innerHeight));
-  }, [contextMenu]);
-
-  // Quick Look Modal State
-  const [quickLookCell, setQuickLookCell] = useState<{ colName: string; value: any } | null>(null);
+  // The tools the context menu opens (GridToolDialogs.tsx). The value editor replaced Quick Look:
+  // same entry point, but it formats JSON and can write the value back into the edit buffer.
+  const [valueEditor, setValueEditor] = useState<{ rowId: any; colName: string; value: any; editable: boolean; reason?: string } | null>(null);
+  const [statsTarget, setStatsTarget] = useState<{ column: string; values: unknown[]; scope: string; note?: string } | null>(null);
+  /** pgvector tools from the cell menu. `value` is the clicked cell, in pgvector's text form. */
+  const [vectorTarget, setVectorTarget] = useState<{ mode: 'inspect' | 'search'; column: string; value?: string } | null>(null);
+  const [transposeTarget, setTransposeTarget] = useState<any[] | null>(null);
   const [mediaViewerTarget, setMediaViewerTarget] = useState<{ media: MediaInfo; colName: string; tableName: string } | null>(null);
 
   // Schema View Toggle
@@ -416,6 +358,18 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   const [quickSearchQuery, setQuickSearchQuery] = useState('');
   const [showQuickSearch, setShowQuickSearch] = useState(false);
   const quickSearchInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * Column widths measured when quick search opens, so filtering cannot move them.
+   *
+   * `.grid-table` is `table-layout: auto`: a column is as wide as the widest cell CURRENTLY
+   * RENDERED, so hiding rows re-lays out the grid on every keystroke and the columns jump under the
+   * text being typed. Filtering only removes rows, so the widths taken before the first keystroke
+   * are the widest this row set can need — freezing them can leave a column roomier than its
+   * content, never clip it. Carried with the `of` array so a refetch (paging is server-side here)
+   * drops them without an effect to do the invalidating. SqlEditor's result grid does the same.
+   */
+  const [frozenCols, setFrozenCols] = useState<{ of: any[]; widths: number[] } | null>(null);
+  const gridTableRef = useRef<HTMLTableElement>(null);
 
   // Import & Export Combined Popover State
   const [showIoPopover, setShowIoPopover] = useState(false);
@@ -424,161 +378,27 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
   // Export state — every option and the preview live in ExportTableDialog
   const [showExportDialog, setShowExportDialog] = useState(false);
 
-  // Import Preview State
-  const [importTab, setImportTab] = useState<'structure' | 'data'>('structure');
-  const [importProgress, setImportProgress] = useState<ProgressState | null>(null);
+  // Import: the picker hands over a PATH, read in Rust — the file never enters the webview.
   const [showImportPicker, setShowImportPicker] = useState(false);
-  const [showImportModal, setShowImportModal] = useState(false);
-  const [importFileName, setImportFileName] = useState('');
-  const [importFileType, setImportFileType] = useState<'csv' | 'json' | 'sql'>('csv');
-  const [importPendingRows, setImportPendingRows] = useState<any[]>([]);
-  const [importSqlContent, setImportSqlContent] = useState('');
-
-  // The columns present in the file (the union of every row's keys: CSV/JSON rows may omit some)
-  const importFileCols = React.useMemo(() => collectColumns(importPendingRows), [importPendingRows]);
-
-  // Columns in the file that the target table lacks -> the import would fail, so warn first.
-  const importUnknownCols = React.useMemo(() => {
-    if (columns.length === 0) return [];
-    const target = columns.map(c => c.name.toLowerCase());
-    return importFileCols.filter(c => !target.includes(c.toLowerCase()));
-  }, [importFileCols, columns]);
 
   const handleImportClick = () => {
     setShowImportPicker(true);
   };
 
-  // Takes the file from ImportFilePicker (which already checked the extension) and parses it for the preview.
-  const handleFileImport = async (file: File) => {
-    setShowImportPicker(false);
-    setImportTab('structure');
-    setImportFileName(file.name);
-    setErrorMsg(null);
-    setSuccessMsg(null);
+  // A CSV / Excel / JSON file for THIS table goes to the mapping dialog (`ImportTableDataDialog`),
+  // which converts and checks every row and imports in one transaction. A .sql file or a dump is
+  // statements rather than rows: it opens the Import Database tab on that file (App handles
+  // `open-import-db`), which streams it from disk — it used to be read whole into a textarea here
+  // and sent over IPC as one string, which a large file crashed.
+  const [importDialogPath, setImportDialogPath] = useState<string | null>(null);
 
-    // XLSX is binary -> read an ArrayBuffer and parse it separately.
-    if (file.name.toLowerCase().endsWith('.xlsx')) {
-      try {
-        const buf = await file.arrayBuffer();
-        const sheetRows = await parseXlsx(buf);
-        if (sheetRows.length === 0) throw new Error(t('dataGrid.errXlsxEmpty'));
-        setImportFileType('json'); // object-shaped sheetRows, sharing the DB-write branch with CSV/JSON
-        setImportPendingRows(sheetRows);
-        setShowImportModal(true);
-      } catch (err: any) {
-        setErrorMsg(t('dataGrid.errReadFile', { message: err.message }));
-      }
+  const handleFileImport = (path: string, detected: FileDetect) => {
+    setShowImportPicker(false);
+    if (detected.kind === 'sql') {
+      window.dispatchEvent(new CustomEvent('open-import-db', { detail: { connId, path } }));
       return;
     }
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const text = event.target?.result as string;
-
-        if (file.name.endsWith('.json')) {
-          const parsedJson = JSON.parse(text);
-          if (!Array.isArray(parsedJson)) {
-            throw new Error(t('dataGrid.errJsonArray'));
-          }
-          setImportFileType('json');
-          setImportPendingRows(parsedJson);
-          setShowImportModal(true);
-        } else if (file.name.endsWith('.csv')) {
-          let cleanText = text;
-          if (cleanText.charCodeAt(0) === 0xFEFF) {
-            cleanText = cleanText.substring(1);
-          }
-          const parsedCsv = parseCSV(cleanText);
-          if (parsedCsv.length < 2) {
-            throw new Error(t('dataGrid.errCsvEmpty'));
-          }
-          const headers = parsedCsv[0];
-          const rowsToImport: any[] = [];
-          for (let i = 1; i < parsedCsv.length; i++) {
-            const values = parsedCsv[i];
-            const row: any = {};
-            headers.forEach((h, idx) => {
-              const val = values[idx];
-              row[h] = val === undefined || val === '' ? null : val;
-            });
-            rowsToImport.push(row);
-          }
-          setImportFileType('csv');
-          setImportPendingRows(rowsToImport);
-          setShowImportModal(true);
-        } else if (file.name.endsWith('.sql')) {
-          setImportFileType('sql');
-          setImportSqlContent(text);
-          setShowImportModal(true);
-        } else {
-          throw new Error(t('dataGrid.errUnsupportedFile'));
-        }
-      } catch (err: any) {
-        setErrorMsg(t('dataGrid.errReadFile', { message: err.message }));
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  const confirmImport = async () => {
-    setShowImportModal(false);
-    setLoading(true);
-    setErrorMsg(null);
-    setSuccessMsg(null);
-    setImportProgress({
-      label: importFileType === 'sql'
-        ? t('dataGrid.importRunningSql')
-        : t('dataGrid.importWritingRows', { n: importPendingRows.length, table: tableName }),
-    });
-
-    try {
-      if (importFileType === 'sql') {
-        // See the note in App.tsx: a .sql file holds several statements, so it has to go through executeQueryMulti.
-        const res = await dbHelper.executeQueryMulti(connId, importSqlContent);
-        setImportProgress(null);
-        setLoading(false);
-        if (res.success) {
-          setSuccessMsg(t('dataGrid.importSqlSuccess'));
-          refetchAfterWrite();
-        } else {
-          setErrorMsg(t('dataGrid.errImportSql', { message: res.error }));
-        }
-      } else {
-        // Written in batches so real progress can be reported (the backend inserts row by row within each).
-        const total = importPendingRows.length;
-        let done = 0;
-        for (let i = 0; i < total; i += IMPORT_BATCH_SIZE) {
-          const batch = importPendingRows.slice(i, i + IMPORT_BATCH_SIZE);
-          const resData = await dbHelper.importTableData(connId, tableName, batch);
-          if (!resData.success) {
-            setImportProgress(null);
-            setLoading(false);
-            const failure = resData.error || t('dataGrid.errImportFailed');
-            setErrorMsg(
-              done > 0 ? t('dataGrid.errImportWithProgress', { message: failure, done, total }) : failure
-            );
-            refetchAfterWrite();
-            return;
-          }
-          done += batch.length;
-          setImportProgress({
-            label: t('dataGrid.importWriting', { table: tableName }),
-            current: done,
-            total,
-            detail: t('dataGrid.importRowsDetail', { done: fmtNum(done), total: fmtNum(total) }),
-          });
-        }
-        setImportProgress(null);
-        setLoading(false);
-        setSuccessMsg(t('dataGrid.importDone', { n: done, table: tableName }));
-        refetchAfterWrite();
-      }
-    } catch (err: any) {
-      setImportProgress(null);
-      setLoading(false);
-      setErrorMsg(t('common.connectionError', { message: err.message }));
-    }
+    setImportDialogPath(path);
   };
 
   // Messages
@@ -708,7 +528,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
       // 1b. Open Quick Search (Search Anything) (Ctrl/Cmd + F)
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault();
-        setShowQuickSearch(true);
+        openQuickSearchBar();
         setTimeout(() => {
           quickSearchInputRef.current?.focus();
           quickSearchInputRef.current?.select();
@@ -932,7 +752,15 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     }
     if (!editingCell) return;
     const { rowId, colName } = editingCell;
+    applyCellValue(rowId, colName, editValue);
+    setEditingCell(null);
+  };
 
+  /**
+   * Puts one cell's new value into the edit buffer. Shared by the inline editor and the value
+   * editor, so a value applied from either one is dirty-tracked, undone and saved the same way.
+   */
+  const applyCellValue = (rowId: any, colName: string, nextValue: any) => {
     // Check if cell changed from original
     const isTemp = String(rowId).startsWith('temp_');
 
@@ -941,7 +769,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
       setInserts(prev =>
         prev.map(row => {
           if (row.__tempId === rowId) {
-            return { ...row, [colName]: editValue };
+            return { ...row, [colName]: nextValue };
           }
           return row;
         })
@@ -951,14 +779,14 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
       const originalRow = rows.find(r => r[primaryKey] === rowId);
       const originalVal = originalRow ? originalRow[colName] : undefined;
 
-      if (String(originalVal) !== String(editValue)) {
+      if (String(originalVal) !== String(nextValue)) {
         setUpdates(prev => {
           const rowUpdates = prev[rowId] || {};
           return {
             ...prev,
             [rowId]: {
               ...rowUpdates,
-              [colName]: editValue
+              [colName]: nextValue
             }
           };
         });
@@ -977,8 +805,6 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         });
       }
     }
-
-    setEditingCell(null);
   };
 
   // Add Empty Row
@@ -1558,47 +1384,49 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     }
   }, [showQuickSearch]);
 
-  const activeColumns = columns.filter(c => visibleColumns.includes(c.name));
-
-  // ————— Quick Search (Search Anything) Helpers —————
-  const normalizeSearch = (val: any): string => {
-    if (val === null || val === undefined) return '';
-    return String(val)
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
+  /**
+   * The two doors into quick search (Ctrl+F and the toolbar button) and the three out of it (Esc,
+   * the bar's ×, the toolbar button again) all go through these, because the width measurement has
+   * to happen on EVERY open — a door that skips it is a door that still lets the columns jump.
+   */
+  const openQuickSearchBar = () => {
+    // Read against the unfiltered grid, before the bar renders. Once per open, never per keystroke.
+    const heads = gridTableRef.current ? Array.from(gridTableRef.current.querySelectorAll('thead th')) : [];
+    if (heads.length > 0) {
+      setFrozenCols({ of: rows, widths: heads.map(th => Math.round(th.getBoundingClientRect().width)) });
+    }
+    setShowQuickSearch(true);
   };
 
-  const rowMatchesSearch = useCallback((row: any, query: string, rowUpdates: any = {}) => {
-    const trimmed = query.trim();
-    if (!trimmed) return true;
-    const q = normalizeSearch(trimmed);
-    return activeColumns.some(col => {
-      const cellVal = col.name in rowUpdates ? rowUpdates[col.name] : row[col.name];
-      return normalizeSearch(cellVal).includes(q);
-    });
-  }, [activeColumns]);
+  const closeQuickSearchBar = () => {
+    setShowQuickSearch(false);
+    setQuickSearchQuery('');
+    // Back to the browser's own sizing: with every row on screen again, the measurements are only a
+    // stale copy of what auto layout is about to compute anyway.
+    setFrozenCols(null);
+  };
 
+  const activeColumns = columns.filter(c => visibleColumns.includes(c.name));
+  const frozenColWidths = showQuickSearch && frozenCols?.of === rows ? frozenCols.widths : null;
+
+  // Matching and the match's position live in `utils/gridSearch.ts`, shared with SqlEditor's result
+  // grid. What stays here is the one part that is this grid's own: searching a row by its BUFFERED
+  // edits rather than by what the database returned, so a row the user has just typed into does not
+  // vanish from their own filter.
+  const rowMatchesSearch = useCallback(
+    (row: any, query: string, rowUpdates: any = {}) =>
+      rowMatchesQuery(row, activeColumns.map(c => c.name), query, rowUpdates),
+    [activeColumns],
+  );
+
+  // The old body sliced the ORIGINAL string with an index found in the NFD-NORMALIZED one. Those
+  // two are not the same length — NFD splits `ễ` into a letter plus a combining mark that the strip
+  // then removes — so on any text with diacritics the highlight landed a few characters off, further
+  // off with every mark before it. `findMatchRange` maps the index back; see `gridSearch.ts`.
   const renderCellWithHighlight = (cellVal: any, query: string): React.ReactNode => {
     if (cellVal === null || cellVal === undefined || cellVal === '') return cellVal;
-    const trimmed = query.trim();
-    if (!trimmed) return String(cellVal);
-    const str = String(cellVal);
-    const normStr = normalizeSearch(str);
-    const normQ = normalizeSearch(trimmed);
-    const matchIdx = normStr.indexOf(normQ);
-    if (matchIdx === -1) return str;
-
-    const before = str.slice(0, matchIdx);
-    const matched = str.slice(matchIdx, matchIdx + trimmed.length);
-    const after = str.slice(matchIdx + trimmed.length);
-    return (
-      <>
-        {before}
-        <mark className="grid-search-mark">{matched}</mark>
-        {renderCellWithHighlight(after, query)}
-      </>
-    );
+    if (!query.trim()) return String(cellVal);
+    return <SearchHighlight text={String(cellVal)} query={query} />;
   };
 
   const displayedRows = React.useMemo(() => {
@@ -1818,13 +1646,6 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         </div>
       )}      {/* Commit/Discard buttons removed from here to prevent squeezing */}
 
-      {/* Import progress — the preview modal has closed, so it is reported in the grid's message bar */}
-      {importProgress && (
-        <div className="info-bar info-bar-blue">
-          <ProgressBar progress={importProgress} />
-        </div>
-      )}
-
       {successMsg && (
         <div className="info-bar info-bar-success">
           <div className="info-bar-content">
@@ -1863,7 +1684,7 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
                     if (quickSearchQuery) {
                       setQuickSearchQuery('');
                     } else {
-                      setShowQuickSearch(false);
+                      closeQuickSearchBar();
                     }
                   }
                 }}
@@ -1890,10 +1711,10 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
             </div>
           </div>
           <div className="grid-quick-search-right">
-            <span className="grid-quick-search-kbd">Esc</span>
+            <span className="grid-quick-search-kbd">{t('dataGrid.quickSearchEscKey')}</span>
             <button
               className="grid-quick-search-btn-close"
-              onClick={() => { setShowQuickSearch(false); setQuickSearchQuery(''); }}
+              onClick={closeQuickSearchBar}
               title={t('dataGrid.quickSearchClose', 'Close quick search')}
             >
               <X size={14} />
@@ -1929,7 +1750,17 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
               <span className="grid-loading-text">{t('dataGrid.loadingData')}</span>
             </div>
           ) : (
-            <table className="grid-table">
+            <table className="grid-table" ref={gridTableRef}>
+              {/* Only while quick search is open — see `frozenCols`. `<col>` sets a whole column's
+                  width without touching a single cell, and it lines up 1:1 with the header cells
+                  below. Keyed by position because a column IS its position here. */}
+              {frozenColWidths && (
+                <colgroup>
+                  {frozenColWidths.map((w, i) => (
+                    <col key={i} style={{ width: `${w}px` }} />
+                  ))}
+                </colgroup>
+              )}
               <thead>
                 <tr>
                   {activeColumns.map(col => {
@@ -2257,14 +2088,17 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
             <span>{t('dataGrid.chartTab', 'Chart')}</span>
           </button>
 
-          <button
-            className={`gp-btn ${viewMode === 'properties' ? 'on' : ''}`}
-            onClick={() => setViewMode('properties')}
-            title={t('dataGrid.propertiesViewTitle')}
-          >
-            <Sliders size={12} />
-            <span>{t('dataGrid.propertiesTab')}</span>
-          </button>
+          {/* Sizes and engine statistics come from dialect-specific catalogs DuckDB lacks. */}
+          {dbCaps(dbType).properties && (
+            <button
+              className={`gp-btn ${viewMode === 'properties' ? 'on' : ''}`}
+              onClick={() => setViewMode('properties')}
+              title={t('dataGrid.propertiesViewTitle')}
+            >
+              <Sliders size={12} />
+              <span>{t('dataGrid.propertiesTab')}</span>
+            </button>
+          )}
 
           {viewMode === 'structure' && (
             <>
@@ -2598,8 +2432,9 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
             <button
               className={`gp-btn ${showQuickSearch ? 'on' : ''}`}
               onClick={() => {
-                setShowQuickSearch(prev => !prev);
-                if (!showQuickSearch) {
+                if (showQuickSearch) closeQuickSearchBar();
+                else {
+                  openQuickSearchBar();
                   setTimeout(() => quickSearchInputRef.current?.focus(), 50);
                 }
               }}
@@ -2680,11 +2515,20 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
           selectedRows: showExportDialog ? selectedRows() : undefined,
         }}
         onClose={() => setShowExportDialog(false)}
-        onSuccess={setSuccessMsg}
-        onError={setErrorMsg}
       />
 
-      {/* File picker: states the allowed formats before opening the OS dialog */}
+      {importDialogPath && (
+        <ImportTableDataDialog
+          connId={connId}
+          tableName={tableName}
+          tableSchema={tableSchema}
+          dbType={dbType}
+          path={importDialogPath}
+          onClose={() => setImportDialogPath(null)}
+        />
+      )}
+
+      {/* File picker: states what is accepted, then opens the OS dialog */}
       <ImportFilePicker
         open={showImportPicker}
         targetTable={tableName}
@@ -2692,363 +2536,183 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         onConfirm={handleFileImport}
       />
 
-      {showImportModal && (
-        <Modal
-          title={t('dataGrid.importPreviewTitle', { file: importFileName })}
-          onClose={() => setShowImportModal(false)}
-          width="720px"
-          zIndex={9999}
-        >
-          <ModalBody style={{ gap: '12px' }}>
-            <div style={{ fontSize: '11px', color: 'var(--win-text-secondary)' }}>
-              {importFileType === 'sql' ? (
-                <span>{t('dataGrid.importSqlNote')}</span>
-              ) : (
-                <span>
-                  <Trans
-                    i18nKey="dataGrid.importSummary"
-                    values={{
-                      format: importFileType.toUpperCase(),
-                      rows: importPendingRows.length,
-                      cols: importFileCols.length,
-                      table: tableName,
-                    }}
-                    components={{ strong: <b />, code: <b style={{ fontFamily: 'monospace' }} /> }}
-                  />
-                </span>
-              )}
-            </div>
+      {/* ─── Right-Click Context Menu ───
+          Cell → column → row, most-used first. The ten copy formats sit behind "Copy as ▸": as a
+          flat list they were half the menu and pushed Edit / Delete out of reach. */}
+      {contextMenu && (() => {
+        const cm = contextMenu;
+        const nSel = selectedRowIds.size;
+        const media = detectMedia(cm.cellValue, cm.colName);
+        const fk = getFkInfo(cm.colName);
+        const hasFkValue = !!fk && cm.cellValue !== null && cm.cellValue !== undefined && cm.cellValue !== '';
+        // A row without a primary key is keyed by its position (`__idx_<n>`), and an UPDATE for it
+        // would have nothing to put in its WHERE — so the value editor opens read-only there.
+        const hasKey = String(cm.rowId).startsWith('temp_') || !String(cm.rowId).startsWith('__idx_');
+        const statsOnSelection = nSel > 1;
+        const isVectorCell = dbType === 'postgres' && !!vectorKindOf(columns.find(c => c.name === cm.colName)?.type);
+        const vectorValue = isVectorCell && typeof cm.cellValue === 'string' ? cm.cellValue : undefined;
+        return (
+          <GridContextMenu x={cm.x} y={cm.y} onClose={() => setContextMenu(null)}>
+            <MenuHeading>{t('dataGrid.ctxCell', { col: cm.colName })}</MenuHeading>
+            {!readOnly && (
+              <MenuItem icon="✏️" label={t('dataGrid.ctxEditCell')} onSelect={() => startEdit(cm.rowId, cm.colName, cm.cellValue)} />
+            )}
+            <MenuItem
+              icon="📝"
+              label={t('gridTools.openValueEditor')}
+              onSelect={() => setValueEditor({
+                rowId: cm.rowId,
+                colName: cm.colName,
+                value: cm.cellValue,
+                editable: !readOnly && hasKey,
+                reason: readOnly ? t('gridTools.editorReadOnly') : !hasKey ? t('gridTools.editorNoKey') : undefined,
+              })}
+            />
+            <MenuItem
+              icon="📄"
+              label={t('dataGrid.ctxCopyCell')}
+              onSelect={() => {
+                copyToClipboard(cm.cellValue === null ? '' : String(cm.cellValue));
+                setSuccessMsg(t('dataGrid.copiedCell')); setTimeout(() => setSuccessMsg(null), 2000);
+              }}
+            />
+            {hasFkValue && fk && (
+              <MenuItem
+                icon="🔗"
+                label={t('dataGrid.ctxGoToFk', { table: fk.refTable, defaultValue: `Mở bảng ${fk.refTable} (${fk.refColumn} = ${cm.cellValue})` })}
+                onSelect={() => handleFkClick(cm.colName, cm.cellValue)}
+              />
+            )}
+            {media && (
+              <MenuItem
+                icon="🖼️"
+                label={t('dataGrid.ctxViewImage', 'Xem ảnh (Media Viewer)')}
+                onSelect={() => setMediaViewerTarget({ media, colName: cm.colName, tableName })}
+              />
+            )}
+            {vectorValue !== undefined && (
+              <MenuItem icon="📐" label={t('pgvector.ctxInspect')} onSelect={() => setVectorTarget({ mode: 'inspect', column: cm.colName, value: vectorValue })} />
+            )}
+            {isVectorCell && (
+              <MenuItem icon="🧭" label={t('pgvector.ctxSearch')} onSelect={() => setVectorTarget({ mode: 'search', column: cm.colName, value: vectorValue })} />
+            )}
 
-            {importFileType === 'sql' ? (
-              <textarea
-                readOnly
-                value={importSqlContent.slice(0, 5000) + (importSqlContent.length > 5000 ? t('dataGrid.importTruncated') : '')}
-                style={{
-                  width: '100%',
-                  height: '280px',
-                  background: 'var(--win-bg-window)',
-                  border: '1px solid var(--win-border)',
-                  color: 'var(--win-text-primary)',
-                  fontFamily: 'monospace',
-                  fontSize: '11px',
-                  padding: '10px',
-                  borderRadius: '4px',
-                  resize: 'none',
-                  outline: 'none'
+            <MenuHeading>{t('gridTools.columnHeading', { col: cm.colName })}</MenuHeading>
+            <MenuItem icon="↑" label={t('dataGrid.ctxAsc')} onSelect={() => { setSortBy(cm.colName); setSortDir('asc'); setPage(1); }} />
+            <MenuItem icon="↓" label={t('dataGrid.ctxDesc')} onSelect={() => { setSortBy(cm.colName); setSortDir('desc'); setPage(1); }} />
+            <MenuItem
+              icon="Σ"
+              label={t('gridTools.columnStats')}
+              onSelect={() => {
+                const source = statsOnSelection ? selectedRows() : displayedRows;
+                setStatsTarget({
+                  column: cm.colName,
+                  values: source.map(r => r[cm.colName]),
+                  scope: statsOnSelection
+                    ? t('gridTools.scopeSelected', { n: source.length })
+                    : t('gridTools.scopePage', { n: source.length }),
+                  note: statsOnSelection ? undefined : t('gridTools.statsPageNote'),
+                });
+              }}
+            />
+            <MenuSub icon="📋" label={t('gridTools.copyColumn')}>
+              <MenuItem
+                icon="📋"
+                label={t('gridTools.columnValuesPage')}
+                onSelect={() => {
+                  const allVals = displayedRows.map(r => r[cm.colName]).filter(v => v !== null && v !== undefined).join('\n');
+                  copyToClipboard(allVals);
+                  setSuccessMsg(t('dataGrid.copiedColumn')); setTimeout(() => setSuccessMsg(null), 2000);
                 }}
               />
-            ) : (
+              <MenuItem icon="🔢" label={t('dataGrid.ctxCopyInListColumn')} onSelect={() => copyAsInList(cm.colName, cm.row, 'column')} />
+              <MenuItem icon="🔢" label={t('dataGrid.ctxCopyInListRows', { col: cm.colName })} onSelect={() => copyAsInList(cm.colName, cm.row, 'rows')} />
+            </MenuSub>
+
+            <MenuHeading>{nSel > 1 ? t('gridTools.rowsHeading', { n: nSel }) : t('gridTools.rowHeading')}</MenuHeading>
+            {nSel <= 1 && (
+              <MenuItem
+                icon="📑"
+                label={t('dataGrid.ctxViewDocument', 'Xem chi tiết dòng (Document Viewer)')}
+                hint="Space"
+                onSelect={() => {
+                  const rowIdx = rows.findIndex((r, idx) => (r[primaryKey] !== undefined && r[primaryKey] !== null ? r[primaryKey] : `__idx_${idx}`) === cm.rowId);
+                  if (rowIdx >= 0) setDocumentViewerIndex(rowIdx);
+                }}
+              />
+            )}
+            <MenuItem
+              icon="⇄"
+              label={nSel > 1 ? t('gridTools.transposeN', { n: nSel }) : t('gridTools.transpose')}
+              onSelect={() => setTransposeTarget(rowsToCopy(cm.row))}
+            />
+            <MenuSub icon="📋" label={t('gridTools.copyAs')}>
+              <MenuItem icon="📋" label={t('dataGrid.ctxCopyTsv')} onSelect={() => copyRowAsTsv(cm.row)} />
+              <MenuItem icon="📊" label="CSV" onSelect={() => copyRowAsCSV(cm.row, false)} />
+              <MenuItem icon="📊" label={t('dataGrid.ctxCsvHeader')} onSelect={() => copyRowAsCSV(cm.row, true)} />
+              <MenuItem icon="🗄" label="SQL INSERT" onSelect={() => copyRowAsSQL(cm.row)} />
+              <MenuItem icon="✏️" label={t('dataGrid.ctxCopySqlUpdate')} onSelect={() => copyRowAsUpdate(cm.row)} />
+              <MenuItem icon="📝" label="Markdown Table" onSelect={() => copyRowAsMarkdown(cm.row)} />
+              <MenuItem icon="📦" label={t('dataGrid.ctxJsonObjects')} onSelect={() => copyRowAsJson(cm.row)} />
+              <MenuItem icon="📦" label={t('dataGrid.ctxJsonValues')} onSelect={() => copyRowAsJsonValues(cm.row)} />
+            </MenuSub>
+            {!readOnly && (
               <>
-                {/* Tabs: structure (the file's columns vs the target table) | data (the first 10 rows) */}
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  {([
-                    { id: 'structure', label: t('dataGrid.importTabStructure', { n: importFileCols.length }) },
-                    { id: 'data', label: t('dataGrid.importTabData', { n: importPendingRows.length }) },
-                  ] as const).map(tab => (
-                    <button
-                      key={tab.id}
-                      onClick={() => setImportTab(tab.id)}
-                      style={{
-                        padding: '4px 12px',
-                        fontSize: '11px',
-                        borderRadius: '4px',
-                        border: '1px solid var(--win-border)',
-                        cursor: 'pointer',
-                        background: importTab === tab.id ? 'var(--win-accent)' : 'transparent',
-                        color: importTab === tab.id ? '#fff' : 'var(--win-text-secondary)',
-                        fontWeight: 600
-                      }}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-
-                {importUnknownCols.length > 0 && (
-                  <div style={{
-                    fontSize: '11px',
-                    color: 'var(--st-warn, #d98600)',
-                    background: 'rgba(255,170,0,0.08)',
-                    border: '1px solid rgba(255,170,0,0.35)',
-                    borderRadius: '4px',
-                    padding: '8px 10px',
-                    lineHeight: 1.5
-                  }}>
-                    <Trans
-                      i18nKey="dataGrid.importUnknownCols"
-                      values={{
-                        n: importUnknownCols.length,
-                        table: tableName,
-                        cols: importUnknownCols.join(', '),
-                      }}
-                      components={{ code: <b style={{ fontFamily: 'monospace' }} /> }}
-                    />
-                  </div>
-                )}
-
-                <div style={{
-                  height: '280px',
-                  overflow: 'auto',
-                  border: '1px solid var(--win-border)',
-                  borderRadius: '4px',
-                  background: 'var(--win-bg-window)'
-                }}>
-                  {importPendingRows.length === 0 ? (
-                    <div style={{ padding: '20px', textAlign: 'center', color: 'var(--win-text-disabled)' }}>{t('dataGrid.importNoRows')}</div>
-                  ) : importTab === 'structure' ? (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-                      <thead>
-                        <tr style={{ background: 'var(--win-bg-hover)', borderBottom: '1px solid var(--win-border)' }}>
-                          {[t('dataGrid.colInFile'), t('dataGrid.colInferredType'), t('dataGrid.colInTarget'), t('dataGrid.colTargetType')].map(h => (
-                            <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, borderRight: '1px solid var(--win-border)' }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {importFileCols.map(col => {
-                          const target = columns.find(c => c.name.toLowerCase() === col.toLowerCase());
-                          return (
-                            <tr key={col} style={{ borderBottom: '1px solid var(--win-border)' }}>
-                              <td style={{ padding: '6px 8px', borderRight: '1px solid var(--win-border)', fontFamily: 'monospace', color: 'var(--win-text-primary)' }}>{col}</td>
-                              <td style={{ padding: '6px 8px', borderRight: '1px solid var(--win-border)', color: 'var(--win-text-secondary)' }}>{inferColType(importPendingRows, col)}</td>
-                              <td style={{ padding: '6px 8px', borderRight: '1px solid var(--win-border)', color: target ? 'var(--win-text-primary)' : 'var(--st-warn, #d98600)' }}>
-                                {target ? target.name : t('dataGrid.colMissing')}
-                              </td>
-                              <td style={{ padding: '6px 8px', color: 'var(--win-text-secondary)', fontFamily: 'monospace' }}>{target?.type || '—'}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-                      <thead>
-                        <tr style={{ background: 'var(--win-bg-hover)', borderBottom: '1px solid var(--win-border)' }}>
-                          {importFileCols.map(col => (
-                            <th key={col} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, borderRight: '1px solid var(--win-border)' }}>
-                              {col}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {importPendingRows.slice(0, 10).map((row, rIdx) => (
-                          <tr key={rIdx} style={{ borderBottom: '1px solid var(--win-border)' }}>
-                            {importFileCols.map(col => (
-                              <td key={col} style={{ padding: '6px 8px', color: 'var(--win-text-primary)', borderRight: '1px solid var(--win-border)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '180px' }}>
-                                {row[col] === null || row[col] === undefined
-                                  ? <span style={{ color: 'var(--win-text-disabled)', fontStyle: 'italic' }}>NULL</span>
-                                  : String(row[col])}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
+                <MenuItem icon="⧉" label={t('dataGrid.ctxDuplicate')} onSelect={() => handleDuplicateRow(cm.row)} />
+                <MenuSeparator />
+                {/* Names the clicked row, as it always has — the Delete KEY acts on the whole
+                    selection, so its hint is only shown when the two agree. */}
+                <MenuItem icon="🗑" danger label={t('dataGrid.ctxDeleteRow')} hint={nSel <= 1 ? 'Del' : undefined} onSelect={() => handleDeleteRow(cm.rowId)} />
               </>
             )}
-          </ModalBody>
+          </GridContextMenu>
+        );
+      })()}
 
-          <ModalFooter>
-            <button
-              className="btn btn-secondary"
-              onClick={() => setShowImportModal(false)}
-              style={{ padding: '0 12px' }}
-            >
-              {t('common.cancel')}
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={confirmImport}
-              style={{ padding: '0 16px', background: 'var(--win-accent)', color: '#fff', border: 'none' }}
-            >
-              {t('dataGrid.confirmImport')}
-            </button>
-          </ModalFooter>
-        </Modal>
+      {valueEditor && (
+        <ValueEditorDialog
+          column={valueEditor.colName}
+          value={valueEditor.value}
+          onApply={valueEditor.editable ? (text) => applyCellValue(valueEditor.rowId, valueEditor.colName, text) : undefined}
+          readOnlyReason={valueEditor.reason}
+          onClose={() => setValueEditor(null)}
+        />
       )}
-
-      {/* ─── Right-Click Context Menu ─── */}
-      {contextMenu && (
-        <div
-          ref={cellMenuRef}
-          onClick={e => e.stopPropagation()}
-          style={{
-            position: 'fixed',
-            // The position is adjusted to the menu's real size (it used to assume a fixed 320/230, so
-            // a long menu was still clipped at the bottom of the window).
-            top: cellMenuPos ? cellMenuPos.top : contextMenu.y,
-            left: cellMenuPos ? cellMenuPos.left : contextMenu.x,
-            visibility: cellMenuPos ? 'visible' : 'hidden',
-            zIndex: 99999,
-            background: 'var(--win-bg-popover, #ffffff)',
-            border: '1px solid var(--win-border-strong)',
-            borderRadius: '8px',
-            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.25), 0 2px 8px rgba(0, 0, 0, 0.15)',
-            padding: '4px 0',
-            minWidth: '220px',
-            fontSize: '12px',
-          }}
-        >
-          {/* Row actions */}
-          <div style={{ padding: '2px 8px 4px', color: 'var(--win-text-disabled)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('dataGrid.ctxRow')}</div>
-          <button className="context-menu-item" onClick={() => {
-            const cm = contextMenu;
-            setContextMenu(null);
-            const rowIdx = rows.findIndex((r, idx) => (r[primaryKey] !== undefined && r[primaryKey] !== null ? r[primaryKey] : `__idx_${idx}`) === cm.rowId);
-            if (rowIdx >= 0) {
-              setDocumentViewerIndex(rowIdx);
-            }
-          }}>
-            <span>📑</span> {t('dataGrid.ctxViewDocument', 'Xem chi tiết dòng (Document Viewer)')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); handleDuplicateRow(contextMenu.row); }}>
-            <span>📋</span> {t('dataGrid.ctxDuplicate')}
-          </button>
-          <button className="context-menu-item" style={{ color: 'var(--st-danger)' }} onClick={() => { setContextMenu(null); handleDeleteRow(contextMenu.rowId); }}>
-            <span>🗑</span> {t('dataGrid.ctxDeleteRow')}
-          </button>
-
-          <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
-
-          {/* Sort actions */}
-          <div style={{ padding: '2px 8px 4px', color: 'var(--win-text-disabled)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('dataGrid.ctxSortBy', { col: contextMenu.colName })}</div>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); setSortBy(contextMenu.colName); setSortDir('asc'); setPage(1); }}>
-            <span>↑</span> {t('dataGrid.ctxAsc')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); setSortBy(contextMenu.colName); setSortDir('desc'); setPage(1); }}>
-            <span>↓</span> {t('dataGrid.ctxDesc')}
-          </button>
-
-          <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
-
-          {/* Copy cell */}
-          <div style={{ padding: '2px 8px 4px', color: 'var(--win-text-disabled)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t('dataGrid.ctxCell', { col: contextMenu.colName })}</div>
-          <button className="context-menu-item" onClick={() => {
-            const cm = contextMenu;
-            setContextMenu(null);
-            startEdit(cm.rowId, cm.colName, cm.cellValue);
-          }}>
-            <span>✏️</span> {t('dataGrid.ctxEditCell')}
-          </button>
-          <button className="context-menu-item" onClick={() => {
-            setContextMenu(null);
-            copyToClipboard(contextMenu.cellValue === null ? '' : String(contextMenu.cellValue));
-            setSuccessMsg(t('dataGrid.copiedCell')); setTimeout(() => setSuccessMsg(null), 2000);
-          }}>
-            <span>📄</span> {t('dataGrid.ctxCopyCell')}
-          </button>
-          <button className="context-menu-item" onClick={() => {
-            setContextMenu(null);
-            const allVals = displayedRows.map(r => r[contextMenu.colName]).filter(v => v !== null && v !== undefined).join('\n');
-            copyToClipboard(allVals);
-            setSuccessMsg(t('dataGrid.copiedColumn')); setTimeout(() => setSuccessMsg(null), 2000);
-          }}>
-            <span>📋</span> {t('dataGrid.ctxCopyColumn')}
-          </button>
-          <button className="context-menu-item" onClick={() => { const cm = contextMenu; setContextMenu(null); copyAsInList(cm.colName, cm.row, 'column'); }}>
-            <span>🔢</span> {t('dataGrid.ctxCopyInListColumn')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); setQuickLookCell({ colName: contextMenu.colName, value: contextMenu.cellValue }); }}>
-            <span>🔍</span> {t('dataGrid.ctxQuickLook')}
-          </button>
-          {(() => {
-            const media = detectMedia(contextMenu.cellValue, contextMenu.colName);
-            if (media) {
-              return (
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const cm = contextMenu;
-                    setContextMenu(null);
-                    setMediaViewerTarget({
-                      media,
-                      colName: cm.colName,
-                      tableName,
-                    });
-                  }}
-                >
-                  <span>🖼️</span> {t('dataGrid.ctxViewImage', 'Xem ảnh (Media Viewer)')}
-                </button>
-              );
-            }
-            return null;
-          })()}
-          {(() => {
-            const fk = getFkInfo(contextMenu.colName);
-            if (fk && contextMenu.cellValue !== null && contextMenu.cellValue !== undefined && contextMenu.cellValue !== '') {
-              return (
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const cm = contextMenu;
-                    setContextMenu(null);
-                    handleFkClick(cm.colName, cm.cellValue);
-                  }}
-                >
-                  <span>🔗</span> {t('dataGrid.ctxGoToFk', { table: fk.refTable, defaultValue: `Mở bảng ${fk.refTable} (${fk.refColumn} = ${contextMenu.cellValue})` })}
-                </button>
-              );
-            }
-            return null;
-          })()}
-
-          <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
-
-          {/* Copy row */}
-          <div style={{ padding: '2px 8px 4px', color: 'var(--win-text-disabled)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{selectedRowIds.size > 1 ? t('dataGrid.ctxCopyRowsAs', { n: selectedRowIds.size }) : t('dataGrid.ctxCopyRowAs')}</div>
-          <button className="context-menu-item" onClick={() => { const cm = contextMenu; setContextMenu(null); copyAsInList(cm.colName, cm.row, 'rows'); }}>
-            <span>🔢</span> {t('dataGrid.ctxCopyInListRows', { col: contextMenu.colName })}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsTsv(contextMenu.row); }}>
-            <span>📋</span> {t('dataGrid.ctxCopyTsv')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsCSV(contextMenu.row, false); }}>
-            <span>📊</span> CSV
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsCSV(contextMenu.row, true); }}>
-            <span>📊</span> {t('dataGrid.ctxCsvHeader')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsSQL(contextMenu.row); }}>
-            <span>🗄</span> SQL INSERT
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsUpdate(contextMenu.row); }}>
-            <span>✏️</span> {t('dataGrid.ctxCopySqlUpdate')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsMarkdown(contextMenu.row); }}>
-            <span>📝</span> Markdown Table
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsJson(contextMenu.row); }}>
-            <span>📦</span> {t('dataGrid.ctxJsonObjects')}
-          </button>
-          <button className="context-menu-item" onClick={() => { setContextMenu(null); copyRowAsJsonValues(contextMenu.row); }}>
-            <span>📦</span> {t('dataGrid.ctxJsonValues')}
-          </button>
-        </div>
+      {statsTarget && (
+        <ColumnStatsDialog
+          column={statsTarget.column}
+          values={statsTarget.values}
+          scope={statsTarget.scope}
+          note={statsTarget.note}
+          onClose={() => setStatsTarget(null)}
+        />
       )}
-
-      {/* ─── Quick Look Modal ─── */}
-      {quickLookCell && (
-        <Modal
-          title={<>{t('dataGrid.quickLook')} — <span style={{ color: 'var(--win-accent)', fontFamily: 'var(--win-font-mono)' }}>{quickLookCell.colName}</span></>}
-          onClose={() => setQuickLookCell(null)}
-          width="700px"
-          maxHeight="70vh"
-          zIndex={99998}
-        >
-          <ModalBody style={{ gap: 0, flex: 1, background: 'var(--win-bg-window)', fontFamily: 'var(--win-font-mono)', fontSize: '13px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-            {quickLookCell.value === null
-              ? <span style={{ color: 'var(--win-text-disabled)', fontStyle: 'italic' }}>NULL</span>
-              : String(quickLookCell.value)
-            }
-          </ModalBody>
-          <ModalFooter>
-            <button className="btn btn-secondary" onClick={() => { copyToClipboard(quickLookCell.value === null ? '' : String(quickLookCell.value)); }}>{t('common.copy')}</button>
-            <button className="btn btn-primary" style={{ background: 'var(--st-ok)', borderColor: 'var(--st-ok)' }} onClick={() => setQuickLookCell(null)}>{t('common.close')}</button>
-          </ModalFooter>
-        </Modal>
+      {vectorTarget?.mode === 'inspect' && vectorTarget.value !== undefined && (
+        <VectorInspectorDialog
+          column={vectorTarget.column}
+          colType={columns.find(c => c.name === vectorTarget.column)?.type ?? ''}
+          value={vectorTarget.value}
+          onSearch={() => setVectorTarget({ ...vectorTarget, mode: 'search' })}
+          onClose={() => setVectorTarget(null)}
+        />
+      )}
+      {vectorTarget?.mode === 'search' && (
+        <VectorSearchDialog
+          connId={connId}
+          table={tableName}
+          tableSchema={tableSchema}
+          vectorColumns={columns.filter(c => vectorKindOf(c.type)).map(c => ({ name: c.name, type: c.type }))}
+          initialColumn={vectorTarget.column}
+          initialVector={vectorTarget.value}
+          onClose={() => setVectorTarget(null)}
+        />
+      )}
+      {transposeTarget && (
+        <TransposeDialog
+          columns={activeColumns.map(c => c.name)}
+          rows={transposeTarget}
+          onClose={() => setTransposeTarget(null)}
+        />
       )}
 
       {/* ─── Media / Image Viewer Modal (from Context Menu or Click) ─── */}

@@ -32,6 +32,7 @@ mod approval;
 mod audit;
 pub mod audit_file;
 mod auth;
+mod exec;
 pub(crate) mod http;
 mod policy;
 mod server;

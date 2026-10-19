@@ -8,7 +8,24 @@
 // Module-level, so no hook: `t` is passed in, the same way `formatRestoreEta` already took it.
 
 import type { TFunction } from 'i18next';
-import type { JobProgress } from './jobs';
+import type { JobProgress, JobResult } from './jobs';
+
+/**
+ * What the tray says about a restore the user stopped.
+ *
+ * The statements that ran were rolled back — except on MySQL, which commits implicitly on every
+ * CREATE/DROP/ALTER, so the tables the dump had already created are still there, empty or not. That
+ * is said out loud rather than promising a clean undo the server did not do.
+ */
+export function restoreCancelledResult(
+  t: TFunction,
+  res: { statementsCount?: number; dialect?: string },
+): JobResult {
+  return {
+    message: t('jobs.restoreCancelled', { n: (res.statementsCount || 0).toLocaleString() }),
+    warning: res.dialect === 'mysql' ? t('jobs.restoreCancelledMysql') : undefined,
+  };
+}
 
 /** Message shape `restore_backup` sends over its Channel. */
 export interface RestoreProgressMsg {
@@ -16,6 +33,9 @@ export interface RestoreProgressMsg {
   done?: number;
   total?: number;
   statementsCount?: number;
+  /** A restore read from a FILE: its total is unknown until the end, so progress is bytes read. */
+  bytesDone?: number;
+  bytesTotal?: number;
 }
 
 /**
@@ -47,11 +67,36 @@ export function makeRestoreReporter(t: TFunction): (msg: RestoreProgressMsg) => 
     const done = msg.done ?? 0;
     const total = msg.total ?? 0;
 
+    const elapsed = (Date.now() - startedAt) / 1000;
+
+    // Streamed from a file: the bar is the share of the file read. Bytes are also the better rate
+    // for the ETA — a statement count mixes a few DDL with thousands of INSERTs, bytes do not.
+    if (msg.bytesTotal) {
+      const bytes = msg.bytesDone ?? 0;
+      const pct = Math.min(100, Math.floor((bytes / msg.bytesTotal) * 100));
+      const rate = bytes > 0 ? bytes / elapsed : 0;
+      const remain = rate > 0 && msg.bytesTotal > bytes ? Math.round((msg.bytesTotal - bytes) / rate) : 0;
+      const vals = { done: done.toLocaleString(), pct };
+      return {
+        label: t('connection.restoreInProgress'),
+        current: bytes,
+        total: msg.bytesTotal,
+        detail: remain > 0
+          ? t('connection.restoreDetailFileEta', { ...vals, eta: formatRestoreEta(t, remain) })
+          : t('connection.restoreDetailFile', vals),
+      };
+    }
+
+    // A pg_dump archive is read by pg_restore, so neither a byte total nor a statement total exists:
+    // say how many ran, with an indeterminate bar, rather than "120/0".
+    if (!total) {
+      return { label: t('connection.restoreInProgress'), detail: t('connection.restoreDetailCount', { done: done.toLocaleString() }) };
+    }
+
     if (msg.type === 'start') {
       return { label: t('connection.restoreRunning', { n: total.toLocaleString() }), current: 0, total };
     }
 
-    const elapsed = (Date.now() - startedAt) / 1000;
     const rate = done > 0 ? done / elapsed : 0;
     const remain = rate > 0 && total > done ? Math.round((total - done) / rate) : 0;
     const counts = { done: done.toLocaleString(), total: total.toLocaleString() };

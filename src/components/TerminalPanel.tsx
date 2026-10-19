@@ -8,6 +8,7 @@ import { dbHelper } from '../utils/dbHelper';
 import type { DbConnectionConfig, DockerContainerInfo, SshTerminalMessage } from '../utils/dbHelper';
 import { openTerminalWindow } from '../utils/terminalWindow';
 import { ConfirmDialog } from './ConfirmDialog';
+import { isFileDb } from '../utils/dbCaps';
 
 interface TerminalPanelProps {
   /** The connection this component acts on. Passed explicitly, never read from the ambient id (§4.1). */
@@ -799,7 +800,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           )}
 
           {/* Enabling logging (MySQL/Postgres only) */}
-          {config.type !== 'sqlite' && (
+          {!isFileDb(config.type) && config.type !== 'redis' && (
             <div className="tp-dropdown-wrap">
               <button
                 className="tp-btn"

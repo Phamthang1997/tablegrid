@@ -4,6 +4,19 @@ import i18n from '../i18n';
  * WebCrypto Helper for Export/Import Connections with optional AES-GCM 256-bit password protection.
  */
 
+/**
+ * The extension TableGrid writes, and the `format` tag it stamps into the file.
+ *
+ * Reading ignores both: `decryptConnectionExport` branches on `encrypted`/`data` only, never on
+ * `format` or on the file name. That is what makes renaming them safe in both directions — files
+ * written as `.tableplusconnection` by earlier builds still import, and only the `accept` list
+ * below has to keep naming them.
+ */
+export const CONNECTION_FILE_EXT = 'tablegridconnection';
+export const CONNECTION_FILE_FORMAT = 'tablegridconnection';
+/** What the import file picker offers: the current extension plus every one earlier builds wrote. */
+export const CONNECTION_FILE_ACCEPT = '.tablegridconnection,.tableplusconnection,.tableforgeconnection,.json';
+
 // Helper to convert Uint8Array to Hex string
 function bufToHex(buf: ArrayBuffer): string {
   return Array.from(new Uint8Array(buf))
@@ -59,7 +72,7 @@ export async function encryptConnectionExport(payload: any, password?: string): 
     return JSON.stringify({
       encrypted: false,
       version: 1,
-      format: 'tableplusconnection',
+      format: CONNECTION_FILE_FORMAT,
       data: payload
     }, null, 2);
   }
@@ -79,7 +92,7 @@ export async function encryptConnectionExport(payload: any, password?: string): 
   return JSON.stringify({
     encrypted: true,
     version: 1,
-    format: 'tableplusconnection',
+    format: CONNECTION_FILE_FORMAT,
     salt: bufToHex(salt.buffer),
     iv: bufToHex(iv.buffer),
     ciphertext: bufToHex(encryptedBuf)

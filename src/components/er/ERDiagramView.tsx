@@ -7,6 +7,7 @@ import type {
   ERViewport,
   ERDetailLevel,
   ERExportFormat,
+  ERExportOutcome,
   ERTool,
   ERViewportListener,
 } from './erTypes';
@@ -43,12 +44,16 @@ import { drawScene, hitTestCards, hitTestRelationships, resolveRelationships } f
 import type { ERResolvedRelationship } from './erScene';
 import {
   exportToMermaid,
+  mermaidTooLarge,
   exportToDbml,
   exportToSql,
   generateFullDiagramSvg,
   exportDiagramToPng,
 } from './erExportHelper';
+import { exportToMarkdownDoc, type ErDocLabels } from './erDocExport';
+import { exportToHtmlDictionary } from './erHtmlDictionary';
 import { pickSaveFilePath, saveExportFileAtPath } from '../../utils/fileSave';
+import { dbHelper } from '../../utils/dbHelper';
 import { ERToolbar } from './ERToolbar';
 import { ERMinimap } from './ERMinimap';
 
@@ -231,7 +236,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   relationships,
   onOpenTable,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -1405,14 +1410,80 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
   // Export
   // ---------------------------------------------------------------------------------------
   const handleExport = useCallback(
-    async (format: ERExportFormat) => {
+    async (format: ERExportFormat): Promise<ERExportOutcome | void> => {
       const baseName = `${database || 'database'}_er_diagram`;
       const theme =
         document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
 
       switch (format) {
-        case 'mermaid': {
-          await navigator.clipboard.writeText(exportToMermaid(visibleTables, relationships));
+        case 'mermaid':
+        case 'mermaid-selection': {
+          // The selection is read through its ref, like fitTo: a dependency on it would give
+          // this callback — and the memoized toolbar — a new identity on every click.
+          const selected = selectedRef.current;
+          const picked =
+            format === 'mermaid-selection'
+              ? visibleTables.filter((tb) => selected.has(tb.id))
+              : visibleTables;
+          const text = exportToMermaid(picked, relationships);
+          await navigator.clipboard.writeText(text);
+          return { tooLarge: mermaidTooLarge(text) };
+        }
+        case 'markdown':
+        case 'html': {
+          const html = format === 'html';
+          const targetPath = html
+            ? await pickSaveFilePath(`${database || 'database'}_dictionary`, 'html', 'HTML (*.html)')
+            : await pickSaveFilePath(`${database || 'database'}_schema`, 'md', 'Markdown (*.md)');
+          if (!targetPath) return;
+          const date = new Date().toLocaleDateString(i18n.language);
+          // Indexes are not in the ER catalog, so they are read here — one table after another,
+          // not all at once: this is the user's database, possibly production, and a few hundred
+          // concurrent introspection queries is exactly what the app avoids elsewhere (the same
+          // reason dumpBuilder pages sequentially). Views have no indexes of their own.
+          const indexes: Record<string, { name: string; columns: string; unique: boolean }[]> = {};
+          for (const tb of visibleTables) {
+            if (tb.kind === 'view') continue;
+            const info = await dbHelper.getTableSchema(connId, tb.name, tb.schema);
+            indexes[tb.name] = info.indexes;
+          }
+          const labels: ErDocLabels = {
+            title: t('er.docTitle', { db: database || 'database' }),
+            generated: (tableCount, relationCount) =>
+              t('er.docGenerated', { date, tables: tableCount, relations: relationCount }),
+            contents: t('er.docContents'),
+            view: t('er.docView'),
+            rows: t('er.docRows'),
+            column: t('er.docColumn'),
+            type: t('er.docType'),
+            nullable: t('er.docNullable'),
+            key: t('er.docKey'),
+            references: t('er.docReferences'),
+            comment: t('er.docComment'),
+            yes: t('er.docYes'),
+            no: t('er.docNo'),
+            referencedBy: t('er.docReferencedBy'),
+            none: t('er.docNone'),
+            diagramTrimmed: (n) => t('er.docDiagramTrimmed', { n }),
+            indexes: t('er.docIndexes'),
+            unique: t('er.docUnique'),
+          };
+          if (html) {
+            const page = exportToHtmlDictionary(visibleTables, relationships, {
+              ...labels,
+              search: t('er.docSearch'),
+              noMatches: t('er.docNoMatches'),
+              shown: (n, total) => t('er.docShown', { n, total }),
+              all: t('er.docAll'),
+              tables: t('er.docTables'),
+              views: t('er.docViews'),
+              columns: t('er.docColumns'),
+              theme: t('er.docTheme'),
+            }, indexes, i18n.language);
+            await saveExportFileAtPath(targetPath, page, 'text/html');
+          } else {
+            await saveExportFileAtPath(targetPath, exportToMarkdownDoc(visibleTables, relationships, labels, indexes), 'text/markdown');
+          }
           break;
         }
         case 'dbml': {
@@ -1487,7 +1558,7 @@ export const ERDiagramView: React.FC<ERDiagramViewProps> = ({
         }
       }
     },
-    [database, detailLevel, relationships, visibleTables]
+    [connId, database, detailLevel, relationships, visibleTables, t, i18n.language]
   );
 
   return (

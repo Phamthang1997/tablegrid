@@ -1,0 +1,70 @@
+/* The stylesheet of the page erHtmlDictionary.ts writes — NOT an app stylesheet. It is read as a
+   string (`?raw`) and inlined into the exported file, so it is never loaded by the app itself.
+   Its tokens are `--dict-*` so they can never be taken for the app's `--win-*` theme. */
+:root{--dict-bg:#f6f7f9;--dict-panel:#fff;--dict-text:#0f172a;--dict-dim:#64748b;--dict-line:#e2e8f0;--dict-accent:#2563eb;--dict-mark:#fef08a;--dict-pk:#b45309;--dict-fk:#2563eb;--dict-row:#f1f5f9;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--dict-bg:#0f1117;--dict-panel:#171a23;--dict-text:#e5e7eb;--dict-dim:#8b93a7;--dict-line:#2a2f3c;--dict-accent:#60a5fa;--dict-mark:#713f12;--dict-pk:#fbbf24;--dict-fk:#60a5fa;--dict-row:#1e2230;color-scheme:dark}
+}
+:root[data-theme=dark]{--dict-bg:#0f1117;--dict-panel:#171a23;--dict-text:#e5e7eb;--dict-dim:#8b93a7;--dict-line:#2a2f3c;--dict-accent:#60a5fa;--dict-mark:#713f12;--dict-pk:#fbbf24;--dict-fk:#60a5fa;--dict-row:#1e2230;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;display:flex;min-height:100vh;background:var(--dict-bg);color:var(--dict-text);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans","Yu Gothic UI",sans-serif}
+.mono{font-family:ui-monospace,"JetBrains Mono",Consolas,monospace;font-size:12.5px}
+.dim{color:var(--dict-dim)}
+a{color:var(--dict-accent);text-decoration:none}
+a:hover{text-decoration:underline}
+aside{position:sticky;top:0;align-self:flex-start;width:280px;flex:0 0 280px;height:100vh;display:flex;flex-direction:column;border-right:1px solid var(--dict-line);background:var(--dict-panel)}
+aside .head{padding:14px;border-bottom:1px solid var(--dict-line);display:flex;flex-direction:column;gap:8px}
+#q{width:100%;height:32px;padding:0 10px;border:1px solid var(--dict-line);border-radius:6px;background:var(--dict-bg);color:var(--dict-text);font:inherit}
+#q:focus{outline:2px solid var(--dict-accent);outline-offset:-1px}
+.kinds{display:flex;gap:4px}
+.kinds button{flex:1;height:26px;border:1px solid var(--dict-line);border-radius:6px;background:transparent;color:var(--dict-dim);font:inherit;font-size:12px;cursor:pointer}
+.kinds button.on{background:var(--dict-accent);border-color:var(--dict-accent);color:#fff}
+#count{font-size:12px}
+#nav{list-style:none;margin:0;padding:6px;overflow:auto;flex:1}
+#nav a{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:5px;color:var(--dict-text)}
+#nav a:hover{background:var(--dict-row);text-decoration:none}
+#nav .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#nav .c{font-size:11px;color:var(--dict-dim)}
+.k{width:8px;height:8px;border-radius:2px;flex:0 0 8px;display:inline-block}
+.k-table{background:#10b981}
+.k-view{background:#8b5cf6}
+main{flex:1;min-width:0;padding:24px 32px 64px;max-width:1200px}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:8px}
+h1{margin:0;font-size:22px}
+header p{margin:4px 0 0}
+#theme{width:32px;height:32px;border:1px solid var(--dict-line);border-radius:6px;background:var(--dict-panel);color:var(--dict-text);font-size:16px;cursor:pointer}
+section{background:var(--dict-panel);border:1px solid var(--dict-line);border-radius:8px;padding:16px 18px;margin-top:16px;scroll-margin-top:12px}
+section:target{border-color:var(--dict-accent)}
+h2{margin:0;font-size:17px;display:flex;align-items:center;gap:8px}
+h2 .self{margin-left:auto;color:var(--dict-dim);font-weight:400;opacity:0}
+section:hover h2 .self{opacity:1}
+h3{margin:16px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--dict-dim)}
+.meta{margin-top:4px;font-size:12.5px;color:var(--dict-dim)}
+.note{margin:10px 0 0;padding:8px 12px;border-left:3px solid var(--dict-accent);background:var(--dict-row);border-radius:0 6px 6px 0}
+.tag{font-size:11px;font-weight:500;padding:1px 6px;border-radius:4px;background:var(--dict-row);color:var(--dict-dim)}
+.scroll{overflow-x:auto;margin-top:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-weight:600;font-size:12px;color:var(--dict-dim);padding:6px 10px;border-bottom:1px solid var(--dict-line);white-space:nowrap}
+td{padding:6px 10px;border-bottom:1px solid var(--dict-line);vertical-align:top}
+tbody tr:last-child td{border-bottom:0}
+td.t{color:var(--dict-dim)}
+tr.hit td{background:var(--dict-mark)}
+tr.miss{opacity:.45}
+.pill{display:inline-block;font-size:10.5px;font-weight:700;padding:0 5px;border-radius:4px;border:1px solid currentColor}
+.pk{color:var(--dict-pk)}
+.fk{color:var(--dict-fk)}
+.uq{color:var(--dict-dim)}
+ul{margin:0;padding-left:20px}
+li{margin:2px 0}
+.none{color:var(--dict-dim);margin:0}
+#empty{margin-top:24px}
+[hidden]{display:none!important}
+@media (max-width:760px){body{display:block}
+aside{position:static;width:auto;height:auto;border-right:0;border-bottom:1px solid var(--dict-line)}
+#nav{max-height:40vh}
+main{padding:16px}
+}
+@media print{aside,#theme{display:none}
+body{display:block;background:#fff;color:#000}
+section{break-inside:avoid;border-color:#ccc}
+main{max-width:none;padding:0}
+}

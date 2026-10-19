@@ -53,6 +53,8 @@ export interface IndexMeta {
   name: string;
   columns: string[];
   unique: boolean;
+  /** Postgres only: ` USING hnsw (embedding vector_cosine_ops) WITH (m='16')`. */
+  using?: string | null;
 }
 
 export interface ForeignKeyMeta {
@@ -235,6 +237,8 @@ export function columnChangeKey(change: string): string {
       return 'compare.changePrimaryKey';
     case 'viewDefinition':
       return 'compare.changeViewDefinition';
+    case 'definition':
+      return 'compare.changeDefinition';
     case 'kind':
       return 'compare.changeKind';
     default:
@@ -281,6 +285,9 @@ export function describeColumn(c: ColumnMeta | null): string {
 
 export function describeIndex(i: IndexMeta | null): string {
   if (!i) return '—';
+  // The Postgres tail says what the columns alone cannot: an HNSW index and a btree on the same
+  // column would otherwise read identically on both sides of a "definition" difference.
+  if (i.using && i.using.trim()) return `${i.unique ? 'UNIQUE ' : ''}${i.using.trim()}`;
   return `${i.unique ? 'UNIQUE ' : ''}(${i.columns.join(', ')})`;
 }
 

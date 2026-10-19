@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Modal, ModalBody, ModalFooter } from './Modal';
 import { OptionSelect } from './OptionSelect';
 import { dbHelper, type CreateDbPayload, type DbCharsets } from '../utils/dbHelper';
+import { isFileDb } from '../utils/dbCaps';
 
 /**
  * The create-database dialog. One component for every entry point (the title bar's quick switcher
@@ -50,7 +51,8 @@ export const CreateDatabaseModal: React.FC<CreateDatabaseModalProps> = ({
 }) => {
   const { t } = useTranslation();
   const isPg = dbType === 'postgres';
-  const isSqlite = dbType === 'sqlite';
+  // One database per file: SQLite and DuckDB alike have nothing to create here.
+  const isSqlite = isFileDb(dbType);
 
   const [form, setForm] = useState<CreateDbPayload>({ name: '' });
   const [charsets, setCharsets] = useState<DbCharsets>({ encodings: [] });
@@ -147,7 +149,7 @@ export const CreateDatabaseModal: React.FC<CreateDatabaseModalProps> = ({
       <ModalBody>
         {isSqlite ? (
           <div style={{ fontSize: '12px', color: 'var(--win-text-secondary)', lineHeight: 1.5 }}>
-            {t('createDb.sqliteUnsupported')}
+            {dbType === 'duckdb' ? t('createDb.duckUnsupported') : t('createDb.sqliteUnsupported')}
           </div>
         ) : (
           <>

@@ -31,6 +31,7 @@ mod column;
 mod commands;
 pub mod datasets;
 mod ident;
+mod mask;
 mod meta;
 mod regex;
 mod rng;
@@ -38,9 +39,11 @@ mod spec;
 mod suggest;
 mod template;
 mod text;
+mod vector;
 mod writer;
 
 pub use commands::*;
+pub use mask::*;
 
 // `template_space` has no caller in Rust: it is the original that `templateSpace` in
 // `src/utils/dataGenHelper.ts` is checked against (see dataGenHelper.test.ts). Its old visibility is kept

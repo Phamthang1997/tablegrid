@@ -12,7 +12,7 @@ use super::regex::{Rx, parse_regex, sample_regex};
 use super::rng::{Rng, mix_seed};
 use super::spec::{
     Cell, GenColumnSpec, charset_of, date_bounds, datetime_bounds, o_arr, o_f64, o_i64, o_str,
-    o_usize,
+    o_usize, o_val,
 };
 use super::template::expand_template;
 use super::text::{
@@ -143,7 +143,11 @@ impl ColState {
     }
 
     pub(super) fn decorate(&mut self, cell: Cell) -> Cell {
-        // Only text is decorated; a number keeps its exact literal.
+        // Only text is decorated; a number keeps its exact literal. A vector is text only because
+        // its literal is quoted: a prefix, a case change or an empty string would make it invalid.
+        if self.generator == "vector" {
+            return cell;
+        }
         let text = match cell {
             Cell::Text(t) => t,
             other => return other,
@@ -522,6 +526,28 @@ impl ColState {
                 self.rng.below(1000),
                 self.rng.pick(ds::FILE_EXTENSIONS)
             )),
+
+            // ---- pgvector ----
+            "vector" => {
+                let dims = o_usize(&opts, "dimensions").unwrap_or(3);
+                let non_zero = if o_val(&opts, "sparse")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    Some(o_usize(&opts, "nonZero").unwrap_or(10))
+                } else {
+                    None
+                };
+                let normalize = o_val(&opts, "normalize")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                Cell::Text(super::vector::random_vector(
+                    &mut self.rng,
+                    dims,
+                    non_zero,
+                    normalize,
+                ))
+            }
 
             other => return Err(format!("Generator '{other}' không được hỗ trợ")),
         };

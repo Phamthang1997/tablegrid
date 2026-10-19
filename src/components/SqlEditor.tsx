@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import ReactDOM from 'react-dom';
 import { Trans, useTranslation } from 'react-i18next';
 import * as monaco from 'monaco-editor';
 import Editor from '@monaco-editor/react';
@@ -7,7 +6,8 @@ import Editor from '@monaco-editor/react';
 // Worker factory + loader binding, shared with the Redis console (see the module's header).
 import '../sql/monacoSetup';
 import { setupSqlCompletion, langIdForDbType, LANG_IDS } from '../sql/sqlLanguage';
-import { clampMenu, type MenuRect } from '../utils/menuPosition';
+import { GridContextMenu, MenuHeading, MenuItem, MenuSeparator, MenuSub } from './GridContextMenu';
+import { ColumnStatsDialog, TransposeDialog, ValueEditorDialog } from './GridToolDialogs';
 import { resolveRowClick, resolveRowContextMenu } from '../utils/rowSelection';
 import {
   buildCsvRows,
@@ -30,14 +30,18 @@ import { registerSqlSignatureHelp } from '../sql/signatureHelp';
 import { registerSqlPeekDefinition } from '../sql/peekDefinition';
 import { registerSqlOutline } from '../sql/outline';
 import {
-  statementAt, analyzeStatements, splitStatements, isSchemaChangingSql, applyLimitToSql,
-  findUnsafeStatements, type UnsafeStatement, type UnsafeStatementKind,
+  statementAt, analyzeStatements, isSchemaChangingSql, applyLimitToSql,
+  findUnsafeStatements, isReadOnlySql, type UnsafeStatement, type UnsafeStatementKind,
 } from '../sql/statements';
 import * as catalog from '../sql/catalog';
 import { willPromptForSql } from '../utils/safeMode';
 import { resolveResultEditability, type ResultEditability, type NotEditableReason } from '../sql/editableResult';
 import { SqlSnippetPanel } from './SqlSnippetPanel';
+import { LocalHistoryDialog } from './LocalHistoryDialog';
+import { historyScope as localHistoryScope, recordEdit, recordSnapshot, type HistoryTarget } from '../utils/localHistory';
 import { MediaCellPreview } from './media';
+import { SearchHighlight } from './SearchHighlight';
+import { filterRowsByQuery } from '../utils/gridSearch';
 import { DataVisualizer } from './chart';
 
 // Registers smart completion + hover + theme + rename provider (shared, run once)
@@ -67,13 +71,13 @@ const LoadingSpinner: React.FC<{ size?: number; style?: React.CSSProperties }> =
       cx="12"
       cy="12"
       r="10"
-      stroke="var(--win-border-strong, #383b44)"
+      style={{ stroke: 'var(--win-border-strong)' }}
       strokeWidth="3"
       opacity="0.2"
     />
     <path
       d="M12 2C6.47715 2 2 6.47715 2 12C2 13.5683 2.36155 15.0506 3.00769 16.3718"
-      stroke="var(--win-accent)"
+      style={{ stroke: 'var(--win-accent)' }}
       strokeWidth="3"
       strokeLinecap="round"
     />
@@ -105,7 +109,7 @@ function registerSqlFormatter(dbType: string) {
     monaco.languages.registerDocumentFormattingEditProvider(lang, formatProvider)
   );
 }
-import { Play, Clipboard, Trash2, CheckCircle2, AlertTriangle, ChevronLeft, ChevronRight, Copy, AlignLeft, History, X, Bookmark, ChevronDown, MoreHorizontal, SlidersHorizontal, Star, Columns, Rows, Settings, Network, Zap, FileText, Square, Calendar, BarChart2 } from 'lucide-react';
+import { Play, Clipboard, Trash2, CheckCircle2, AlertTriangle, ChevronLeft, ChevronRight, Copy, AlignLeft, History, X, Bookmark, ChevronDown, MoreHorizontal, SlidersHorizontal, Star, Columns, Rows, Settings, Network, Zap, FileText, Square, Calendar, BarChart2, Search, FileClock, FolderOpen, Save, Download, Upload } from 'lucide-react';
 import { getQueryParamsConfig, saveQueryParamsConfig, extractQueryParams, buildParameterizedSql, type QueryParamsConfig } from '../utils/queryParamHelper';
 import { buildExplainQuery, explainJsonLabel, parseExplainOutput, supportsJsonExplain, type ExplainResult } from '../utils/explainHelper';
 import {
@@ -115,6 +119,7 @@ import {
   clearHistory,
   deleteHistoryEntry,
   deleteSavedQuery,
+  importSavedQueries,
   loadHistory,
   loadSavedQueries,
   matchesScope,
@@ -124,6 +129,9 @@ import {
   type HistoryScope,
   type SavedQueryEntry,
 } from '../utils/queryHistory';
+import { SHARE_ERROR_KEY, buildShareFile, parseShareFile, shareFileName } from '../utils/queryShare';
+import { pickSaveFilePath, saveExportFileAtPath } from '../utils/fileSave';
+import { fileStamp, safeFileBase } from '../utils/exportHelper';
 import { QueryParamsConfigModal } from './QueryParamsConfigModal';
 import { QueryParamsModal } from './QueryParamsModal';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -159,6 +167,11 @@ interface SqlEditorProps {
   onSql2Change?: (sql2: string) => void;
   onSplitModeChange?: (mode: 'none' | 'vertical' | 'horizontal') => void;
   onEditorHeightChange?: (height: number) => void;
+  /**
+   * The query tab's id. Keys this editor's local history (utils/localHistory.ts); without it the
+   * editor keeps no history, which is what a caller outside a query tab gets.
+   */
+  historyTabId?: string;
 }
 
 // The history drawer's scope filter. A module-level constant table, so it holds translation KEYS and
@@ -169,17 +182,9 @@ const SCOPE_OPTIONS = [
   { scope: 'all', labelKey: 'sqlEditor.scopeAll', titleKey: 'sqlEditor.scopeAllTitle' },
 ] as const;
 
-// The read-only statements allowed to run in read-only mode
-const READ_ONLY_PREFIXES = ['SELECT', 'SHOW', 'EXPLAIN', 'DESCRIBE', 'DESC', 'PRAGMA', 'WITH'];
-function isReadOnlySql(text: string): boolean {
-  // Shares the editor's splitter: a ';' inside a string, a comment or a dollar-quoted block, and a
-  // statement terminator changed by DELIMITER, are all handled correctly (a hand-rolled split(';')
-  // would misjudge those scripts).
-  return splitStatements(text).every(stmt => {
-    const first = stmt.text.split(/\s+/)[0].toUpperCase();
-    return READ_ONLY_PREFIXES.includes(first);
-  });
-}
+/** Past this a .sql file is a dump rather than something to edit, and Monaco would stall on it. */
+const SQL_FILE_MAX_BYTES = 10 * 1024 * 1024;
+
 
 /** Where the caret is, as the toolbar spells it out. */
 interface CaretPos { line: number; column: number }
@@ -280,6 +285,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   onSql2Change,
   onSplitModeChange,
   onEditorHeightChange,
+  historyTabId,
 }) => {
   const { t, i18n } = useTranslation();
   // Dates and thousands separators follow the active UI language.
@@ -308,10 +314,20 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const [showSnippetPanel, setShowSnippetPanel] = useState<boolean>(false);
   const editorRef2 = useRef<any>(null);
 
-  const insertSnippetAtCursor = (template: string, targetPaneId?: 1 | 2) => {
+  const insertSnippetAtCursor = (template: string, asSnippet = false, targetPaneId?: 1 | 2) => {
     const activePane = targetPaneId || focusedEditor || 1;
     const ed = activePane === 1 ? editorRef.current : editorRef2.current;
     if (!ed) return;
+
+    // Snippet syntax goes through Monaco's snippet controller, which turns `${1:table}` into a tab
+    // stop — the same expansion a live template gets from completion. Plain SQL keeps the plain
+    // edit, so a `$1` in a docs example is inserted as written.
+    const snippets = asSnippet ? ed.getContribution('snippetController2') : null;
+    if (snippets && typeof snippets.insert === 'function') {
+      ed.focus();
+      snippets.insert(template);
+      return;
+    }
 
     const selection = ed.getSelection();
     if (selection) {
@@ -626,6 +642,12 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   // EXPLAIN State
   const [explainResult1, setExplainResult1] = useState<ExplainResult | null>(null);
   const [explainResult2, setExplainResult2] = useState<ExplainResult | null>(null);
+  // What each pane's plan is compared against. Unpinned, it is simply the previous EXPLAIN and
+  // slides along with every run; pinned, it stays put, so "before" survives several attempts at
+  // an "after" (add an index, re-run, drop it, try another).
+  type ExplainBase = { result: ExplainResult; pinned: boolean } | null;
+  const [explainBase1, setExplainBase1] = useState<ExplainBase>(null);
+  const [explainBase2, setExplainBase2] = useState<ExplainBase>(null);
   const [activeTabType1, setActiveTabType1] = useState<'data' | 'explain'>('data');
   const [activeTabType2, setActiveTabType2] = useState<'data' | 'explain'>('data');
 
@@ -827,12 +849,32 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     { timer: null, value: null },
   ]);
 
+  // ─── Local history (utils/localHistory.ts) ───
+  // Snapshots ride on the same beat as the sync above rather than on keystrokes: a flush is
+  // already "the user paused", which is the moment worth keeping. `lastFlushed` is the text of the
+  // previous flush, so a large deletion can save what was there BEFORE it.
+  const historyTarget = (paneId: 1 | 2): HistoryTarget | null =>
+    historyTabId ? { scope: localHistoryScope(connKey, dbName), tabId: historyTabId, pane: paneId } : null;
+  const historyTargetRef = useRef(historyTarget);
+  historyTargetRef.current = historyTarget;
+  const lastFlushedRef = useRef<[string, string]>([initialSql, initialSql2]);
+  const latestTextRef = useRef<[string, string]>([initialSql, initialSql2]);
+  const [historyPane, setHistoryPane] = useState<1 | 2 | null>(null);
+
+  const snapshotPane = (paneId: 1 | 2, text: string, reason: 'run' | 'beforeReplace') => {
+    const target = historyTarget(paneId);
+    if (target) void recordSnapshot(target, text, reason);
+  };
+
   const flushSqlSync = (paneId: 1 | 2) => {
     const slot = sqlSyncRef.current[paneId - 1];
     if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
     if (slot.value === null) return;
     const val = slot.value;
     slot.value = null;
+    const target = historyTarget(paneId);
+    if (target) void recordEdit(target, lastFlushedRef.current[paneId - 1], val);
+    lastFlushedRef.current[paneId - 1] = val;
     if (paneId === 1) { setSql(val); onSqlChange?.(val); }
     else { setSql2(val); onSql2Change?.(val); }
   };
@@ -840,6 +882,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const queueSqlSync = (paneId: 1 | 2, val: string) => {
     const slot = sqlSyncRef.current[paneId - 1];
     slot.value = val;
+    latestTextRef.current[paneId - 1] = val;
     if (slot.timer) clearTimeout(slot.timer);
     slot.timer = setTimeout(() => flushSqlSync(paneId), SQL_SYNC_DELAY);
   };
@@ -852,6 +895,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   // Leaving the component: flush whatever is still pending, so nothing just typed is lost on close or tab switch
   useEffect(() => () => {
     [1, 2].forEach((p) => {
+      const target = historyTargetRef.current(p as 1 | 2);
+      if (target) void recordSnapshot(target, latestTextRef.current[p - 1], 'close');
       const slot = sqlSyncRef.current[p - 1];
       if (slot.timer) clearTimeout(slot.timer);
       if (slot.value === null) return;
@@ -938,6 +983,17 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       flushSqlSync(editorId);
     });
 
+    // Local history, also reachable from F1 and the context menu, not only from the toolbar icon.
+    if (historyTargetRef.current(editorId)) {
+      editor.addAction({
+        id: 'local-history',
+        label: tRef.current('localHistory.open'),
+        contextMenuGroupId: 'navigation',
+        contextMenuOrder: 1.2,
+        run: () => setHistoryPane(editorId),
+      });
+    }
+
     // Format / Beautify / Minify actions cho Monaco context menu
     editor.addAction({
       id: 'format-beautify-sql',
@@ -982,7 +1038,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
 
     editor.addAction({
       id: 'split-pane-horizontal',
-      label: 'Chia khung ngang (Top / Bottom)',
+      label: tRef.current('sqlEditor.actionSplitHorizontal'),
       contextMenuGroupId: '1_modification',
       contextMenuOrder: 1.6,
       run: () => {
@@ -1216,6 +1272,8 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     const pane = targetPane || focusedEditor;
     const textToRun = queryText || (pane === 2 ? sql2 : sql);
     if (!textToRun.trim()) return;
+    // The whole pane, not just the statement run: what matters later is the draft around it.
+    snapshotPane(pane, getPaneSql(pane), 'run');
 
     // Read-only mode: only reading statements are allowed (SELECT/SHOW/…)
     if ((readOnly || connReadOnly) && !isReadOnlySql(textToRun)) {
@@ -1503,7 +1561,11 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       const res = await dbHelper.executeQuery(connId, explainQuery, params);
       const rows = res.data || (res as any).rows || [];
       if (res.success && rows.length > 0) {
-        const parsed = parseExplainOutput(rows, dbType);
+        const parsed: ExplainResult = { ...parseExplainOutput(rows, dbType), sourceSql: explainQuery };
+        // The plan being replaced becomes the baseline, unless the user pinned one.
+        const previous = isPane1 ? explainResult1 : explainResult2;
+        const setBase = isPane1 ? setExplainBase1 : setExplainBase2;
+        setBase(base => (base?.pinned ? base : previous ? { result: previous, pinned: false } : base));
         if (isPane1) {
           setExplainResult1(parsed);
           setActiveTabType1('explain');
@@ -1681,13 +1743,111 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     }
   };
 
+  // ---- .sql files ----
+  //
+  // A query tab is a localStorage draft, so until now the only way to get SQL in from a file or out to
+  // one was the clipboard. Open reads through a hidden <input type="file"> (`File.text()`), which
+  // needs no filesystem permission; Save goes through the same Save As dialog + write the exports use.
+
+  const sqlFileInputRef = useRef<HTMLInputElement>(null);
+  // Which pane the picked file goes into — set when the menu item is clicked, read when the
+  // browser hands the file back, which is a separate event.
+  const sqlFileTargetPane = useRef<1 | 2>(1);
+
+  const flashMsg = (paneId: 1 | 2, text: string) => {
+    const setMsg = paneId === 1 ? setStatusMsg : setStatusMsg2;
+    setMsg(text);
+    setTimeout(() => setMsg(null), 3000);
+  };
+
+  const handleOpenSqlFile = (paneId: 1 | 2 = focusedEditor) => {
+    sqlFileTargetPane.current = paneId;
+    sqlFileInputRef.current?.click();
+  };
+
+  const onSqlFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Cleared at once, so picking the same file twice still fires a change.
+    e.target.value = '';
+    if (!file) return;
+    const paneId = sqlFileTargetPane.current;
+    if (file.size > SQL_FILE_MAX_BYTES) {
+      flashMsg(paneId, t('sqlEditor.errSqlFileTooBig', { mb: Math.round(SQL_FILE_MAX_BYTES / 1024 / 1024) }));
+      return;
+    }
+    try {
+      // A BOM would otherwise sit invisibly at the front of the first statement.
+      const text = (await file.text()).replace(/^﻿/, '');
+      const editor = getPaneEditor(paneId);
+      if (!editor) return;
+      // Through `replacePaneText`, so the text it replaces is snapshotted to local history and the
+      // open is one Ctrl+Z away — opening a file over a half-written query must not lose it.
+      replacePaneText(editor, paneId, text, 'open-sql-file');
+      if (paneId === 1) { setSql(text); onSqlChange?.(text); }
+      else { setSql2(text); onSql2Change?.(text); }
+      editor.focus();
+      flashMsg(paneId, t('sqlEditor.sqlFileOpened', { name: file.name }));
+    } catch (err: any) {
+      flashMsg(paneId, t('sqlEditor.errSqlFileRead', { message: String(err?.message ?? err) }));
+    }
+  };
+
+  const handleSaveSqlFile = async (paneId: 1 | 2 = focusedEditor) => {
+    const text = getPaneSql(paneId);
+    if (!text.trim()) {
+      flashMsg(paneId, t('sqlEditor.errNoSqlToSave'));
+      return;
+    }
+    const path = await pickSaveFilePath(`${safeFileBase(dbName || 'query')}_${fileStamp()}`, 'sql', t('fileDialog.sqlFilter'));
+    if (!path) return;
+    const written = await saveExportFileAtPath(path, text, 'application/sql');
+    flashMsg(paneId, written ? t('sqlEditor.sqlFileSaved', { path }) : t('sqlEditor.sqlFileDownloaded'));
+  };
+
+  // ---- Saved queries: export / import ----
+
+  const savedFileInputRef = useRef<HTMLInputElement>(null);
+
+  /** Exports what the Saved tab is showing — its scope and search are the user's selection. */
+  const handleExportSaved = async () => {
+    const list = getFilteredSaved();
+    if (list.length === 0) {
+      flashMsg(1, t('sqlEditor.errNothingToExport'));
+      return;
+    }
+    const path = await pickSaveFilePath(shareFileName(fileStamp(), 'queries'), 'json', t('fileDialog.jsonFilter'));
+    if (!path) return;
+    const text = buildShareFile({ savedQueries: list }, new Date().toISOString());
+    const written = await saveExportFileAtPath(path, text, 'application/json');
+    flashMsg(1, written ? t('sqlEditor.savedExported', { n: list.length, path }) : t('sqlEditor.sqlFileDownloaded'));
+  };
+
+  const onSavedFilePicked = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const parsed = parseShareFile(await file.text());
+      if (!parsed.ok) {
+        flashMsg(1, t(SHARE_ERROR_KEY[parsed.error]));
+        return;
+      }
+      // The list reloads itself: `importSavedQueries` dispatches the change event every open editor
+      // listens for.
+      const res = importSavedQueries(parsed.data.savedQueries);
+      flashMsg(1, t('sqlEditor.savedImported', { added: res.added, skipped: res.skipped + parsed.dropped }));
+    } catch (err: any) {
+      flashMsg(1, t('sqlEditor.errSqlFileRead', { message: String(err?.message ?? err) }));
+    }
+  };
+
   const handlePasteSql = async (paneId: 1 | 2 = focusedEditor) => {
     const setMsg = paneId === 1 ? setStatusMsg : setStatusMsg2;
     try {
       const text = await navigator.clipboard.readText();
       const editor = getPaneEditor(paneId);
       if (editor) {
-        editor.setValue(text);
+        replacePaneText(editor, paneId, text, 'paste-sql');
         if (paneId === 1) {
           setSql(text);
           onSqlChange?.(text);
@@ -1704,10 +1864,30 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     }
   };
 
+  /**
+   * Replaces a pane's whole text as ONE undoable edit, after snapshotting what it replaces. The
+   * shared path of Paste, Clear and restoring from local history.
+   */
+  const replacePaneText = (editor: any, paneId: 1 | 2, text: string, source: string) => {
+    snapshotPane(paneId, editor.getValue(), 'beforeReplace');
+    editor.pushUndoStop();
+    editor.executeEdits(source, [{ range: editor.getModel().getFullModelRange(), text, forceMoveMarkers: true }]);
+    editor.pushUndoStop();
+  };
+
+  const restoreFromHistory = (paneId: 1 | 2, text: string) => {
+    const editor = getPaneEditor(paneId);
+    if (!editor) return;
+    replacePaneText(editor, paneId, text, 'local-history-restore');
+    if (paneId === 1) { setSql(text); onSqlChange?.(text); }
+    else { setSql2(text); onSql2Change?.(text); }
+    editor.focus();
+  };
+
   const handleClear = (paneId: 1 | 2 = focusedEditor) => {
     const editor = getPaneEditor(paneId);
     if (editor) {
-      editor.setValue('');
+      replacePaneText(editor, paneId, '', 'clear-sql');
       if (paneId === 1) {
         setSql('');
         onSqlChange?.('');
@@ -1748,6 +1928,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                     top: dropdownPlacement[`settings_${paneId}`] === 'up' ? undefined : 'calc(100% + 4px)',
                     bottom: dropdownPlacement[`settings_${paneId}`] === 'up' ? 'calc(100% + 4px)' : undefined,
                     left: 0,
+                    width: 'max-content',
                     minWidth: '230px',
                     display: 'flex',
                     flexDirection: 'column',
@@ -1854,6 +2035,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                     top: dropdownPlacement[`limit_${paneId}`] === 'up' ? undefined : 'calc(100% + 4px)',
                     bottom: dropdownPlacement[`limit_${paneId}`] === 'up' ? 'calc(100% + 4px)' : undefined,
                     left: 0,
+                    width: 'max-content',
                     minWidth: '130px',
                     background: 'var(--win-bg-popover, var(--win-bg-card))',
                     border: '1px solid var(--win-border-strong, var(--win-border))',
@@ -1900,11 +2082,12 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
               {moreMenuPane === paneId && (
                 <>
                   <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setMoreMenuPane(null)} />
-                  <div style={{
+                  <div className="sql-toolbar-menu" style={{
                     position: 'absolute',
                     top: dropdownPlacement[`more_${paneId}`] === 'up' ? undefined : 'calc(100% + 4px)',
                     bottom: dropdownPlacement[`more_${paneId}`] === 'up' ? 'calc(100% + 4px)' : undefined,
                     right: 0,
+                    width: 'max-content',
                     minWidth: '200px',
                     background: 'var(--win-bg-popover, var(--win-bg-card))',
                     border: '1px solid var(--win-border-strong, var(--win-border))',
@@ -1915,7 +2098,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                   }}>
                     {/* The Split pane entry */}
                     <div style={{ padding: '4px 12px 2px 12px', fontSize: '10px', fontWeight: 700, color: 'var(--win-text-disabled)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      Chia khung (Split Panes)
+                      {t('sqlEditor.splitPanesHeading')}
                     </div>
                     <button
                       className={`context-menu-item ${splitMode === 'none' ? 'active' : ''}`}
@@ -1939,13 +2122,23 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                       style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}
                     >
                       <Rows size={13} style={{ flexShrink: 0 }} />
-                      <span>Chia ngang (Top / Bottom)</span>
+                      <span>{t('sqlEditor.splitHorizontal')}</span>
                     </button>
 
                     <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
                     <button className="context-menu-item" onClick={() => { setMoreMenuPane(null); setShowQueryParamsConfigModal(true); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}>
                       <Settings size={12} style={{ flexShrink: 0, color: queryParamsConfig.enabled ? 'var(--win-accent)' : undefined }} />
                       <span>{t('sqlEditor.paramOptions')}</span>
+                    </button>
+
+                    <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
+                    <button className="context-menu-item" onClick={() => { setMoreMenuPane(null); handleOpenSqlFile(paneId); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}>
+                      <FolderOpen size={12} style={{ flexShrink: 0 }} />
+                      <span>{t('sqlEditor.openSqlFile')}</span>
+                    </button>
+                    <button className="context-menu-item" onClick={() => { setMoreMenuPane(null); void handleSaveSqlFile(paneId); }} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px' }}>
+                      <Save size={12} style={{ flexShrink: 0 }} />
+                      <span>{t('sqlEditor.saveSqlFileAs')}</span>
                     </button>
 
                     <div style={{ borderTop: '1px solid var(--win-border)', margin: '4px 0' }} />
@@ -1987,7 +2180,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
               {formatMenuPane === paneId && (
                 <>
                   <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setFormatMenuPane(null)} />
-                  <div style={{
+                  <div className="sql-toolbar-menu" style={{
                     position: 'absolute',
                     top: dropdownPlacement[`format_${paneId}`] === 'up' ? undefined : 'calc(100% + 4px)',
                     bottom: dropdownPlacement[`format_${paneId}`] === 'up' ? 'calc(100% + 4px)' : undefined,
@@ -2024,6 +2217,17 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                 </>
               )}
             </div>
+
+            {historyTabId && (
+              <button
+                className="btn btn-secondary sql-toolbar-icon-btn"
+                onClick={() => setHistoryPane(paneId)}
+                title={t('localHistory.open')}
+                aria-label={t('localHistory.open')}
+              >
+                <FileClock size={13} />
+              </button>
+            )}
 
             {/* The Snippets button (SQL templates) */}
             <button
@@ -2201,6 +2405,97 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const [rowSel1, setRowSel1] = useState<RowSelection>(EMPTY_ROW_SELECTION);
   const [rowSel2, setRowSel2] = useState<RowSelection>(EMPTY_ROW_SELECTION);
 
+  /**
+   * Quick search — the same Ctrl+F filter `DataGrid` has, per pane.
+   *
+   * It filters the rows ALREADY IN MEMORY and never touches the database. That is the honest thing
+   * for this grid: a result set is whatever the statement returned, there is no `WHERE` to push a
+   * filter into (it may be a join, an aggregate or a `SELECT 1`), and re-running the statement to
+   * narrow it would put a second row in the history and could be arbitrarily expensive. It is also
+   * why the badge counts against the ROWS RETURNED and not against the table.
+   */
+  const [quickSearch1, setQuickSearch1] = useState('');
+  const [quickSearch2, setQuickSearch2] = useState('');
+  const [showQuickSearch1, setShowQuickSearch1] = useState(false);
+  const [showQuickSearch2, setShowQuickSearch2] = useState(false);
+  const quickSearchRef1 = useRef<HTMLInputElement>(null);
+  const quickSearchRef2 = useRef<HTMLInputElement>(null);
+
+  const quickSearchOf = (paneId: 1 | 2) => (paneId === 1 ? quickSearch1 : quickSearch2);
+  const setQuickSearchOf = (paneId: 1 | 2) => (paneId === 1 ? setQuickSearch1 : setQuickSearch2);
+  const setShowQuickSearchOf = (paneId: 1 | 2) => (paneId === 1 ? setShowQuickSearch1 : setShowQuickSearch2);
+
+  /**
+   * What the grid shows: sorted, then filtered.
+   *
+   * Every consumer of the sorted list moved here on purpose — paging, the Shift+click range, the
+   * Ctrl+C copy, the context menu's column copy. A copy that took the rows the search had hidden
+   * would be a copy of something not on screen, and a pager counting them would page past the end.
+   */
+  const visibleResults1 = React.useMemo(
+    () => filterRowsByQuery(sortedResults1, columns, quickSearch1),
+    [sortedResults1, columns, quickSearch1],
+  );
+  const visibleResults2 = React.useMemo(
+    () => filterRowsByQuery(sortedResults2, columns2, quickSearch2),
+    [sortedResults2, columns2, quickSearch2],
+  );
+
+  /**
+   * Column widths measured the moment quick search opens, so filtering cannot move them.
+   *
+   * `.grid-table` is `table-layout: auto`, i.e. every column is as wide as the widest cell CURRENTLY
+   * RENDERED. Hiding rows therefore re-lays out the whole grid on each keystroke — columns jump
+   * narrower, and the row-number column shrinks as 3-digit numbers drop out, which reads as the grid
+   * twitching under the text being typed. Filtering only ever removes rows, so the widths taken
+   * before the first keystroke are the widest the result will ever need: freezing them can only
+   * leave a column roomier than its content, never clip it.
+   *
+   * Carried with the `of` array the way `RowSelection` is — widths belong to one result set, and a
+   * new run must not be laid out to the old one's measurements. That also means no effect is needed
+   * to invalidate them.
+   */
+  const [frozenCols1, setFrozenCols1] = useState<{ of: any[]; widths: number[] } | null>(null);
+  const [frozenCols2, setFrozenCols2] = useState<{ of: any[]; widths: number[] } | null>(null);
+  const gridTableRef1 = useRef<HTMLTableElement>(null);
+  const gridTableRef2 = useRef<HTMLTableElement>(null);
+
+  const frozenColsOf = (paneId: 1 | 2): number[] | null => {
+    const frozen = paneId === 1 ? frozenCols1 : frozenCols2;
+    if (!frozen) return null;
+    return frozen.of === (paneId === 1 ? results : results2) ? frozen.widths : null;
+  };
+
+  /** Opens the bar and puts the caret in it; also the Ctrl+F handler, so the shortcut re-focuses an open one. */
+  const openQuickSearch = (paneId: 1 | 2) => {
+    // Measured BEFORE the bar renders, i.e. against the unfiltered grid. One read of the layout per
+    // open — not per keystroke.
+    const table = paneId === 1 ? gridTableRef1.current : gridTableRef2.current;
+    const heads = table ? Array.from(table.querySelectorAll('thead th')) : [];
+    if (heads.length > 0) {
+      const widths = heads.map((th) => Math.round(th.getBoundingClientRect().width));
+      (paneId === 1 ? setFrozenCols1 : setFrozenCols2)({
+        of: paneId === 1 ? results : results2,
+        widths,
+      });
+    }
+    setShowQuickSearchOf(paneId)(true);
+    // The input does not exist yet on the first open — it is rendered by this same state.
+    setTimeout(() => {
+      const el = paneId === 1 ? quickSearchRef1.current : quickSearchRef2.current;
+      el?.focus();
+      el?.select();
+    }, 30);
+  };
+
+  const closeQuickSearch = (paneId: 1 | 2) => {
+    setShowQuickSearchOf(paneId)(false);
+    setQuickSearchOf(paneId)('');
+    // Widths go back to the browser's own sizing: with every row on screen again, the measurements
+    // would only be a stale copy of what auto layout is about to compute anyway.
+    (paneId === 1 ? setFrozenCols1 : setFrozenCols2)(null);
+  };
+
   /** A pane's selection, empty as soon as that pane holds a different result set. */
   const rowSelectionOf = (paneId: 1 | 2): RowSelection => {
     const sel = paneId === 1 ? rowSel1 : rowSel2;
@@ -2211,7 +2506,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
   const selectedResultRows = (paneId: 1 | 2): any[] => {
     const sel = rowSelectionOf(paneId);
     if (sel.rows.size === 0) return [];
-    return (paneId === 1 ? sortedResults1 : sortedResults2).filter((r) => sel.rows.has(r));
+    return (paneId === 1 ? visibleResults1 : visibleResults2).filter((r) => sel.rows.has(r));
   };
 
   /**
@@ -2223,7 +2518,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     // Shift+click also drags the BROWSER's text selection across every row it spans, which reads
     // as a second highlight competing with the real one.
     if (e.shiftKey) window.getSelection()?.removeAllRanges();
-    const all = paneId === 1 ? sortedResults1 : sortedResults2;
+    const all = paneId === 1 ? visibleResults1 : visibleResults2;
     const next = resolveRowClick(all, rowSelectionOf(paneId), row, {
       shift: e.shiftKey,
       ctrl: e.ctrlKey || e.metaKey,
@@ -2245,6 +2540,14 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
    * rather than by a flag someone has to remember to check.
    */
   const handleResultGridKeyDown = (paneId: 1 | 2, e: React.KeyboardEvent) => {
+    // Ctrl+F opens quick search, the same binding the table grid uses. Container-scoped like the
+    // rest of this handler, which is also what keeps it out of Monaco's way: the editor has its own
+    // Ctrl+F (find in SQL), and the two never collide because only one of them can hold focus.
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
+      e.preventDefault();
+      openQuickSearch(paneId);
+      return;
+    }
     if (e.key === 'Escape') {
       if (rowSelectionOf(paneId).rows.size === 0) return;
       e.preventDefault();
@@ -2300,28 +2603,19 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
      * not statements: without a table and a key there is nothing honest to offer.
      */
     target?: { table: string; primaryKey: string; columns: string[] } | null;
+    /** Cell menus only: what the value editor needs to write the cell back into `cellEdits`. */
+    cell?: { rowKey: string; original: unknown; canEdit: boolean; readOnlyReason?: string };
   } | null>(null);
 
   const menuSelectedRows = resultMenu ? rowSelectionOf(resultMenu.pane).rows.size : 0;
 
-  /**
-   * Where the menu actually goes, once it is kept inside the window.
-   *
-   * The height is computed from the sections it will show rather than measured: unlike the table
-   * grid's menu, which grows a row per foreign key and media column it finds, this one has only
-   * two shapes. Measuring it with a ref would cost a second render before the menu could appear.
-   */
-  const resultMenuAt: MenuRect | null = resultMenu
-    ? clampMenu(
-        resultMenu.x,
-        resultMenu.y,
-        280,
-        (menuSelectedRows > 0 ? (resultMenu.target ? 610 : 520) : 320) -
-          (resultMenu.value === undefined ? 46 : 0),
-        window.innerWidth,
-        window.innerHeight,
-      )
-    : null;
+  // The tools the result menu opens (GridToolDialogs.tsx), shared with the table grid.
+  const [resultValueEditor, setResultValueEditor] = useState<{
+    pane: 1 | 2; col: string; value: unknown;
+    cell?: { rowKey: string; original: unknown; canEdit: boolean; readOnlyReason?: string };
+  } | null>(null);
+  const [resultStats, setResultStats] = useState<{ column: string; values: unknown[]; scope: string } | null>(null);
+  const [resultTranspose, setResultTranspose] = useState<{ columns: string[]; rows: any[] } | null>(null);
 
   useEffect(() => {
     if (!showCopyDropdown && !showCopyDropdown2) return;
@@ -2368,7 +2662,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     paneId: 1 | 2,
     col: string,
     as: 'values' | 'in' | 'json',
-    rows: any[] = paneId === 1 ? sortedResults1 : sortedResults2,
+    rows: any[] = paneId === 1 ? visibleResults1 : visibleResults2,
   ) => {
     if (as === 'in') {
       const result = buildInList(rows.map((r) => r[col]), dbType || 'mysql');
@@ -2458,7 +2752,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
 
   const copyResultAsMarkdown = (
     paneId: 1 | 2,
-    rows: any[] = paneId === 1 ? sortedResults1 : sortedResults2,
+    rows: any[] = paneId === 1 ? visibleResults1 : visibleResults2,
   ) => {
     const cols = paneId === 1 ? columns : columns2;
     if (rows.length === 0) return;
@@ -2706,17 +3000,22 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     }
     if (!editingCell) return;
     const { pane, rowKey, col } = editingCell;
+    applyResultCellValue(pane, rowKey, col, original, editValue);
+    setEditingCell(null);
+  };
+
+  /** One cell into `cellEdits` — shared by the inline editor and the value editor. */
+  const applyResultCellValue = (pane: 1 | 2, rowKey: string, col: string, original: unknown, text: string) => {
     setCellEdits(prev => {
       const paneEdits = { ...prev[pane] };
       const rowEdits = { ...paneEdits[rowKey] };
       // Typed back to the original value -> drop it, so the Save button never counts a no-op.
-      if (String(original ?? '') === editValue) delete rowEdits[col];
-      else rowEdits[col] = editValue;
+      if (String(original ?? '') === text) delete rowEdits[col];
+      else rowEdits[col] = text;
       if (Object.keys(rowEdits).length === 0) delete paneEdits[rowKey];
       else paneEdits[rowKey] = rowEdits;
       return { ...prev, [pane]: paneEdits };
     });
-    setEditingCell(null);
   };
 
   const discardEdits = (pane: 1 | 2) => {
@@ -2793,15 +3092,23 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     const pViewMode = viewModeOf(paneId, pActiveTabIndex);
 
     const pExplainResult = paneId === 1 ? explainResult1 : explainResult2;
+    const pExplainBase = paneId === 1 ? explainBase1 : explainBase2;
+    const pSetExplainBase = paneId === 1 ? setExplainBase1 : setExplainBase2;
     const pActiveTabType = paneId === 1 ? activeTabType1 : activeTabType2;
     const pSetActiveTabType = paneId === 1 ? setActiveTabType1 : setActiveTabType2;
 
     const activeResult = pAllResults[pActiveTabIndex] || { data: [], columns: [], affectedRows: 0, query: '' };
-    const totalPagesNum = Math.ceil(pResults.length / pPageSize) || 1;
     const pSortCol = paneId === 1 ? sortCol1 : sortCol2;
     const pSortDir = paneId === 1 ? sortDir1 : sortDir2;
-    const sortedResults = paneId === 1 ? sortedResults1 : sortedResults2;
+    const visibleResults = paneId === 1 ? visibleResults1 : visibleResults2;
     const pSelectedRows = rowSelectionOf(paneId).rows;
+    const pQuickSearch = quickSearchOf(paneId);
+    const pShowQuickSearch = paneId === 1 ? showQuickSearch1 : showQuickSearch2;
+    const pSearching = pQuickSearch.trim().length > 0;
+    const pFrozenCols = pShowQuickSearch ? frozenColsOf(paneId) : null;
+    // Paging counts the rows ON SCREEN, so a search that leaves three rows is one page of three and
+    // not page 1 of 100 with 97 of them unreachable.
+    const totalPagesNum = Math.ceil(visibleResults.length / pPageSize) || 1;
 
     const pEditability = editabilityInMode(activeResult.query || '', pColumns);
     const pTarget = pEditability.editable ? pEditability : null;
@@ -2912,6 +3219,22 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                 </button>
               </div>
 
+              {/* Quick search needs a button and not only Ctrl+F: the shortcut is scoped to the
+                  grid container, so it does nothing until the grid has been clicked, and a feature
+                  reachable only by a shortcut you must first know about is a feature nobody finds.
+                  Grid view only — the search filters ROWS, and the chart draws the whole result. */}
+              {pViewMode === 'grid' && pResults.length > 0 && (
+                <button
+                  type="button"
+                  className={`btn sql-view-btn ${pShowQuickSearch ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => (pShowQuickSearch ? closeQuickSearch(paneId) : openQuickSearch(paneId))}
+                  title={t('dataGrid.quickSearchTitle')}
+                >
+                  <Search size={12} />
+                  <span>{t('dataGrid.quickSearchBtn')}</span>
+                </button>
+              )}
+
               {pEditability.editable ? (
                 <span
                   className="sql-badge-editable"
@@ -2954,6 +3277,13 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
           {pActiveTabType === 'explain' && pExplainResult ? (
             <ExplainViewer
               explainResult={pExplainResult}
+              dbType={dbType}
+              baseline={pExplainBase?.result ?? null}
+              baselinePinned={pExplainBase?.pinned ?? false}
+              onPinCurrent={() => pSetExplainBase({ result: pExplainResult, pinned: true })}
+              // Unpinning falls back to "no baseline" rather than guessing which run was previous;
+              // the next EXPLAIN makes this plan the baseline again.
+              onUnpin={() => pSetExplainBase(null)}
               // Only MySQL has a cost-less EXPLAIN variant worth re-running as JSON; Postgres
               // already returns JSON for every variant and SQLite never reports cost.
               onRequestJsonPlan={
@@ -2997,13 +3327,90 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                     title={t('sqlEditor.chartResultsTitle', 'Query Results Visualization')}
                   />
                 ) : (
+                  // A column, so the search bar can sit above the scrolling grid rather than
+                  // inside it — in the scroller it would slide away with the rows.
+                  <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                  {pShowQuickSearch && (
+                    // The bar reuses `.grid-quick-search-*` from DataGrid by selector, not by copy:
+                    // two search bars that drift apart read as two features.
+                    <div className="grid-quick-search-bar">
+                      <div className="grid-quick-search-left">
+                        <div className="grid-quick-search-wrap">
+                          <Search size={14} className="grid-quick-search-icon" />
+                          <input
+                            ref={paneId === 1 ? quickSearchRef1 : quickSearchRef2}
+                            type="text"
+                            className="grid-quick-search-input"
+                            placeholder={t('dataGrid.quickSearchPlaceholder')}
+                            value={pQuickSearch}
+                            onChange={(e) => {
+                              setQuickSearchOf(paneId)(e.target.value);
+                              // Back to page 1 on every keystroke: the page the user was on is a
+                              // position in the OLD row set and means nothing in the new one. Done
+                              // here rather than in an effect — this is an event, and an effect
+                              // setting state is what `react/set-state-in-effect` is about.
+                              pSetPage(1);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key !== 'Escape') return;
+                              // Esc clears first and closes only when there is nothing to clear,
+                              // exactly as the table grid behaves.
+                              if (pQuickSearch) setQuickSearchOf(paneId)('');
+                              else closeQuickSearch(paneId);
+                            }}
+                          />
+                          <div className="grid-quick-search-actions">
+                            {pQuickSearch && (
+                              <button
+                                className="grid-quick-search-btn-clear"
+                                onClick={() => setQuickSearchOf(paneId)('')}
+                                title={t('dataGrid.quickSearchClear')}
+                                aria-label={t('dataGrid.quickSearchClear')}
+                              >
+                                <X size={13} />
+                              </button>
+                            )}
+                            {pSearching && (
+                              <span className={`grid-quick-search-badge ${visibleResults.length === 0 ? 'empty' : ''}`}>
+                                {visibleResults.length === 0
+                                  ? t('dataGrid.quickSearchNoMatches')
+                                  : t('dataGrid.quickSearchMatches', { matched: visibleResults.length, total: pResults.length })}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid-quick-search-right">
+                        <span className="grid-quick-search-kbd">{t('dataGrid.quickSearchEscKey')}</span>
+                        <button
+                          className="grid-quick-search-btn-close"
+                          onClick={() => closeQuickSearch(paneId)}
+                          title={t('dataGrid.quickSearchClose')}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <div
                     className="grid-table-container"
                     tabIndex={-1}
                     onKeyDown={(e) => handleResultGridKeyDown(paneId, e)}
-                    style={{ height: '100%' }}
+                    style={{ flex: 1, minHeight: 0 }}
                   >
-                    <table className="grid-table">
+                    <table className="grid-table" ref={paneId === 1 ? gridTableRef1 : gridTableRef2}>
+                      {/* Only while quick search is open. `<col>` is the one place a width applies
+                          to a whole column without touching every cell, and it maps 1:1 onto the
+                          header cells below — including the row-number one, whichever way
+                          `showRowNumbers` is set at measuring time. Keyed by position because a
+                          column IS its position here. */}
+                      {pFrozenCols && (
+                        <colgroup>
+                          {pFrozenCols.map((w, i) => (
+                            <col key={i} style={{ width: `${w}px` }} />
+                          ))}
+                        </colgroup>
+                      )}
                       <thead>
                         <tr>
                           {showRowNumbers && (
@@ -3059,7 +3466,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                         </tr>
                       </thead>
                       <tbody>
-                        {sortedResults.slice((pPage - 1) * pPageSize, pPage * pPageSize).map((row, index) => (
+                        {visibleResults.slice((pPage - 1) * pPageSize, pPage * pPageSize).map((row, index) => (
                           <tr
                             key={index}
                             className={pSelectedRows.has(row) ? 'selected' : undefined}
@@ -3099,7 +3506,21 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                                     e.preventDefault();
                                     e.stopPropagation();
                                     selectResultRowForMenu(paneId, row);
-                                    setResultMenu({ pane: paneId, x: e.clientX, y: e.clientY, col, value: cellVal, target: pTarget });
+                                    setResultMenu({
+                                      pane: paneId, x: e.clientX, y: e.clientY, col, value: cellVal, target: pTarget,
+                                      cell: {
+                                        rowKey,
+                                        original: row[col],
+                                        canEdit,
+                                        readOnlyReason: canEdit
+                                          ? undefined
+                                          : pTarget
+                                            ? t('sqlEditor.editColumnReadOnly', { table: pTarget.table })
+                                            : !pEditability.editable
+                                              ? notEditableLabel(pEditability.reason, pEditability.table)
+                                              : undefined,
+                                      },
+                                    });
                                   }}
                                 >
                                   {isEditing ? (
@@ -3210,7 +3631,14 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                                       value={cellVal}
                                       columnName={col}
                                       tableName={pTarget?.table}
-                                      fallbackText={String(cellVal)}
+                                      // `fallbackText` is a ReactNode, which is how the highlight
+                                      // gets in without MediaCellPreview knowing about searching —
+                                      // DataGrid passes its own marked-up text the same way.
+                                      fallbackText={
+                                        pSearching
+                                          ? <SearchHighlight text={String(cellVal)} query={pQuickSearch} />
+                                          : String(cellVal)
+                                      }
                                     />
                                   )}
                                 </td>
@@ -3220,6 +3648,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                         ))}
                       </tbody>
                     </table>
+                  </div>
                   </div>
                 )
               )}
@@ -3261,12 +3690,15 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
             {pResults.length > 0 && (
               <div className="pagination-controls" style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
                 <span style={{ fontSize: '11px', color: 'var(--win-text-secondary)', marginRight: '4px' }}>
+                  {/* Counts what is on screen. While a search is on, `total` is the number of
+                      MATCHING rows — the badge in the search bar is the one that says how many of
+                      the whole result that is, so the two numbers never contradict each other. */}
                   <Trans
                     i18nKey="sqlEditor.rowsRange"
                     values={{
-                      from: (pPage - 1) * pPageSize + 1,
-                      to: Math.min(pPage * pPageSize, pResults.length),
-                      total: pResults.length,
+                      from: visibleResults.length === 0 ? 0 : (pPage - 1) * pPageSize + 1,
+                      to: Math.min(pPage * pPageSize, visibleResults.length),
+                      total: visibleResults.length,
                     }}
                     components={{ strong: <b /> }}
                   />
@@ -3334,6 +3766,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                       borderRadius: '6px',
                       boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
                       zIndex: 9999,
+                      width: 'max-content',
                       minWidth: '170px',
                       display: 'flex',
                       flexDirection: 'column',
@@ -3368,8 +3801,9 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     results, columns, allResults, activeTabIndex, loading, hasRun, errorMsg, statusMsg,
-    page, pageSize, showCopyDropdown, explainResult1, activeTabType1,
-    sortCol1, sortDir1, sortedResults1, rowSel1, cellEdits, editingCell, editValue, editMsg,
+    page, pageSize, showCopyDropdown, explainResult1, explainBase1, activeTabType1,
+    sortCol1, sortDir1, sortedResults1, visibleResults1, quickSearch1, showQuickSearch1, frozenCols1,
+    rowSel1, cellEdits, editingCell, editValue, editMsg,
     pane1ViewModes, showRowNumbers, autoFitColsPane1, userEditorHeight, dbType, locale, t
   ]);
 
@@ -3378,8 +3812,9 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     results2, columns2, allResults2, activeTabIndex2, loading2, hasRun2, errorMsg2, statusMsg2,
-    page2, pageSize2, showCopyDropdown2, explainResult2, activeTabType2,
-    sortCol2, sortDir2, sortedResults2, rowSel2, cellEdits, editingCell, editValue, editMsg,
+    page2, pageSize2, showCopyDropdown2, explainResult2, explainBase2, activeTabType2,
+    sortCol2, sortDir2, sortedResults2, visibleResults2, quickSearch2, showQuickSearch2, frozenCols2,
+    rowSel2, cellEdits, editingCell, editValue, editMsg,
     pane2ViewModes, showRowNumbers, autoFitColsPane2, userEditorHeight2, dbType, locale, t
   ]);
 
@@ -3508,13 +3943,29 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
         )}
       </div>
 
+      {historyPane && historyTarget(historyPane) && (
+        <LocalHistoryDialog
+          target={historyTarget(historyPane) as HistoryTarget}
+          getCurrentText={() => getPaneSql(historyPane)}
+          language={langId}
+          monacoTheme={sqlThemeName(theme)}
+          onRestore={(text) => restoreFromHistory(historyPane, text)}
+          onClose={() => setHistoryPane(null)}
+        />
+      )}
+
       {showSnippetPanel && (
         <SqlSnippetPanel
           dbType={dbType}
-          onInsertSnippet={(template) => insertSnippetAtCursor(template)}
+          onInsertSnippet={(template, asSnippet) => insertSnippetAtCursor(template, asSnippet)}
           onClose={() => setShowSnippetPanel(false)}
         />
       )}
+
+      {/* The pickers behind "Open .sql file…" and the Saved tab's Import. Always mounted, because the
+          click that opens them comes from menus that unmount as soon as they are clicked. */}
+      <input ref={sqlFileInputRef} type="file" accept=".sql,.txt,text/plain" className="sql-hidden-file-input" onChange={onSqlFilePicked} />
+      <input ref={savedFileInputRef} type="file" accept=".json,application/json" className="sql-hidden-file-input" onChange={onSavedFilePicked} />
 
       {showHistory && (
         <div className="sql-history-panel">
@@ -3524,15 +3975,39 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
                 <History size={13} />
                 <span>{t('sqlEditor.queryTable')}</span>
               </div>
-              <button
-                className="btn btn-secondary"
-                onClick={() => setShowHistory(false)}
-                style={{ padding: '2px 6px', height: '20px', minWidth: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-              >
-                <X size={12} />
-              </button>
+              <div className="sql-history-actions">
+                {/* Export / import belong to the Saved tab only: history is a log of what ran, not a
+                    collection someone would hand to a colleague. */}
+                {historyTab === 'saved' && (
+                  <>
+                    <button
+                      className="btn btn-secondary sql-history-icon-btn"
+                      onClick={() => savedFileInputRef.current?.click()}
+                      title={t('sqlEditor.importSaved')}
+                      aria-label={t('sqlEditor.importSaved')}
+                    >
+                      <Upload size={12} />
+                    </button>
+                    <button
+                      className="btn btn-secondary sql-history-icon-btn"
+                      onClick={() => void handleExportSaved()}
+                      title={t('sqlEditor.exportSaved')}
+                      aria-label={t('sqlEditor.exportSaved')}
+                    >
+                      <Download size={12} />
+                    </button>
+                  </>
+                )}
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setShowHistory(false)}
+                  style={{ padding: '2px 6px', height: '20px', minWidth: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
             </div>
-            <div style={{ display: 'flex', background: 'rgba(0,0,0,0.02)', width: '100%' }}>
+            <div style={{ display: 'flex', background: 'var(--win-bg-subtle)', width: '100%' }}>
               <button
                 style={{
                   flex: 1,
@@ -3732,7 +4207,7 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
             )}
           </div>
           {historyTab === 'history' && historyCount > 0 && (
-            <div style={{ padding: '8px', borderTop: '1px solid var(--win-border)', display: 'flex', justifyContent: 'flex-end', background: 'rgba(0, 0, 0, 0.02)' }}>
+            <div style={{ padding: '8px', borderTop: '1px solid var(--win-border)', display: 'flex', justifyContent: 'flex-end', background: 'var(--win-bg-subtle)' }}>
               <button
                 className="btn btn-secondary"
                 onClick={handleClearHistory}
@@ -3945,183 +4420,129 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
         is the one parent immune to that, which is why DataGrid keeps its own menu at the top level
         as well. One instance covers both panes: `resultMenu.pane` says which one opened it.
       */}
-      {resultMenu && typeof document !== 'undefined' &&
-        ReactDOM.createPortal(
-          <div className="grid-context-menu" onClick={(e) => e.stopPropagation()} style={resultMenuAt ?? undefined}>
-            <div className="context-menu-heading">
-              {resultMenu.value === undefined
-                ? t('sqlEditor.ctxResultColumn', { col: resultMenu.col })
-                : t('sqlEditor.ctxResultCell', { col: resultMenu.col })}
-            </div>
-            {resultMenu.value !== undefined && (
-              <button
-                className="context-menu-item"
-                onClick={() => {
-                  const rm = resultMenu;
-                  setResultMenu(null);
-                  copyResultCell(rm.pane, rm.value);
-                }}
-              >
-                <span>📄</span> {t('sqlEditor.ctxCopyCellValue')}
-              </button>
-            )}
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                copyResultColumnAs(rm.pane, rm.col, 'values');
-              }}
-            >
-              <span>📋</span> {t('sqlEditor.ctxCopyColumnValues', { col: resultMenu.col })}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                copyResultColumnAs(rm.pane, rm.col, 'in');
-              }}
-            >
-              <span>🔢</span> {t('sqlEditor.ctxCopyColumnIn', { col: resultMenu.col })}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                copyResultColumnAs(rm.pane, rm.col, 'json');
-              }}
-            >
-              <span>📦</span> {t('sqlEditor.ctxCopyColumnJson', { col: resultMenu.col })}
-            </button>
-            {menuSelectedRows > 0 && (
+      {resultMenu && (() => {
+        const rm = resultMenu;
+        const pane = rm.pane;
+        const cols = pane === 1 ? columns : columns2;
+        const onSelection = menuSelectedRows > 1;
+        return (
+          <GridContextMenu x={rm.x} y={rm.y} onClose={() => setResultMenu(null)}>
+            {rm.value !== undefined && (
               <>
-                <div className="context-menu-heading">
-                  {t('sqlEditor.ctxResultRows', { n: menuSelectedRows })}
-                </div>
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const rm = resultMenu;
-                    setResultMenu(null);
-                    copyResultColumnAs(rm.pane, rm.col, 'in', selectedResultRows(rm.pane));
-                  }}
-                >
-                  <span>🔢</span> {t('sqlEditor.ctxCopyRowsIn', { col: resultMenu.col })}
-                </button>
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const rm = resultMenu;
-                    setResultMenu(null);
-                    copySelectedRowsAs(rm.pane, 'tsv');
-                  }}
-                >
-                  <span>📋</span> {t('sqlEditor.ctxCopyRowsTsv')}
-                </button>
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const rm = resultMenu;
-                    setResultMenu(null);
-                    copyResultAsMarkdown(rm.pane, selectedResultRows(rm.pane));
-                  }}
-                >
-                  <span>📝</span> {t('sqlEditor.ctxCopyRowsMarkdown')}
-                </button>
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const rm = resultMenu;
-                    setResultMenu(null);
-                    copySelectedRowsAs(rm.pane, 'csv');
-                  }}
-                >
-                  <span>📊</span> {t('sqlEditor.ctxCopyRowsCsv')}
-                </button>
-                <button
-                  className="context-menu-item"
-                  onClick={() => {
-                    const rm = resultMenu;
-                    setResultMenu(null);
-                    copySelectedRowsAs(rm.pane, 'json');
-                  }}
-                >
-                  <span>📦</span> {t('sqlEditor.ctxCopyRowsJson')}
-                </button>
-                {resultMenu.target && (
-                  <>
-                    <button
-                      className="context-menu-item"
-                      onClick={() => {
-                        const rm = resultMenu;
-                        setResultMenu(null);
-                        if (rm.target) copySelectedRowsAsSql(rm.pane, rm.target, 'insert');
-                      }}
-                    >
-                      <span>🗄</span> SQL INSERT
-                    </button>
-                    <button
-                      className="context-menu-item"
-                      onClick={() => {
-                        const rm = resultMenu;
-                        setResultMenu(null);
-                        if (rm.target) copySelectedRowsAsSql(rm.pane, rm.target, 'update');
-                      }}
-                    >
-                      <span>✏️</span> {t('sqlEditor.ctxCopyRowsUpdate')}
-                    </button>
-                  </>
-                )}
+                <MenuHeading>{t('sqlEditor.ctxResultCell', { col: rm.col })}</MenuHeading>
+                <MenuItem
+                  icon="📝"
+                  label={t('gridTools.openValueEditor')}
+                  onSelect={() => setResultValueEditor({ pane, col: rm.col, value: rm.value, cell: rm.cell })}
+                />
+                <MenuItem icon="📄" label={t('sqlEditor.ctxCopyCellValue')} onSelect={() => copyResultCell(pane, rm.value)} />
               </>
             )}
-            <div className="context-menu-heading">
-              {t('sqlEditor.ctxResultAll')}
-            </div>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                handleCopyAs('table', rm.pane);
+
+            <MenuHeading>{t('sqlEditor.ctxResultColumn', { col: rm.col })}</MenuHeading>
+            <MenuItem
+              icon="↑"
+              label={t('dataGrid.ctxAsc')}
+              onSelect={() => { (pane === 1 ? setSortCol1 : setSortCol2)(rm.col); (pane === 1 ? setSortDir1 : setSortDir2)('asc'); }}
+            />
+            <MenuItem
+              icon="↓"
+              label={t('dataGrid.ctxDesc')}
+              onSelect={() => { (pane === 1 ? setSortCol1 : setSortCol2)(rm.col); (pane === 1 ? setSortDir1 : setSortDir2)('desc'); }}
+            />
+            <MenuItem
+              icon="Σ"
+              label={t('gridTools.columnStats')}
+              onSelect={() => {
+                // The WHOLE result, not the page on screen: this grid holds every row in memory.
+                const source = onSelection ? selectedResultRows(pane) : (pane === 1 ? visibleResults1 : visibleResults2);
+                setResultStats({
+                  column: rm.col,
+                  values: source.map((r) => r[rm.col]),
+                  scope: onSelection
+                    ? t('gridTools.scopeSelected', { n: source.length })
+                    : t('gridTools.scopeResult', { n: source.length }),
+                });
               }}
-            >
-              <span>📋</span> {t('sqlEditor.copyAsTable')}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                handleCopyAs('object', rm.pane);
-              }}
-            >
-              <span>📦</span> {t('sqlEditor.copyAsJsonObject')}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                handleCopyAs('array', rm.pane);
-              }}
-            >
-              <span>📦</span> {t('sqlEditor.copyAsJsonArray')}
-            </button>
-            <button
-              className="context-menu-item"
-              onClick={() => {
-                const rm = resultMenu;
-                setResultMenu(null);
-                copyResultAsMarkdown(rm.pane);
-              }}
-            >
-              <span>📝</span> {t('sqlEditor.ctxCopyMarkdown')}
-            </button>
-          </div>,
-          document.body,
-        )}
+            />
+            <MenuSub icon="📋" label={t('gridTools.copyColumn')}>
+              <MenuItem icon="📋" label={t('gridTools.columnValues')} onSelect={() => copyResultColumnAs(pane, rm.col, 'values')} />
+              <MenuItem icon="🔢" label={t('dataGrid.ctxCopyInListColumn')} onSelect={() => copyResultColumnAs(pane, rm.col, 'in')} />
+              <MenuItem icon="📦" label={t('dataGrid.ctxJsonValues')} onSelect={() => copyResultColumnAs(pane, rm.col, 'json')} />
+              {menuSelectedRows > 0 && (
+                <MenuItem
+                  icon="🔢"
+                  label={t('sqlEditor.ctxCopyRowsIn', { col: rm.col })}
+                  onSelect={() => copyResultColumnAs(pane, rm.col, 'in', selectedResultRows(pane))}
+                />
+              )}
+            </MenuSub>
+
+            {menuSelectedRows > 0 && (
+              <>
+                <MenuHeading>{t('sqlEditor.ctxResultRows', { n: menuSelectedRows })}</MenuHeading>
+                <MenuItem
+                  icon="⇄"
+                  label={menuSelectedRows > 1 ? t('gridTools.transposeN', { n: menuSelectedRows }) : t('gridTools.transpose')}
+                  onSelect={() => setResultTranspose({ columns: cols, rows: selectedResultRows(pane) })}
+                />
+                <MenuSub icon="📋" label={t('gridTools.copyAs')}>
+                  <MenuItem icon="📋" label={t('dataGrid.ctxCopyTsv')} hint="Ctrl+C" onSelect={() => copySelectedRowsAs(pane, 'tsv')} />
+                  <MenuItem icon="📊" label={t('dataGrid.ctxCsvHeader')} onSelect={() => copySelectedRowsAs(pane, 'csv')} />
+                  <MenuItem icon="📝" label={t('sqlEditor.ctxCopyMarkdown')} onSelect={() => copyResultAsMarkdown(pane, selectedResultRows(pane))} />
+                  <MenuItem icon="📦" label={t('dataGrid.ctxJsonObjects')} onSelect={() => copySelectedRowsAs(pane, 'json')} />
+                  {rm.target && (
+                    <>
+                      <MenuItem icon="🗄" label="SQL INSERT" onSelect={() => { if (rm.target) copySelectedRowsAsSql(pane, rm.target, 'insert'); }} />
+                      <MenuItem icon="✏️" label={t('sqlEditor.ctxCopyRowsUpdate')} onSelect={() => { if (rm.target) copySelectedRowsAsSql(pane, rm.target, 'update'); }} />
+                    </>
+                  )}
+                </MenuSub>
+              </>
+            )}
+
+            <MenuSeparator />
+            <MenuSub icon="📋" label={t('gridTools.copyResultAs')}>
+              <MenuItem icon="📋" label={t('sqlEditor.copyAsTable')} onSelect={() => handleCopyAs('table', pane)} />
+              <MenuItem icon="📦" label={t('sqlEditor.copyAsJsonObject')} onSelect={() => handleCopyAs('object', pane)} />
+              <MenuItem icon="📦" label={t('sqlEditor.copyAsJsonArray')} onSelect={() => handleCopyAs('array', pane)} />
+              <MenuItem icon="📝" label={t('sqlEditor.ctxCopyMarkdown')} onSelect={() => copyResultAsMarkdown(pane)} />
+            </MenuSub>
+          </GridContextMenu>
+        );
+      })()}
+
+      {resultValueEditor && (
+        <ValueEditorDialog
+          column={resultValueEditor.col}
+          value={resultValueEditor.value}
+          onApply={
+            resultValueEditor.cell?.canEdit
+              ? (text) => {
+                  const ve = resultValueEditor;
+                  if (ve.cell) applyResultCellValue(ve.pane, ve.cell.rowKey, ve.col, ve.cell.original, text);
+                }
+              : undefined
+          }
+          readOnlyReason={resultValueEditor.cell?.readOnlyReason}
+          onClose={() => setResultValueEditor(null)}
+        />
+      )}
+      {resultStats && (
+        <ColumnStatsDialog
+          column={resultStats.column}
+          values={resultStats.values}
+          scope={resultStats.scope}
+          onClose={() => setResultStats(null)}
+        />
+      )}
+      {resultTranspose && (
+        <TransposeDialog
+          columns={resultTranspose.columns}
+          rows={resultTranspose.rows}
+          onClose={() => setResultTranspose(null)}
+        />
+      )}
     </div>
   );
 };

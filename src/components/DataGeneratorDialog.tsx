@@ -47,6 +47,8 @@ import { Modal, ModalBody } from './Modal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ProgressBar } from './ProgressBar';
 import { cancelJob, startJob } from '../utils/jobs';
+import { withJobConnection } from '../utils/jobConnection';
+import { approveJob, connKeyOfConn, type JobApproval } from '../utils/safeMode';
 
 interface DataGeneratorDialogProps {
   /** The target connection. Explicit, because a generation run happens as a background job — see dbHelper.generateData. */
@@ -298,22 +300,38 @@ export const DataGeneratorDialog: React.FC<DataGeneratorDialogProps> = ({
    * open** — two places reading one run, not two runs. After it closes these `setState` calls become
    * no-ops, and the job is left untouched.
    */
-  const run = useCallback(() => {
+  const run = useCallback(async () => {
+    // Safe Mode asks here, while the user is looking at the dialog — never from the job, which may
+    // start minutes later from the queue. Declining leaves the dialog as it was.
+    let approval: JobApproval;
+    try {
+      approval = await approveJob('generate_data', connId, t('jobs.approveGenerate', { n: dbName ?? '' }));
+    } catch {
+      return;
+    }
     setRunning(true);
     setRunError(null);
     setResult(null);
     setProgress(null);
     startedAtRef.current = Date.now();
     const rows = totalRows;
+    // The job's own connection, once open. The cancel flag on the Rust side is keyed by `conn_id`, so
+    // a cancel has to aim at the connection actually generating — which is this one, not `connId`.
+    let jobConnId = '';
     jobIdRef.current = startJob({
       kind: 'generate',
       title: t('jobs.titleGenerate', { n: dbName ?? '' }),
       db: dbName ?? '',
+      conn: connKeyOfConn(connId),
       write: true,
       lockKey: `${connId}|${dbName ?? ''}`,
-      // The cancel flag on the Rust side is keyed by `conn_id`, so it has to aim at the connection actually generating.
-      onCancel: () => void dbHelper.cancelDataGeneration(connId),
-      run: async (ctx) => {
+      onCancel: () => {
+        if (jobConnId) void dbHelper.cancelDataGeneration(jobConnId);
+      },
+      // A connection of its own: generating on the user's id meant `generate_data` refused outright
+      // while they had a manual transaction open, and its session-level `SET`s landed on their
+      // connection. On the job's id neither is true.
+      run: (ctx) => withJobConnection(connId, [approval], async ({ connId: genConnId }) => {
         try {
           const res = await dbHelper.generateData(spec, (msg) => {
             setProgress(msg);
@@ -326,7 +344,7 @@ export const DataGeneratorDialog: React.FC<DataGeneratorDialogProps> = ({
               current: msg.totalDone ?? 0,
               total: rows,
             });
-          }, connId);
+          }, genConnId);
           setResult(res);
           // The row counts changed -> Sidebar/DataGrid reload, even if the dialog closed long ago.
           // The schema did not, so invalidateCatalog is deliberately NOT called.
@@ -347,7 +365,13 @@ export const DataGeneratorDialog: React.FC<DataGeneratorDialogProps> = ({
         } finally {
           setRunning(false);
         }
-      },
+      }, (id) => { jobConnId = id; }).catch((err) => {
+        // Opening the job's connection can fail before the body's own `finally` exists to reset
+        // the dialog.
+        setRunError(String(err));
+        setRunning(false);
+        throw err;
+      }),
     });
   }, [spec, connId, dbName, totalRows, t, i18n.language]);
 

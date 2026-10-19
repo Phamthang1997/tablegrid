@@ -3,6 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use duckdb::Connection as DuckConnection;
 use rusqlite::Connection as SqliteConnection;
 use sqlx::{MySqlPool, PgPool};
 
@@ -11,6 +12,8 @@ pub enum DbKind {
     Sqlite(Arc<Mutex<SqliteConnection>>),
     Postgres(PgPool),
     Mysql(MySqlPool),
+    /// One shared handle, like SQLite: a DuckDB file is a database, not a server.
+    DuckDb(Arc<Mutex<DuckConnection>>),
 }
 
 /// A live connection handle plus **which connection it is**.
@@ -63,6 +66,10 @@ impl Exec {
                 Exec::Postgres(pool.acquire().await.map_err(|e| e.to_string())?)
             }
             DbKind::Mysql(pool) => Exec::Mysql(pool.acquire().await.map_err(|e| e.to_string())?),
+            // Every write path that needs one connection for a sequence of statements comes through
+            // here (the grid's Save, table import, data generation, drop/truncate), so this one
+            // refusal is what keeps DuckDB read-mostly.
+            DbKind::DuckDb(_) => return Err(super::DUCK_UNSUPPORTED.to_string()),
         })
     }
 

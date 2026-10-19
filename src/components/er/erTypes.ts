@@ -88,4 +88,22 @@ export interface ERDisplayConfig {
   searchQuery: string;
 }
 
-export type ERExportFormat = 'png' | 'clipboard' | 'svg' | 'mermaid' | 'dbml' | 'sql';
+export type ERExportFormat =
+  | 'png'
+  | 'clipboard'
+  | 'svg'
+  | 'mermaid'
+  /** Mermaid for the selected tables only — what fits Mermaid's render limits on a big schema. */
+  | 'mermaid-selection'
+  | 'dbml'
+  /** The schema as a Markdown document with one Mermaid diagram per table (`erDocExport.ts`). */
+  | 'markdown'
+  /** The schema as one self-contained, searchable HTML page (`erHtmlDictionary.ts`). */
+  | 'html'
+  | 'sql';
+
+/** What an export reports back to the toolbar. */
+export interface ERExportOutcome {
+  /** The Mermaid text exceeds Mermaid's default render limits (`mermaidTooLarge`). */
+  tooLarge?: boolean;
+}

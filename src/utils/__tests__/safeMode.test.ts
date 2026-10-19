@@ -17,6 +17,9 @@ import {
   setSafeModeForKey,
   STATEMENT_PREVIEW_CAP,
   approveCommand,
+  approveJob,
+  approveJobForServer,
+  openJobDoor,
   runApproved,
   setSafeModeConfirmer,
   type SafeModeRequest,
@@ -82,7 +85,7 @@ describe('COMMAND_KINDS is the twin of dbHelper', () => {
       'restore_backup',
       'generate_data',
       'rename_table',
-      'import_table_data',
+      'import_step',
     ]) {
       expect(COMMAND_KINDS[cmd]).toBe('write');
     }
@@ -275,6 +278,66 @@ describe('runApproved asks once for a whole action', () => {
   });
 });
 
+// A background job is asked about when it is SUBMITTED, and its writes then go through on the job's
+// own connection id without a second question — never on any other id.
+describe('approveJob asks at submit and opens a door on the job connection only', () => {
+  const pgConfig = { type: 'postgres', host: 'db.local', port: 5432 } as unknown as DbConnectionConfig;
+  let asked: SafeModeRequest[];
+
+  beforeEach(() => {
+    memory.clear();
+    resetSafeModeState();
+    asked = [];
+    setSafeModeConfirmer(async (req) => { asked.push(req); return true; });
+    registerConnection('user1', pgConfig);
+    setSafeModeForKey(connKey(pgConfig), 'writes');
+  });
+
+  it('asks once, up front, with the description the caller gave', async () => {
+    await approveJob('restore_backup', 'user1', 'restore into sakila');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ command: 'restore_backup', detail: 'restore into sakila' });
+  });
+
+  it('lets the approved command through on the job id, and only there', async () => {
+    const approval = await approveJob('restore_backup', 'user1', 'x');
+    // The job's id inherits the server, like `openJobConnection` records it.
+    registerConnection('job1', pgConfig);
+    const close = openJobDoor(approval, 'job1');
+    expect(await approveCommand('restore_backup', { connId: 'job1' })).toBe(true);
+    // The user's own connection is not covered, nor is another command on the job's id.
+    await approveCommand('restore_backup', { connId: 'user1' });
+    await approveCommand('drop_table', { connId: 'job1' });
+    expect(asked.map((r) => [r.command, r.connId])).toEqual([
+      ['restore_backup', 'user1'],
+      ['restore_backup', 'user1'],
+      ['drop_table', 'job1'],
+    ]);
+    close();
+    close(); // idempotent: a second close must not close someone else's door
+    await approveCommand('restore_backup', { connId: 'job1' });
+    expect(asked).toHaveLength(4);
+  });
+
+  it('throws when the user declines, so the job is never queued', async () => {
+    setSafeModeConfirmer(async () => false);
+    await expect(approveJob('restore_backup', 'user1', 'x')).rejects.toBeDefined();
+  });
+
+  it('asks by server key when no connection exists yet', async () => {
+    await approveJobForServer('restore_backup', connKey(pgConfig), 'from the form');
+    expect(asked).toHaveLength(1);
+    await approveJobForServer('restore_backup', 'sqlite:C:/other.db', 'silent server');
+    expect(asked).toHaveLength(1);
+  });
+
+  it('does not ask for a server on silent', async () => {
+    setSafeModeForKey(connKey(pgConfig), 'silent');
+    await approveJob('restore_backup', 'user1', 'x');
+    expect(asked).toEqual([]);
+  });
+});
+
 // The grid's Save calls `commit_changes` twice: once with `preview: true` to show the preview list,
 // and once to write. Asking about both shows the user a dialog that "refuses to close", and the first
 // one asks about an operation that writes nothing at all.
@@ -338,7 +401,7 @@ describe('describeCommand', () => {
 
   it('counts a list of items for the commands that take one', () => {
     expect(describeCommand('redis_delete_keys', { keys: ['a', 'b', 'c'] }).count).toBe(3);
-    expect(describeCommand('import_table_data', { rows: [{}, {}] }).count).toBe(2);
+    expect(describeCommand('import_chunk', { rows: [[1], [2]] }).count).toBe(2);
   });
 
   it('returns nothing rather than inventing a name', () => {

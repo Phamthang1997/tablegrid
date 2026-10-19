@@ -43,7 +43,7 @@ export async function pickOpenFile(options?: {
       options: {
         directory: false,
         multiple: false,
-        title: options?.title || 'Chọn tệp',
+        title: options?.title || i18n.t('fileDialog.pickFileTitle'),
         defaultPath: options?.defaultPath || undefined,
         filters: options?.filters,
       },
@@ -55,20 +55,56 @@ export async function pickOpenFile(options?: {
   }
 }
 
+/** Picks a DuckDB database file. */
+export async function pickDuckDbDatabaseFile(defaultPath?: string): Promise<string | null> {
+  return pickOpenFile({
+    title: i18n.t('fileDialog.pickDuckDbTitle'),
+    defaultPath,
+    filters: [
+      { name: i18n.t('fileDialog.duckDbFilter'), extensions: ['duckdb', 'ddb', 'db'] },
+      { name: i18n.t('fileDialog.allFilesFilter'), extensions: ['*'] },
+    ],
+  });
+}
+
+/**
+ * Picks one or more data files for DuckDB to read in place (Parquet / CSV / JSON). Returns the
+ * paths, never the contents: DuckDB reads the file itself, which is what lets it be many GB.
+ */
+export async function pickDataFiles(extensions: readonly string[]): Promise<string[]> {
+  try {
+    const res = await invoke<string | string[] | null>('plugin:dialog|open', {
+      options: {
+        directory: false,
+        multiple: true,
+        title: i18n.t('fileDialog.pickDataFilesTitle'),
+        filters: [
+          { name: i18n.t('fileDialog.dataFilesFilter'), extensions: [...extensions] },
+          { name: i18n.t('fileDialog.allFilesFilter'), extensions: ['*'] },
+        ],
+      },
+    });
+    if (!res) return [];
+    return Array.isArray(res) ? res : [res];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Picks a SQLite database file (.db, .sqlite, .sqlite3, .db3, .s3db).
  */
 export async function pickSqliteDatabaseFile(defaultPath?: string): Promise<string | null> {
   return pickOpenFile({
-    title: 'Chọn tệp SQLite',
+    title: i18n.t('fileDialog.pickSqliteTitle'),
     defaultPath,
     filters: [
       {
-        name: 'SQLite Database (*.db, *.sqlite, *.sqlite3, *.db3, *.s3db)',
+        name: i18n.t('fileDialog.sqliteFilter'),
         extensions: ['db', 'sqlite', 'sqlite3', 'db3', 's3db'],
       },
       {
-        name: 'All Files (*.*)',
+        name: i18n.t('fileDialog.allFilesFilter'),
         extensions: ['*'],
       },
     ],
@@ -86,7 +122,7 @@ export async function pickExportFolder(defaultPath?: string): Promise<string | n
         directory: true,
         multiple: false,
         recursive: false,
-        title: 'Chọn thư mục lưu tệp xuất',
+        title: i18n.t('fileDialog.pickFolderTitle'),
         defaultPath: defaultPath || undefined,
       },
     });
@@ -106,7 +142,7 @@ export async function pickExportFolder(defaultPath?: string): Promise<string | n
 export async function pickSaveFilePath(
   defaultName: string,
   ext: string,
-  filterName = 'Tệp'
+  filterName?: string
 ): Promise<string | null> {
   try {
     const fullName = defaultName.endsWith(`.${ext}`) ? defaultName : `${defaultName}.${ext}`;
@@ -115,11 +151,11 @@ export async function pickSaveFilePath(
 
     const res = await invoke<string | null>('plugin:dialog|save', {
       options: {
-        title: 'Lưu tệp',
+        title: i18n.t('fileDialog.saveFileTitle'),
         defaultPath,
         filters: [
           {
-            name: filterName,
+            name: filterName || i18n.t('fileDialog.defaultFilter'),
             extensions: [ext],
           },
         ],
@@ -218,6 +254,117 @@ export async function openInFileManager(pathOrDir: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** A file being written a chunk at a time by the backend (`export_sink.rs`). */
+export interface FileSink {
+  /** Queue text; it reaches the backend in batches of about `SINK_BATCH_CHARS`. */
+  write(text: string): Promise<void>;
+  /** Flush, finish (gzip trailer), and move the `.part` file into place. Resolves to the final path. */
+  close(): Promise<string>;
+  /** Drop it and delete the partial file. Never throws. */
+  abort(): Promise<void>;
+}
+
+/**
+ * Text gathered before one `export_append` call. A dump emits a chunk per table and per page of
+ * rows — often a few KB — and an IPC round trip per chunk would cost more than the write; 1M
+ * characters keeps both the call count and the memory held here small.
+ */
+const SINK_BATCH_CHARS = 1 << 20;
+
+/** Opens `path` for streaming. Throws when the file cannot be created (permissions, bad folder). */
+export async function openFileSink(path: string, gzip: boolean): Promise<FileSink> {
+  const res = await invoke<{ handle: string }>('export_open', { path, gzip });
+  const handle = res.handle;
+  let pending: string[] = [];
+  let pendingChars = 0;
+  const send = async () => {
+    if (pendingChars === 0) return;
+    const chunk = pending.join('');
+    pending = [];
+    pendingChars = 0;
+    await invoke('export_append', { handle, chunk });
+  };
+  return {
+    async write(text) {
+      pending.push(text);
+      pendingChars += text.length;
+      if (pendingChars >= SINK_BATCH_CHARS) await send();
+    },
+    async close() {
+      await send();
+      const done = await invoke<{ path: string }>('export_close', { handle });
+      return done.path;
+    },
+    async abort() {
+      pending = [];
+      try {
+        await invoke('export_abort', { handle });
+      } catch {
+        /* nothing left to clean */
+      }
+    },
+  };
+}
+
+/**
+ * Writes a dump into `dir` as it is built, instead of building it as one string first
+ * (docs/background-jobs-plan.md, Phase 3). `write` is the producer — `writeDump` bound to its spec
+ * and reader — and receives the function each chunk goes to.
+ *
+ * Falls back to the in-memory path when there is no folder, or the file cannot be created there:
+ * `build` then produces the whole text, which is saved the way `saveExportFile` always did (a WebView
+ * download as the last resort). The fallback is the old behaviour, so a folder the backend cannot
+ * write to costs memory, not the export.
+ *
+ * A producer that throws — a failed read, a cancelled job — aborts the sink, so no half-written file
+ * is left at the chosen name.
+ */
+export async function saveDumpToFolder(
+  dir: string | null,
+  name: string,
+  gzip: boolean,
+  write: (emit: (text: string) => Promise<void>) => Promise<void>,
+  build: () => Promise<string>,
+): Promise<SaveResult> {
+  return saveStreamedToFolder(dir, name, { gzip, mime: 'text/plain;charset=utf-8' }, write, build);
+}
+
+/**
+ * `saveDumpToFolder` for any text export — a table's CSV/JSON/INSERT script, a database's JSON.
+ * `mime` is only used by the in-memory fallback (a WebView download needs one).
+ */
+export async function saveStreamedToFolder(
+  dir: string | null,
+  name: string,
+  opts: { gzip: boolean; mime: string },
+  write: (emit: (text: string) => Promise<void>) => Promise<void>,
+  build: () => Promise<string>,
+): Promise<SaveResult> {
+  const { gzip } = opts;
+  if (dir) {
+    let sink: FileSink | null = null;
+    try {
+      sink = await openFileSink(joinPath(dir, name), gzip);
+    } catch {
+      sink = null;
+    }
+    if (sink) {
+      try {
+        await write((text) => sink!.write(text));
+        const path = await sink.close();
+        rememberExportDir(dir);
+        return { savedTo: 'folder', path, dir };
+      } catch (err) {
+        await sink.abort();
+        throw err;
+      }
+    }
+  }
+  const text = await build();
+  const payload = gzip ? await gzipText(text) : text;
+  return saveExportFile(dir, name, payload, gzip ? 'application/gzip' : opts.mime);
 }
 
 /**

@@ -85,7 +85,7 @@ pub async fn get_table_data(
         .as_ref()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(&safe_ident);
+        .map(safe_ident);
 
     // ORDER BY: the column the user picked, and failing that the seek column (a single-column primary key) the
     // frontend sends down. Keyset pagination is only correct when the order is deterministic, so even the "unsorted"

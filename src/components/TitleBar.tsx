@@ -1,12 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import {
   Minus, Square, X, Plus, Unplug, FileCode, HardDriveDownload, HardDriveUpload,
   PanelLeft, SunMoon, RotateCw, Info, Keyboard, Check, Database,
-  GitBranch, PanelBottom, Bot, ChevronRight, ChevronLeft, BookOpen, Sparkles,
+  GitBranch, PanelBottom, Bot, ChevronRight, ChevronLeft, BookOpen, Sparkles, KeyRound, CalendarClock, NotebookPen,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { dbCaps } from '../utils/dbCaps';
 import { SUPPORTED_LANGUAGES, currentLanguage } from '../i18n';
 import { DbConnectionStatusPill } from './DbConnectionStatusPill';
 import { TxControl } from './TxControl';
@@ -20,6 +21,7 @@ import type { ConnectionStatus } from '../utils/dbHelper';
 import type { ConnEnv } from '../utils/connEnv';
 import { CreateDatabaseModal } from './CreateDatabaseModal';
 import { ConfirmDialog } from './ConfirmDialog';
+import { isVaultLocked, lockVault, subscribeVault, vaultSnapshot } from '../utils/vault';
 
 /** Stable empty default for the `openConns` prop: a fresh `[]` each render breaks memoisation downstream. */
 const NO_CONNS: SwitcherConn[] = [];
@@ -52,6 +54,7 @@ interface TitleBarProps {
   onNewConnection?: () => void;
   onDisconnect?: () => void;
   onNewQuery?: () => void;
+  onNewNotebook?: () => void;
   onExportDatabase?: () => void;
   onImportDatabase?: () => void;
   onToggleSidebar?: () => void;
@@ -59,6 +62,8 @@ interface TitleBarProps {
   onShowShortcuts?: () => void;
   onShowAbout?: () => void;
   onShowWhatsNew?: () => void;
+  /** Opens the scheduled backups dialog. Works with nothing connected: schedules name saved profiles. */
+  onScheduledBackups?: () => void;
   onToggleTerminal?: () => void;
   /** The AI Copilot panel is open -> the button takes the accent colour. */
   aiOpen?: boolean;
@@ -96,6 +101,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onNewConnection,
   onDisconnect,
   onNewQuery,
+  onNewNotebook,
   onExportDatabase,
   onImportDatabase,
   onToggleSidebar,
@@ -103,6 +109,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onShowShortcuts,
   onShowAbout,
   onShowWhatsNew,
+  onScheduledBackups,
   onToggleTerminal,
   aiOpen = false,
   onToggleAiAssistant,
@@ -115,6 +122,9 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   onOpenCompare,
 }) => {
   const { t, i18n } = useTranslation();
+  // The vault store lives outside React (utils/vault.ts), so the bar can read it without the state
+  // being lifted into App and re-rendering every tab on a lock.
+  const vault = useSyncExternalStore(subscribeVault, vaultSnapshot);
   // Cascading menu: the root panel only lists category names; the items of a
   // category live in a submenu that opens to the right on hover.
   const [menuOpen, setMenuOpen] = useState(false);
@@ -369,8 +379,10 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       title: t('titlebar.menuDatabase'),
       items: [
         { label: t('titlebar.newQuery'), Icon: FileCode, onClick: onNewQuery, shortcut: 'Ctrl+T', disabled: !hasConnection },
-        { label: t('titlebar.exportDatabase'), Icon: HardDriveDownload, onClick: onExportDatabase, disabled: !hasConnection, separatorBefore: true },
-        { label: t('titlebar.importDatabase'), Icon: HardDriveUpload, onClick: onImportDatabase, disabled: !hasConnection },
+        { label: t('notebook.newNotebook'), Icon: NotebookPen, onClick: onNewNotebook, disabled: !hasConnection || !onNewNotebook },
+        { label: t('titlebar.exportDatabase'), Icon: HardDriveDownload, onClick: onExportDatabase, disabled: !hasConnection || !onExportDatabase, separatorBefore: true },
+        { label: t('titlebar.importDatabase'), Icon: HardDriveUpload, onClick: onImportDatabase, disabled: !hasConnection || !onImportDatabase },
+        { label: t('titlebar.scheduledBackups'), Icon: CalendarClock, onClick: onScheduledBackups, separatorBefore: true },
       ],
     },
     {
@@ -625,7 +637,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         el: (
           <button
             className="tb-capsule-btn"
-            disabled={!hasConnection}
+            disabled={!hasConnection || !onOpenCompare}
             onClick={onOpenCompare}
             title={t('titlebar.schemaCompare')}
           >
@@ -654,8 +666,31 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         ),
       },
     ],
-    // Group 2: system utilities (Shortcuts and Reload)
+    // Group 2: system utilities (Lock the vault, Shortcuts and Reload)
     [
+      // "Lock now" lived only inside the Master Password dialog, which is only reachable from the
+      // Connection Manager — so the one moment locking is worth a click, while connected and about to
+      // step away, was the one moment it could not be done without disconnecting first.
+      //
+      // Deliberately NOT `offline`: the connection screen already has a KeyRound button (the
+      // Master Password settings, next to import/export), and a second, identical key here that
+      // does something else — lock at once — was two look-alike buttons with different meanings on
+      // one screen. There, locking is one more click, through that dialog's own "Lock now".
+      //
+      // `KeyRound`, the dialog's own icon, rather than a padlock: the padlock in the LEFT cluster is
+      // Safe Mode / read-only, and two padlocks in one bar is exactly the confusion SafeModeControl
+      // was built to end. Hidden entirely when there is no vault — nothing to lock — and while
+      // locked, where `LockScreen` covers the window anyway.
+      ...(vault.enabled && !isVaultLocked(vault)
+        ? [{
+            key: 'vault-lock',
+            el: (
+              <button className="tb-capsule-btn" onClick={() => void lockVault()} title={t('vault.lockNow')}>
+                <KeyRound size={13} />
+              </button>
+            ),
+          }]
+        : []),
       {
         key: 'shortcuts',
         offline: true,
@@ -694,10 +729,13 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       {/* Center Status Capsule: Merged Connection Info + Speed Status Pill into 1 single capsule */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0, justifyContent: 'center' }}>
         {hasConnection && (
+          // No `maxWidth` in the style below any more: it overrode the stylesheet's own cap with a
+          // bigger one, which is the kind of two-sources-of-truth that made the capsule wider than
+          // anyone had asked for. The cap lives in `.tb-status-capsule`.
           <button
             type="button"
             className="tb-status-capsule"
-            style={{ margin: 0, gap: '10px', justifyContent: 'center', maxWidth: '750px', padding: '0 14px' }}
+            style={{ margin: 0, gap: '10px', justifyContent: 'center', padding: '0 14px' }}
             onClick={handleOpenConnPopover}
             title={t('connInfo.openTitle')}
           >
@@ -713,7 +751,10 @@ export const TitleBar: React.FC<TitleBarProps> = ({
                 }}
               />
             )}
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {/* `minWidth: 0` for the same reason the capsule has it: without it this flex item
+                refuses to go below its own min-content, so the text is clipped by the capsule's
+                `overflow: hidden` and the ellipsis never appears. */}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
               {statusLine}
             </span>
             <div style={{ height: '12px', width: '1px', background: 'var(--win-border)', opacity: 0.6, flexShrink: 0 }} />
@@ -728,11 +769,15 @@ export const TitleBar: React.FC<TitleBarProps> = ({
             toolbar. See TxControl.tsx. */}
         {/* Background jobs: placed here for the same reason as TxControl. See JobsTray.tsx. */}
         <JobsTray />
-        <TxControl
-          connected={hasConnection}
-          connId={connId || ""}
-          dbType={(connStatus?.dbType || activeConnectionInfo?.dbType || "").toLowerCase()}
-        />
+        {/* DuckDB has no manual-transaction mode: the backend never pins it, so the switch
+            would show "manual" while every statement still committed on its own. */}
+        {dbCaps((connStatus?.dbType || activeConnectionInfo?.dbType || '').toLowerCase()).tx && (
+          <TxControl
+            connected={hasConnection}
+            connId={connId || ""}
+            dbType={(connStatus?.dbType || activeConnectionInfo?.dbType || "").toLowerCase()}
+          />
+        )}
         {renderCapsuleGroups(rightToolGroups)}
 
         {!isMac && (

@@ -108,6 +108,14 @@ export function collectTableRefs(statement: string): TableRef[] {
   const re = new RegExp(TABLE_REF_SOURCE, 'gi');
   let m: RegExpExecArray | null;
   while ((m = re.exec(statement)) !== null) {
+    // `FROM read_parquet('x.parquet')` / `FROM generate_series(1, 10)`: a name followed by `(` is a
+    // table FUNCTION, not a table. Reported as one, `inspection.ts` looked it up in the catalog and
+    // underlined every DuckDB query over a file as "unknown table".
+    const nameEnd = m.index + m[0].indexOf(m[1]) + m[1].length;
+    if (/^\s*\(/.test(statement.slice(nameEnd))) {
+      re.lastIndex = nameEnd;
+      continue;
+    }
     const table = (m[1] || '').replace(/[`"[\]]/g, '').split('.').pop() || '';
     if (!table) continue;
     out.push({ table, alias: m[2] || undefined });
@@ -891,3 +899,15 @@ export function applyLimitToSql(sqlText: string, limitOption: string): string {
   return modified ? newStmts.join('\n\n') : sqlText;
 }
 
+
+/** The statements read-only mode lets through (SQL editor and notebook alike). */
+const READ_ONLY_PREFIXES = ['SELECT', 'SHOW', 'EXPLAIN', 'DESCRIBE', 'DESC', 'PRAGMA', 'WITH'];
+export function isReadOnlySql(text: string): boolean {
+  // Shares the editor's splitter: a ';' inside a string, a comment or a dollar-quoted block, and a
+  // statement terminator changed by DELIMITER, are all handled correctly (a hand-rolled split(';')
+  // would misjudge those scripts).
+  return splitStatements(text).every(stmt => {
+    const first = stmt.text.split(/\s+/)[0].toUpperCase();
+    return READ_ONLY_PREFIXES.includes(first);
+  });
+}

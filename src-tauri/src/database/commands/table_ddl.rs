@@ -30,6 +30,7 @@ pub async fn create_table(conn_id: String, payload: Value) -> Result<Value, Stri
             DbKind::Sqlite(_) => "sqlite",
             DbKind::Postgres(_) => "postgres",
             DbKind::Mysql(_) => "mysql",
+            DbKind::DuckDb(_) => return Err(crate::database::DUCK_UNSUPPORTED.to_string()),
         };
         let q = if db_type == "mysql" { '`' } else { '"' };
         // Without qualifying it the new table lands in the first schema of search_path, not the selected schema.
@@ -334,6 +335,7 @@ pub async fn truncate_table(
 
         // The mandatory statement + a "best effort" statement to run afterwards (its failure does not count as a failure).
         let (sql, optional): (String, Option<String>) = match &conn_type.kind {
+            DbKind::DuckDb(_) => return Err(crate::database::DUCK_UNSUPPORTED.to_string()),
             DbKind::Mysql(_) => (
                 format!("TRUNCATE TABLE {}", quoted),
                 match (restart_identity, keep_auto_inc) {
@@ -394,6 +396,10 @@ pub async fn get_table_definition(conn_id: String, name: String) -> Result<Value
     let sch = sql_str(&pg_schema_of(&schema));
 
     let ddl: String = match &conn_type.kind {
+        DbKind::DuckDb(arc) => {
+            let n = name.clone();
+            crate::database::duck_blocking(arc, move |c| crate::database::duck_definition_on(c, &n)).await?
+        }
         DbKind::Sqlite(conn_arc) => {
             let conn = conn_arc.lock().map_err(|e| e.to_string())?;
             let mut stmt = conn.prepare("SELECT sql FROM sqlite_master WHERE type IN ('table','view') AND name = ?")

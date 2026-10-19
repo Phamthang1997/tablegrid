@@ -35,7 +35,7 @@ export const QueryParamsConfigModal: React.FC<QueryParamsConfigModalProps> = ({
       <ModalBody>
         {/* Enable Checkbox */}
         <div style={{
-          background: 'rgba(0,0,0,0.1)',
+          background: 'var(--win-bg-code)',
           padding: '12px',
           borderRadius: '6px',
           border: '1px solid var(--win-border)'
@@ -84,7 +84,7 @@ export const QueryParamsConfigModal: React.FC<QueryParamsConfigModalProps> = ({
               />
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 600, color: 'var(--win-text-primary)' }}>
-                  <code style={{ background: 'rgba(255,255,255,0.08)', padding: '2px 6px', borderRadius: '3px', fontFamily: 'var(--win-font-mono)' }}>
+                  <code style={{ background: 'var(--win-bg-hover)', padding: '2px 6px', borderRadius: '3px', fontFamily: 'var(--win-font-mono)' }}>
                     {p.label}
                   </code>
                 </div>

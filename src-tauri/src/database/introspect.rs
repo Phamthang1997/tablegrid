@@ -79,6 +79,12 @@ pub(crate) async fn get_primary_key_columns(
                 Err(_) => Vec::new(),
             }
         }
+        DbKind::DuckDb(arc) => {
+            let t = table.to_string();
+            super::duck_blocking(arc, move |c| Ok(super::duck_primary_key_on(c, &t)))
+                .await
+                .unwrap_or_default()
+        }
     }
 }
 
@@ -97,6 +103,8 @@ pub(crate) async fn list_databases_inner(
         DbKind::Postgres(_) => "SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname".to_string(),
         DbKind::Mysql(_) => "SHOW DATABASES".to_string(),
         DbKind::Sqlite(_) => return Ok(json!({ "success": true, "databases": [] })), // SQLite: 1 file = 1 DB
+        // Same as SQLite: one file is one database.
+        DbKind::DuckDb(_) => return Ok(json!({ "success": true, "databases": [] })),
     };
     let results = execute_raw_sql_generic(&conn_type, sql).await?;
     let mut databases = all_string_values(&results);
@@ -167,6 +175,7 @@ pub(crate) async fn get_tables_inner(
                 }));
             }
         }
+        DbKind::DuckDb(arc) => tables = super::duck_blocking(&arc, super::duck_tables_on).await?,
     }
 
     Ok(json!({ "success": true, "tables": tables }))
@@ -202,6 +211,9 @@ pub(crate) async fn get_table_schema_inner(
     let pk_cols = get_primary_key_columns(&conn_type, &schema, &name).await;
 
     match &conn_type.kind {
+        DbKind::DuckDb(arc) => {
+            return super::duck_blocking(arc, move |c| super::duck_table_schema_on(c, &name)).await;
+        }
         DbKind::Sqlite(conn_arc) => {
             let conn = conn_arc.lock().map_err(|e| e.to_string())?;
             let sql = format!("PRAGMA table_info(\"{}\")", name);
@@ -324,7 +336,13 @@ pub(crate) async fn get_table_schema_inner(
 
             // The list of Postgres indexes
             let idx_sql = format!(
-                "SELECT i.relname AS index_name, ix.indisunique AS is_unique, ix.indisprimary AS is_primary, am.amname AS index_method, pg_get_indexdef(ix.indexrelid) AS index_def
+                // The key columns are asked for one by one (`pg_get_indexdef(oid, k, true)`) rather
+                // than cut out of the whole definition: the text inside its last parentheses is the
+                // `WITH (m='16')` of an HNSW index, the `WHERE (…)` of a partial one or the
+                // `INCLUDE (…)` list, and the opclass (`embedding vector_cosine_ops`) rides along.
+                "SELECT i.relname AS index_name, ix.indisunique AS is_unique, ix.indisprimary AS is_primary, am.amname AS index_method,
+                        (SELECT string_agg(pg_get_indexdef(ix.indexrelid, k, true), ', ' ORDER BY k)
+                           FROM generate_series(1, ix.indnkeyatts) AS k) AS index_keys
                  FROM pg_class t
                  JOIN pg_index ix ON t.oid = ix.indrelid
                  JOIN pg_class i ON i.oid = ix.indexrelid
@@ -342,17 +360,7 @@ pub(crate) async fn get_table_schema_inner(
                     let unique: bool = r.get(1);
                     let is_primary: bool = r.get(2);
                     let method: String = r.get(3);
-                    let index_def: String = r.get(4);
-
-                    let columns_str = if let Some(start) = index_def.rfind('(') {
-                        if let Some(end) = index_def.rfind(')') {
-                            index_def[start + 1..end].to_string()
-                        } else {
-                            "".to_string()
-                        }
-                    } else {
-                        "".to_string()
-                    };
+                    let columns_str: String = r.get::<Option<String>, _>(4).unwrap_or_default();
 
                     indexes.push(json!({
                         "name": idx_name,
@@ -550,6 +558,9 @@ pub(crate) async fn get_temporary_tables_inner(
         DbKind::Mysql(_) => "SELECT NAME AS name, 'table' AS type, '' AS `schema` \
              FROM INFORMATION_SCHEMA.INNODB_TEMP_TABLE_INFO"
             .to_string(),
+        // Not listed yet: a DuckDB temp table lives in the `temp` catalog, which every other
+        // DuckDB read here is scoped away from.
+        DbKind::DuckDb(_) => return Ok(json!({ "success": true, "tables": [] })),
         DbKind::Sqlite(_) => "SELECT name, type, 'temp' AS schema FROM sqlite_temp_master \
              WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name ASC"
             .to_string(),

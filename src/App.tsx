@@ -3,7 +3,18 @@ import { Trans, useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { TitleBar } from './components/TitleBar';
 import { SafeModeGate } from './components/SafeModeGate';
+import { SshHostKeyGate } from './components/SshHostKeyGate';
+import { BackupSchedulesDialog } from './components/BackupSchedulesDialog';
+import { startBackupScheduler } from './utils/backupScheduler';
 import { McpApprovalGate } from './components/McpApprovalGate';
+import { LockScreen } from './components/LockScreen';
+import {
+  isVaultLocked,
+  refreshVaultStatus,
+  startVaultIdleWatch,
+  subscribeVault,
+  vaultSnapshot,
+} from './utils/vault';
 import { ConnectionManager } from './components/ConnectionManager';
 import { Sidebar } from './components/Sidebar';
 import { DbRail } from './components/DbRail';
@@ -22,6 +33,8 @@ const SqlEditor = React.lazy(() =>
   import('./components/SqlEditor').then((m) => ({ default: m.SqlEditor })));
 const ERDiagramTab = React.lazy(() =>
   import('./components/er').then((m) => ({ default: m.ERDiagramTab })));
+// Lazy for the same reason as SqlEditor: the notebook's SQL cells are Monaco editors.
+const NotebookTab = React.lazy(() => import('./components/notebook/NotebookTab'));
 import { LazyEditorFallback } from './components/LazyEditorFallback';
 import { AiAssistant } from './components/AiAssistant';
 import { TerminalPanel } from './components/TerminalPanel';
@@ -46,36 +59,42 @@ import {
 /** Six Redis tool tab types for quick lookup in render branch. */
 const REDIS_TOOL_TAB_TYPES = new Set<string>(REDIS_TOOL_TABS);
 import { ImportFilePicker } from './components/ImportFilePicker';
+import { ImportTableDataDialog } from './components/ImportTableDataDialog';
+import type { FileDetect } from './utils/tableImport';
 import { ExportTableDialog } from './components/ExportTableDialog';
 import { ExportDatabaseDialog } from './components/ExportDatabaseDialog';
 import type { DatabaseExportOptions } from './components/ExportDatabaseDialog';
 import { ImportDatabaseDialog } from './components/ImportDatabaseDialog';
+import { CopyDatabaseDialog } from './components/CopyDatabaseDialog';
+import type { CopyDatabaseOptions } from './components/CopyDatabaseDialog';
 import { DocViewerModal } from './components/DocViewerModal';
-import { WhatsNewModal, WHATS_NEW_STORAGE_KEY, WHATS_NEW_AUTO_SHOW_KEY } from './components/WhatsNewModal';
+import { WhatsNewModal, WHATS_NEW_RELEASE, WHATS_NEW_STORAGE_KEY, WHATS_NEW_AUTO_SHOW_KEY } from './components/WhatsNewModal';
 import { X } from 'lucide-react';
 import { getVersion } from '@tauri-apps/api/app';
 import { PostgresIcon, MySqlIcon, RedisIcon, SqliteIcon } from './components/DbIcons';
 import { dbHelper, activeConnId, setActiveConnId } from './utils/dbHelper';
 import { installCloseGuard } from './utils/closeGuard';
 import { startJob } from './utils/jobs';
-import { makeRestoreReporter } from './utils/restoreProgress';
+import { withJobConnection } from './utils/jobConnection';
+import { approveJob, connKeyOfConn, type JobApproval } from './utils/safeMode';
+import { makeRestoreReporter, restoreCancelledResult } from './utils/restoreProgress';
 import { isProduction, normalizeEnv, type ConnEnv } from './utils/connEnv';
 import type { DbConnectionConfig } from './utils/dbHelper';
 import { invalidateCatalog } from './sql/catalog';
-import { splitStatements } from './sql/statements';
 import { connKey, scopeKey, tabsStorageKey, tabsStorageKeyCandidates } from './utils/connKey';
+import { dbCaps, isFileDb } from './utils/dbCaps';
 import { connectSavedProfile } from './utils/connectProfile';
 import { readMcpPrefs } from './utils/mcpPrefs';
 import type { SavedProfile } from './components/ConnectionManager';
 import { updateProfileDisplay } from './utils/connectionProfiles';
 import { applyProgressStyle, getProgressStyle } from './utils/progressStyle';
-import { parseXlsx } from './utils/xlsxReader';
-import { collectColumns, inferColType } from './utils/importPreview';
 import { addExistsHint } from './utils/dumpPreview';
-import { ProgressBar, type ProgressState } from './components/ProgressBar';
-import { buildDatabaseFile } from './utils/exportHelper';
-import { buildDump, readTableRows, dumpReaderFor } from './utils/dumpBuilder';
-import { gzipText, saveExportFile } from './utils/fileSave';
+import type { ProgressState } from './components/ProgressBar';
+import { buildDatabaseFile, createDatabaseJsonWriter, createTableFileWriter } from './utils/exportHelper';
+import { buildDump, readTablePages, readTableRows, dumpReaderFor, writeDump, type DumpSpec } from './utils/dumpBuilder';
+import { withMasking } from './utils/masking';
+import { maskThroughBackend } from './utils/useMasking';
+import { saveDumpToFolder, saveExportFile, saveStreamedToFolder } from './utils/fileSave';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { Modal, ModalBody, ModalFooter } from './components/Modal';
 import type { XlsxSheet } from './utils/xlsxWriter';
@@ -106,6 +125,8 @@ interface QueryTabPanelProps {
   theme: 'dark' | 'light';
   readOnly: boolean;
   onPatch: (id: string, patch: Partial<TabInfo>) => void;
+  /** A notebook read from a file opens in a tab of its own. */
+  onOpenNotebook: (cells: unknown[], title?: string) => void;
 }
 
 const QueryTabPanel = React.memo(function QueryTabPanel(props: QueryTabPanelProps) {
@@ -131,6 +152,19 @@ const QueryTabPanel = React.memo(function QueryTabPanel(props: QueryTabPanelProp
       }
     >
       <Suspense fallback={<LazyEditorFallback />}>
+        {tab.type === 'notebook' ? (
+          <NotebookTab
+            connId={props.connId}
+            dbType={props.dbType}
+            theme={props.theme}
+            readOnly={props.readOnly}
+            connReadOnly={props.connReadOnly}
+            title={tab.label}
+            initialCells={tab.cells}
+            onCellsChange={(cells) => onPatch(tab.id, { cells })}
+            onOpenNotebook={props.onOpenNotebook}
+          />
+        ) : (
         <SqlEditor
           connId={props.connId}
           isProdConn={props.isProdConn}
@@ -148,14 +182,13 @@ const QueryTabPanel = React.memo(function QueryTabPanel(props: QueryTabPanelProp
           onSql2Change={(val) => onPatch(tab.id, { sql2: val } as any)}
           onSplitModeChange={(val) => onPatch(tab.id, { splitMode: val } as any)}
           onEditorHeightChange={(val) => onPatch(tab.id, { customEditorHeight: val } as any)}
+          historyTabId={tab.id}
         />
+        )}
       </Suspense>
     </div>
   );
 });
-
-/** Rows per batch when importing into an existing table, so progress can be reported. */
-const IMPORT_BATCH_SIZE = 500;
 
 /**
  * Has the MCP autostart attempt already been made this run?
@@ -165,61 +198,8 @@ const IMPORT_BATCH_SIZE = 500;
  */
 let mcpAutoStarted = false;
 
-function parseCSV(text: string): string[][] {
-  const result: string[][] = [];
-  let row: string[] = [];
-  let cell = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const nextChar = text[i + 1];
-
-    if (inQuotes) {
-      if (char === '"') {
-        if (nextChar === '"') {
-          cell += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        cell += char;
-      }
-    } else {
-      if (char === '"') {
-        inQuotes = true;
-      } else if (char === ',' || char === '\t') {
-        row.push(cell.trim());
-        cell = '';
-      } else if (char === '\n' || char === '\r') {
-        if (char === '\r' && nextChar === '\n') {
-          i++;
-        }
-        row.push(cell.trim());
-        if (row.length > 1 || row[0] !== '') {
-          result.push(row);
-        }
-        row = [];
-        cell = '';
-      } else {
-        cell += char;
-      }
-    }
-  }
-
-  if (cell !== '' || row.length > 0) {
-    row.push(cell.trim());
-    result.push(row);
-  }
-
-  return result;
-}
-
 export const App: React.FC = () => {
-  const { t, i18n } = useTranslation();
-  const locale = i18n.language;
-  const fmtNum = (n: number) => n.toLocaleString(locale);
+  const { t } = useTranslation();
 
   const [connection, setConnection] = useState<{
     /**
@@ -234,12 +214,14 @@ export const App: React.FC = () => {
      */
     connId: string;
     dbName: string;
-    dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+    dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
     // Postgres only: the schema every command reads and writes through. Comes from the backend
     // (`current_schema()` on connect, the picker afterwards), never guessed here — it is part of
     // the localStorage scope, so a value the backend disagrees with would key tabs wrongly.
     schema?: string | null;
   } | null>(null);
+  /** What the connection on screen can do — gates the tools offered for it (utils/dbCaps.ts). */
+  const connCaps = dbCaps(connection?.dbType);
   // The active connection config (SSH included) for the Terminal to inherit -> a shell on the right host/VM
   const [activeConnConfig, setActiveConnConfig] = useState<DbConnectionConfig | null>(null);
   /** The `conn_id` of the connection on screen. Minted by the backend, caught by `dbHelper` from `connect()`. */
@@ -261,6 +243,17 @@ export const App: React.FC = () => {
   React.useEffect(() => {
     activeConnIdRef.current = activeConnIdState;
   }, [activeConnIdState]);
+
+  /**
+   * The master password. Asked for once at startup — the backend may already have unlocked itself
+   * from this machine's device key during `app/setup.rs`, so the answer decides whether the lock
+   * overlay appears at all.
+   */
+  const vault = React.useSyncExternalStore(subscribeVault, vaultSnapshot);
+  React.useEffect(() => {
+    void refreshVaultStatus();
+    return startVaultIdleWatch();
+  }, []);
   /**
    * Every open connection, with the config it was opened from.
    *
@@ -273,7 +266,7 @@ export const App: React.FC = () => {
     {
       connId: string;
       config: DbConnectionConfig | null;
-      dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis';
+      dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis';
       profileName: string;
       /** The colour label, purely decorative. */
       color: string;
@@ -326,19 +319,8 @@ export const App: React.FC = () => {
   // Exporting one table (from the Sidebar's context menu) — the same dialog as the Export button under the grid
   const [exportTableTarget, setExportTableTarget] = useState<string | null>(null);
 
-  const [globalImportSqlMode, setGlobalImportSqlMode] = useState<'both' | 'structure' | 'data'>('both');
-
-  const [showGlobalImportModal, setShowGlobalImportModal] = useState(false);
-  const [globalImportFileName, setGlobalImportFileName] = useState('');
-  const [globalImportTableName, setGlobalImportTableName] = useState('');
-  const [globalImportFileType, setGlobalImportFileType] = useState<'csv' | 'json' | 'sql'>('csv');
-  const [globalImportPendingRows, setGlobalImportPendingRows] = useState<any[]>([]);
-  const [globalImportSqlContent, setGlobalImportSqlContent] = useState('');
-  const [globalImportLoading, setGlobalImportLoading] = useState(false);
+  // The table the Sidebar's "Import data" targets; null imports into a NEW table.
   const [globalImportTargetTable, setGlobalImportTargetTable] = useState<string | null>(null);
-  const [globalImportTab, setGlobalImportTab] = useState<'structure' | 'data'>('structure');
-  const [globalImportProgress, setGlobalImportProgress] = useState<ProgressState | null>(null);
-  const globalImportCols = React.useMemo(() => collectColumns(globalImportPendingRows), [globalImportPendingRows]);
   const [showSidebar, setShowSidebar] = useState(true);
   const [showAbout, setShowAbout] = useState(false);
   // Reads the real version from tauri.conf.json rather than hardcoding it in JSX, which drifts the
@@ -371,13 +353,17 @@ export const App: React.FC = () => {
     });
   }, []);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showBackupSchedules, setShowBackupSchedules] = useState(false);
+  // The scheduled backups' clock. Here and only here: the standalone terminal window has its own
+  // root, and starting it there too would run every backup once per open window.
+  React.useEffect(() => startBackupScheduler(), []);
   const [showDocModal, setShowDocModal] = useState(false);
   const [docQuery] = useState('');
   const [showWhatsNew, setShowWhatsNew] = useState<boolean>(() => {
     const autoShow = localStorage.getItem(WHATS_NEW_AUTO_SHOW_KEY);
     if (autoShow === 'false') return false;
     const seen = localStorage.getItem(WHATS_NEW_STORAGE_KEY);
-    return !seen;
+    return seen !== WHATS_NEW_RELEASE;
   });
 
   React.useEffect(() => {
@@ -412,77 +398,20 @@ export const App: React.FC = () => {
     setExportTableTarget(tableName);
   };
 
-  // Takes the file from ImportFilePicker (which already checked the extension) and parses it for the preview.
-  const handleGlobalFileImport = async (file: File) => {
-    setShowGlobalImportPicker(false);
-    setGlobalImportTab('structure');
-    setGlobalImportFileName(file.name);
-    const guessedTableName = file.name.split('.')[0].replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
-    setGlobalImportTableName(guessedTableName);
+  // Rows from a file go to the mapping dialog — the same one DataGrid opens — into the target table
+  // or, with none, into a new table it creates. A .sql file or a dump is statements, not rows: it
+  // opens the Import Database tab on that file, which streams it from disk. The file is a PATH in
+  // every case; this used to read it whole into the webview (and the .sql text into a textarea),
+  // which is what a large file crashed.
+  const [importIntoTable, setImportIntoTable] = useState<{ table: string | null; path: string } | null>(null);
 
-    // XLSX is binary -> read an ArrayBuffer and parse it separately, never through FileReader.readAsText.
-    if (file.name.toLowerCase().endsWith('.xlsx')) {
-      try {
-        const buf = await file.arrayBuffer();
-        const rows = await parseXlsx(buf);
-        if (rows.length === 0) throw new Error(t('dataGrid.errXlsxEmpty'));
-        setGlobalImportFileType('json'); // object-shaped rows, sharing the DB-write branch with CSV/JSON
-        setGlobalImportPendingRows(rows);
-        setShowGlobalImportModal(true);
-      } catch (err: any) {
-        alert(t('dataGrid.errReadFile', { message: err.message }));
-      }
+  const handleGlobalFileImport = (path: string, detected: FileDetect) => {
+    setShowGlobalImportPicker(false);
+    if (detected.kind === 'sql') {
+      openImportDbWithFile(path);
       return;
     }
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const text = event.target?.result as string;
-
-        if (file.name.endsWith('.json')) {
-          const parsedJson = JSON.parse(text);
-          if (!Array.isArray(parsedJson)) {
-            throw new Error(t('dataGrid.errJsonArray'));
-          }
-          setGlobalImportFileType('json');
-          setGlobalImportPendingRows(parsedJson);
-          setShowGlobalImportModal(true);
-        } else if (file.name.endsWith('.csv')) {
-          let cleanText = text;
-          if (cleanText.charCodeAt(0) === 0xFEFF) {
-            cleanText = cleanText.substring(1);
-          }
-          const parsedCsv = parseCSV(cleanText);
-          if (parsedCsv.length < 2) {
-            throw new Error(t('dataGrid.errCsvEmpty'));
-          }
-          const headers = parsedCsv[0];
-          const rowsToImport: any[] = [];
-          for (let i = 1; i < parsedCsv.length; i++) {
-            const values = parsedCsv[i];
-            const row: any = {};
-            headers.forEach((h, idx) => {
-              const val = values[idx];
-              row[h] = val === undefined || val === '' ? null : val;
-            });
-            rowsToImport.push(row);
-          }
-          setGlobalImportFileType('csv');
-          setGlobalImportPendingRows(rowsToImport);
-          setShowGlobalImportModal(true);
-        } else if (file.name.endsWith('.sql')) {
-          setGlobalImportFileType('sql');
-          setGlobalImportSqlContent(text);
-          setShowGlobalImportModal(true);
-        } else {
-          throw new Error(t('dataGrid.errUnsupportedFile'));
-        }
-      } catch (err: any) {
-        alert(t('dataGrid.errReadFile', { message: err.message }));
-      }
-    };
-    reader.readAsText(file);
+    setImportIntoTable({ table: globalImportTargetTable, path });
   };
 
   /**
@@ -499,7 +428,7 @@ export const App: React.FC = () => {
     // Fixed at submit time: if the user switches connection while the job runs, the job still reads
     // the place it was given. `connId` is already a (server, database) pair, so it doubles as the
     // exclusivity key — see jobs.ts.
-    const jobConnId = activeConnIdState;
+    const sourceConnId = activeConnIdState;
     const dbType = connection?.dbType || 'sqlite';
     const schema = connection?.schema;
     const dbLabel = connection?.dbName || opts.filename;
@@ -508,19 +437,86 @@ export const App: React.FC = () => {
       kind: 'dump',
       title: t('jobs.titleExport', { n: dbLabel }),
       db: connection?.dbName || '',
-      lockKey: `${jobConnId}|${connection?.dbName || ''}`,
-      run: async (ctx) => {
-        const report = (p: ProgressState | null) => ctx.report(p);
+      conn: connKeyOfConn(sourceConnId),
+      lockKey: `${sourceConnId}|${connection?.dbName || ''}`,
+      // A connection of its own: an export reading through the user's id would read through their
+      // manual transaction, i.e. dump rows they have not committed. Read-only, so no approval.
+      run: (ctx) => withJobConnection(sourceConnId, [], async ({ connId: jobConnId }) => {
+        // Throwing from the progress callback is what stops a dump between two pages.
+        const report = (p: ProgressState | null) => {
+          ctx.throwIfCancelled();
+          ctx.report(p);
+        };
         const totalTables = opts.tables.length;
 
         // Data (XLSX/JSON/CSV): the file is built client-side.
+        // JSON, and CSV of a single table, stream straight into the file a page at a time — the
+        // same as the SQL dump below. XLSX and a multi-table CSV (a .zip) are archives whose index
+        // comes last, so those two are still built in memory.
+        const streamFormat =
+          opts.format === 'json' ? 'json' : opts.format === 'csv' && opts.tables.length === 1 ? 'csv' : null;
+        if (streamFormat) {
+          const reader = withMasking(dumpReaderFor(dbHelper, jobConnId), opts.masking, maskThroughBackend);
+          const csv = streamFormat === 'csv';
+          // Name and type from the in-memory builder, so both paths name the file the same way.
+          const target = buildDatabaseFile(
+            csv ? [{ name: opts.tables[0], colNames: [], rows: [] }] : [],
+            streamFormat,
+            opts.filename,
+          );
+          const colsOf = async (table: string) =>
+            ((await dbHelper.getTableSchema(jobConnId, table)).columns || []).map((c) => c.name);
+
+          const saved = await saveStreamedToFolder(
+            opts.dir,
+            target.name,
+            { gzip: false, mime: target.mime },
+            async (emit) => {
+              const put = async (text: string) => {
+                if (text) await emit(text);
+              };
+              if (csv) {
+                const table = opts.tables[0];
+                const writer = createTableFileWriter('csv', table, await colsOf(table), dbType);
+                await readTablePages(reader, table, 0, 1, report, (rows) => put(writer.page(rows)));
+                await put(writer.finish());
+                return;
+              }
+              const writer = createDatabaseJsonWriter();
+              for (let i = 0; i < opts.tables.length; i++) {
+                ctx.throwIfCancelled();
+                await put(writer.table(opts.tables[i]));
+                await readTablePages(reader, opts.tables[i], i, totalTables, report, (rows) => put(writer.page(rows)));
+              }
+              await put(writer.finish());
+            },
+            // No folder to stream into: the in-memory build, then a WebView download.
+            async () => {
+              const sheets: XlsxSheet[] = [];
+              for (let i = 0; i < opts.tables.length; i++) {
+                const table = opts.tables[i];
+                const rows = await readTableRows(reader, table, i, totalTables, report);
+                const cols = await colsOf(table);
+                sheets.push({ name: table, colNames: cols.length ? cols : (rows[0] ? Object.keys(rows[0]) : []), rows });
+              }
+              return buildDatabaseFile(sheets, streamFormat, opts.filename).data as string;
+            },
+          );
+          return {
+            message: t('app.exportedSheets', { n: opts.tables.length, format: opts.format.toUpperCase(), file: target.name }),
+            path: saved.path,
+            dir: saved.dir,
+            viaDownload: saved.savedTo === 'download',
+          };
+        }
+
         if (opts.format !== 'sql') {
           const sheets: XlsxSheet[] = [];
           for (let i = 0; i < opts.tables.length; i++) {
             ctx.throwIfCancelled();
             const table = opts.tables[i];
             const schemaInfo = await dbHelper.getTableSchema(jobConnId, table);
-            const rows = await readTableRows(dumpReaderFor(dbHelper, jobConnId), table, i, totalTables, report);
+            const rows = await readTableRows(withMasking(dumpReaderFor(dbHelper, jobConnId), opts.masking, maskThroughBackend), table, i, totalTables, report);
             const colNames = (schemaInfo.columns || []).map(c => c.name);
             const finalCols = colNames.length ? colNames : (rows[0] ? Object.keys(rows[0]) : []);
             sheets.push({ name: table, colNames: finalCols, rows });
@@ -539,7 +535,7 @@ export const App: React.FC = () => {
 
         // SQL: the dump is built in dumpBuilder.ts — shared with Connection Manager's Backup button,
         // so any change to statement order has to be made in exactly ONE place.
-        const sqlText = await buildDump({
+        const dumpSpec: DumpSpec = {
           dbType,
           tables: opts.tables,
           views: opts.views,
@@ -550,20 +546,22 @@ export const App: React.FC = () => {
           // re-importing elsewhere puts everything into whatever schema leads that host's search_path.
           schema,
           onProgress: report,
-        }, dumpReaderFor(dbHelper, jobConnId));
-        ctx.throwIfCancelled();
+        };
+        // Masked when asked: the dump's INSERTs are built from the pages this reader returns.
+        const reader = withMasking(dumpReaderFor(dbHelper, jobConnId), opts.masking, maskThroughBackend);
 
         const ext = opts.compressGzip ? '.sql.gz' : '.sql';
         const base = opts.filename.replace(/\.(sql|sql\.gz|gz)$/i, '');
         const fileName = base + ext;
 
-        report({ label: opts.compressGzip ? t('app.exportCompressing') : t('app.exportWriting') });
-        const payload = opts.compressGzip ? await gzipText(sqlText) : sqlText;
-        const saved = await saveExportFile(
+        // Streamed straight into the file as it is built (and gzipped on the way), so the dump is
+        // never one string in memory; without a folder it falls back to building it in memory.
+        const saved = await saveDumpToFolder(
           opts.dir,
           fileName,
-          payload,
-          opts.compressGzip ? 'application/gzip' : 'text/plain;charset=utf-8'
+          opts.compressGzip,
+          (emit) => writeDump(dumpSpec, reader, emit),
+          () => buildDump(dumpSpec, reader),
         );
 
         return {
@@ -572,150 +570,38 @@ export const App: React.FC = () => {
           dir: saved.dir,
           viaDownload: saved.savedTo === 'download',
         };
-      },
+      }),
     });
 
     return true;
   };
 
-  const extractTableNameFromSql = (sql: string): string | null => {
-    const createMatch = sql.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[`"']?([a-zA-Z0-9_]+)[`"']?)/i);
-    if (createMatch && createMatch[1]) return createMatch[1];
-
-    const dropMatch = sql.match(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:[`"']?([a-zA-Z0-9_]+)[`"']?)/i);
-    if (dropMatch && dropMatch[1]) return dropMatch[1];
-
-    return null;
-  };
-
-  const filterSqlQueries = (sqlText: string, mode: 'both' | 'structure' | 'data'): string => {
-    if (mode === 'both') return sqlText;
-    // splitStatements: the same splitter the SQL editor and Rust's split_sql_statements use (it
-    // knows strings, comments and dollar-quoted blocks). This used to be a third home-made splitter
-    // that only counted quotes, so a comment containing ';' was cut in the wrong place.
-    const queries = splitStatements(sqlText).map((s) => s.text);
-    const filtered = queries.filter(q => {
-      const trimmed = q.trim().toUpperCase();
-      if (!trimmed) return false;
-      const isStructure = trimmed.startsWith('CREATE TABLE') ||
-        trimmed.startsWith('DROP TABLE') ||
-        trimmed.startsWith('ALTER TABLE') ||
-        trimmed.startsWith('CREATE INDEX') ||
-        trimmed.startsWith('CREATE UNIQUE INDEX') ||
-        trimmed.startsWith('DROP INDEX');
-      const isData = trimmed.startsWith('INSERT INTO') ||
-        trimmed.startsWith('UPDATE') ||
-        trimmed.startsWith('DELETE FROM') ||
-        trimmed.startsWith('TRUNCATE TABLE') ||
-        trimmed.startsWith('TRUNCATE') ||
-        trimmed.startsWith('INSERT');
-      if (mode === 'structure') {
-        return isStructure || (!isData && !trimmed.startsWith('REPLACE'));
-      }
-      if (mode === 'data') {
-        return isData || (!isStructure && !trimmed.startsWith('CREATE') && !trimmed.startsWith('DROP') && !trimmed.startsWith('ALTER'));
-      }
-      return true;
-    });
-    return filtered.join(';\n');
-  };
-
-  const confirmGlobalImport = async () => {
-    if (!globalImportTargetTable && !globalImportTableName.trim()) {
-      alert(t('app.errNoTableName'));
-      return;
-    }
-
-    setShowGlobalImportModal(false);
-    setGlobalImportLoading(true);
-    setGlobalImportProgress({
-      label: globalImportFileType === 'sql'
-        ? t('app.importRunningSql')
-        : t('app.importWritingRows', { n: globalImportPendingRows.length }),
-    });
-
-    try {
-      if (globalImportFileType === 'sql') {
-        let filteredSql = filterSqlQueries(globalImportSqlContent, globalImportSqlMode);
-
-        if (globalImportTargetTable) {
-          const originalTable = extractTableNameFromSql(globalImportSqlContent);
-          if (originalTable && originalTable !== globalImportTargetTable) {
-            const escapedOrig = originalTable.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-            const regex = new RegExp(`([\\s\`"'])${escapedOrig}([\\s\`"';(])`, 'gi');
-            filteredSql = filteredSql.replace(regex, `$1${globalImportTargetTable}$2`);
-          }
-        }
-
-        // executeQueryMulti, NOT executeQuery: execute_query sends the whole string to the driver as
-        // ONE statement. A multi-statement .sql file fails with a syntax error at the second
-        // statement on MySQL/Postgres, while SQLite runs only the first and reports success (silent
-        // data loss). executeQueryMulti splits with split_sql_statements and runs them in turn.
-        const res = await dbHelper.executeQueryMulti(activeConnIdState, filteredSql);
-        if (res.success) {
-          alert(t('app.importSqlSuccess'));
-          window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: activeConnIdState } }));
-        } else {
-          alert(t('app.errImportSql', { message: res.error }));
-        }
-      } else if (globalImportTargetTable) {
-        // An existing table: written in batches so real progress can be reported.
-        const table = globalImportTargetTable;
-        const total = globalImportPendingRows.length;
-        let done = 0;
-        let failed: string | null = null;
-        for (let i = 0; i < total; i += IMPORT_BATCH_SIZE) {
-          const batch = globalImportPendingRows.slice(i, i + IMPORT_BATCH_SIZE);
-          const resData = await dbHelper.importTableData(activeConnIdState, table, batch);
-          if (!resData.success) {
-            failed = resData.error || t('app.errImportFailed');
-            break;
-          }
-          done += batch.length;
-          setGlobalImportProgress({
-            label: t('app.importWritingTable', { table }),
-            current: done,
-            total,
-            detail: t('app.importRowsDetail', { done: fmtNum(done), total: fmtNum(total) }),
-          });
-        }
-        if (failed) {
-          alert(done > 0
-            ? t('app.errImportWithProgress', { message: failed, done, total })
-            : t('app.errImport', { message: failed }));
-        } else {
-          alert(t('app.importedRows', { n: done, table }));
-        }
-        window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: activeConnIdState } }));
-      } else {
-        // A new table: the backend creates it and inserts in one call -> indeterminate progress.
-        const resData = await dbHelper.importNewTable(globalImportTableName, globalImportPendingRows);
-        if (resData.success) {
-          alert(t('app.createdAndImported', { table: globalImportTableName }));
-          window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: activeConnIdState } }));
-        } else {
-          alert(t('app.errImport', { message: resData.error }));
-        }
-      }
-    } catch (err: any) {
-      alert(t('common.connectionError', { message: err.message }));
-    } finally {
-      setGlobalImportProgress(null);
-      setGlobalImportLoading(false);
-    }
-  };
-
   // Returns true when the import finished -> ImportDatabaseDialog closes itself.
   // targetDb: the destination database, taken from the file or typed by the user; created if absent.
   const handleImportDatabase = async (
-    sqlText: string,
+    source: { path: string; mysqlScript: boolean },
     tables: string[],
     targetDb: string,
-    continueOnError = false
+    continueOnError: boolean,
+    prepend: string[],
   ): Promise<boolean> => {
     try {
       const wantDb = targetDb.trim();
-      const canManageDb = !!connection && connection.dbType !== 'sqlite';
+      const canManageDb = !!connection && !isFileDb(connection.dbType) && connection.dbType !== 'redis';
+
+      // Safe Mode asks NOW, while the user is in front of the dialog, and before anything is created:
+      // the job may sit in the queue, and a question popping up when it finally starts would be about
+      // an action the user has long moved on from. Same server either way, so the current id answers.
+      let approval: JobApproval;
+      try {
+        approval = await approveJob(
+          'restore_backup',
+          activeConnIdState,
+          t('jobs.approveRestore', { n: wantDb || connection?.dbName || '' }),
+        );
+      } catch {
+        return false;
+      }
 
       // The connection the restore actually runs on, passed explicitly to `restoreBackup`. A local
       // rather than `activeConnIdState`, which is React state and still holds the OLD id inside this
@@ -757,33 +643,43 @@ export const App: React.FC = () => {
       // there. Only the restore itself goes to the background — it is the long part, and the part
       // nobody needs to watch.
       const restoreConnId = targetConnId;
+      const restoreDb = wantDb || connection?.dbName || '';
+      // Set once the job's own connection is open; `onCancel` has to name it.
+      let jobConnId = '';
       startJob({
         kind: 'restore',
-        title: t('jobs.titleRestore', { n: wantDb || connection?.dbName || '' }),
-        db: wantDb || connection?.dbName || '',
+        title: t('jobs.titleRestore', { n: restoreDb }),
+        db: restoreDb,
+        conn: connKeyOfConn(restoreConnId),
         write: true,
-        lockKey: `${restoreConnId}|${wantDb || connection?.dbName || ''}`,
-        run: async (ctx) => {
+        lockKey: `${restoreConnId}|${restoreDb}`,
+        onCancel: () => {
+          if (jobConnId) void dbHelper.cancelRestore(jobConnId);
+        },
+        run: (ctx) => withJobConnection(restoreConnId, [approval], async ({ connId }) => {
           const toProgress = makeRestoreReporter(t);
           const resData = await dbHelper.restoreBackup(
-            sqlText,
+            source,
             tables,
             (msg) => ctx.report(toProgress(msg)),
             continueOnError,
-            restoreConnId,
+            connId,
+            false,
+            prepend,
           );
+          if (resData.cancelled) return restoreCancelledResult(t, resData);
           if (!resData.success) throw new Error(addExistsHint(resData.error || '', false));
 
-          // A `USE <db>` inside the dump changes this connection's database, so the title-bar label
-          // has to follow — but ONLY while the user is still looking at that connection. The job runs
-          // in the background, so by the time it finishes they may have moved to another one, and
-          // overwriting that connection's label would show the name of a database it never opened.
-          if (resData.activeDatabase && activeConnIdRef.current === restoreConnId) {
-            const activeDb = resData.activeDatabase;
-            setConnection(prev => prev ? { ...prev, dbName: activeDb } : null);
-          }
           invalidateCatalog();
           window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: restoreConnId } }));
+
+          // A `USE <db>` inside the dump used to switch the user's connection onto that database. The
+          // restore now runs on the job's own connection, so only THAT one moved — which is right for
+          // a background job (switching the database under a tab the user may be typing in is what
+          // background mode exists to avoid), but the user has to be told where the data went.
+          const usedDb = resData.activeDatabase && resData.activeDatabase !== restoreDb
+            ? t('jobs.restoreUsedDb', { n: resData.activeDatabase })
+            : undefined;
 
           // Skipped statements MUST be reported: a plain "success" while dozens are missing leaves
           // the user believing the database is complete.
@@ -793,17 +689,147 @@ export const App: React.FC = () => {
                 n: resData.statementsCount || 0,
                 failed: resData.failedCount,
               }),
-              warning: (resData.failedSamples || []).map((f) => `• ${f.error}`).join('\n'),
+              warning: [usedDb, ...(resData.failedSamples || []).map((f) => `• ${f.error}`)]
+                .filter(Boolean)
+                .join('\n'),
             };
           }
-          return { message: t('app.importDbSuccess', { n: resData.statementsCount || 0 }) };
-        },
+          return { message: t('app.importDbSuccess', { n: resData.statementsCount || 0 }), warning: usedDb };
+        }, (id) => { jobConnId = id; }),
       });
       return true;
     } catch (e: any) {
       alert(t('app.errImport', { message: e.message }));
       return false;
     }
+  };
+
+  /**
+   * Copy one database into another of the same engine — the export half and the restore half wired
+   * straight together, with no file in between.
+   *
+   * **One job, not two.** The dump is a single string handed to `restore_backup`, so splitting the
+   * read and the write would only give the queue a chance to run something else against the target
+   * between them. It is a WRITE job keyed on the TARGET, which is what makes it exclusive with a
+   * restore or a data generation already running there while leaving the source free.
+   *
+   * Nothing here reads the ambient connection id: `dumpReaderFor` binds every read to the source and
+   * `restoreBackup` takes the target explicitly. That is the whole reason two connections can be in
+   * play at once, and it is also what keeps the job correct after it has sat in the queue — by the
+   * time it runs, the user may be looking at a third connection entirely.
+   */
+  const handleCopyDatabase = async (opts: CopyDatabaseOptions): Promise<boolean> => {
+    // Asked at submit, on the TARGET's server — that is where the writes go. See `approveJob`.
+    let approval: JobApproval;
+    try {
+      approval = await approveJob(
+        'restore_backup',
+        opts.targetConnId,
+        t('jobs.approveCopy', { from: opts.sourceLabel, to: opts.targetLabel }),
+      );
+    } catch {
+      return false;
+    }
+    // The job's connection on the target, once open; cancelling during the write phase names it.
+    let targetJobConnId = '';
+    startJob({
+      kind: 'copy-db',
+      title: t('jobs.titleCopy', { from: opts.sourceLabel, to: opts.targetLabel }),
+      db: opts.targetDb,
+      conn: connKeyOfConn(opts.targetConnId),
+      write: true,
+      lockKey: `${opts.targetConnId}|${opts.targetDb}`,
+      onCancel: () => {
+        if (targetJobConnId) void dbHelper.cancelRestore(targetJobConnId);
+      },
+      run: async (ctx) => {
+        /**
+         * Close the connections the dialog opened for this copy — see `ownedConnIds`.
+         *
+         * In a `finally`, because a failed copy leaves exactly the same connections behind as a
+         * successful one. The active connection is skipped: the new database shows up in the rail
+         * while the job runs, and the user may well have clicked into it — closing what they are
+         * looking at to tidy up after ourselves would be worse than leaving it open.
+         */
+        const releaseOwned = async () => {
+          const ids = opts.ownedConnIds.filter((id) => id !== activeConnIdRef.current);
+          if (ids.length === 0) return;
+          await Promise.all(ids.map((id) => dbHelper.disconnect(id).catch(() => {})));
+        };
+
+        try {
+          // Phase 1 — read the source into a dump, on a connection of the job's own (an export
+          // through the user's id would read through their manual transaction). The dump's own label
+          // ("Exporting table film…") becomes the detail line, so the phase stays legible while the
+          // table name keeps moving.
+          const sqlText = await withJobConnection(opts.sourceConnId, [], ({ connId }) => buildDump({
+            dbType: opts.dbType,
+            tables: opts.tables,
+            views: opts.views,
+            routines: opts.routines,
+            triggers: opts.triggers,
+            events: opts.events,
+            sqlOptions: opts.sqlOptions,
+            // The SOURCE schema, exactly as the export path passes it: it is what the header names and
+            // therefore where the objects land on the target. The dialog warns when the two differ.
+            schema: opts.sourceSchema,
+            onProgress: (p) => {
+              // Throwing here is what stops the dump between two pages.
+              ctx.throwIfCancelled();
+              ctx.report({
+                ...p,
+                label: t('copyDb.phaseRead', { n: opts.sourceLabel }),
+                detail: p.label,
+              });
+            },
+          }, withMasking(dumpReaderFor(dbHelper, connId), opts.masking, maskThroughBackend)));
+          ctx.throwIfCancelled();
+
+          // Phase 2 — replay it onto the target. `runAll` with an empty `tables`: this dump was built
+          // from exactly the chosen objects, so `restore_backup`'s filter can only subtract from it —
+          // it cannot see `film` inside `CREATE SEQUENCE film_film_id_seq`, and dropping that statement
+          // makes the CREATE TABLE behind it fail on a sequence that was never created.
+          const toProgress = makeRestoreReporter(t);
+          const res = await withJobConnection(opts.targetConnId, [approval], ({ connId }) => dbHelper.restoreBackup(
+            sqlText,
+            [],
+            (msg) => ctx.report({ ...toProgress(msg), label: t('copyDb.phaseWrite', { n: opts.targetLabel }) }),
+            opts.continueOnError,
+            connId,
+            true,
+          ), (id) => { targetJobConnId = id; });
+          if (res.cancelled) return restoreCancelledResult(t, res);
+          if (!res.success) throw new Error(res.error || '');
+
+          // The TARGET's catalog changed. `invalidateCatalog` is global, but the event carries the id so
+          // only that connection's sidebar and grid refetch.
+          invalidateCatalog();
+          window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: opts.targetConnId } }));
+
+          const copied =
+            opts.tables.length + opts.routines.length + opts.triggers.length + opts.events.length;
+          // Skipped statements MUST be reported: a plain "done" while dozens are missing leaves the
+          // user believing the target is complete.
+          if (res.failedCount) {
+            return {
+              message: t('copyDb.partial', {
+                target: opts.targetLabel,
+                n: res.statementsCount || 0,
+                failed: res.failedCount,
+              }),
+              warning: (res.failedSamples || []).map((f) => `• ${f.error}`).join('\n'),
+            };
+          }
+          return { message: t('copyDb.done', { n: copied, target: opts.targetLabel }) };
+        } finally {
+          // The ONLY place they are released, so success, failure and cancellation all go through it
+          // once. It runs before the job settles, and the rail redraws on the event behind it.
+          await releaseOwned();
+          window.dispatchEvent(new CustomEvent('database-restored', { detail: { connId: '' } }));
+        }
+      },
+    });
+    return true;
   };
 
   /**
@@ -1030,23 +1056,26 @@ export const App: React.FC = () => {
     }
   }, [tabs, activeTabId, connection, activeConnConfig, activeConnIdState, queryCount, tabGroups]);
 
+  // The window is only resized on the way BACK to the Connection Manager, never on the way into a
+  // connection. `set_app_window_size` starts with `unmaximize()`, and this effect used to run on
+  // every identity change of `connection` — which is every DbRail switch, every quick-switcher
+  // database, every Postgres schema change and every Redis db index — so working in a maximized
+  // window and clicking another connection threw it back to a centered 1280x800.
+  //
+  // Keyed on the boolean rather than on `connection`, and the first run is skipped: a fresh window
+  // is already 1060x680 and centered (`tauri.conf.json`), so resizing at startup could only undo a
+  // maximize the user had just done.
+  const isConnected = !!connection;
+  const wasConnectedRef = React.useRef(isConnected);
   React.useEffect(() => {
-    const applyWindowSize = async () => {
-      try {
-        if (connection) {
-          // Connected to a database: widen the window to 1280 x 800px
-          await invoke('set_app_window_size', { width: 1280, height: 800 });
-        } else {
-          // The Connection Manager screen: shrink back to 1060 x 680px
-          await invoke('set_app_window_size', { width: 1060, height: 680 });
-        }
-      } catch (e) {
-        console.warn('Lỗi thay đổi kích thước cửa sổ qua Rust:', e);
-      }
-    };
-
-    applyWindowSize();
-  }, [connection]);
+    const wasConnected = wasConnectedRef.current;
+    wasConnectedRef.current = isConnected;
+    if (isConnected || !wasConnected) return;
+    // Back on the Connection Manager screen: shrink to 1060 x 680px.
+    invoke('set_app_window_size', { width: 1060, height: 680 }).catch((e) => {
+      console.warn('Lỗi thay đổi kích thước cửa sổ qua Rust:', e);
+    });
+  }, [isConnected]);
 
   // Restores a database's tabs (with the draft SQL inside them). The new key includes host:port so
   // two servers with a same-named database cannot collide; the old key is only ever READ, once, and
@@ -1130,7 +1159,7 @@ export const App: React.FC = () => {
   // Handle successful database connection
   const handleConnect = (
     dbName: string,
-    dbType: 'sqlite' | 'postgres' | 'mysql' | 'redis',
+    dbType: 'sqlite' | 'postgres' | 'mysql' | 'duckdb' | 'redis',
     color?: string,
     config?: DbConnectionConfig,
     profile?: { id: string; name: string; env?: ConnEnv },
@@ -1658,6 +1687,23 @@ export const App: React.FC = () => {
     setQueryCount(queryCount + 1);
   }, [connection?.dbType, handleOpenRedisTool, t, queryCount, tabs, activeConnIdState]);
 
+  // A notebook tab: SQL + note cells (components/notebook). `cells` comes from a .tgnb file when
+  // one is opened; a new notebook starts from the component's own starter cells.
+  const handleNewNotebookTab = React.useCallback((cells?: unknown[], label?: string) => {
+    const tabId = `notebook_${Date.now()}`;
+    const n = tabs.filter((tb) => tb.type === 'notebook').length + 1;
+    const newTab: TabInfo = {
+      id: tabId,
+      type: 'notebook',
+      name: 'Notebook',
+      label: label || t('notebook.tabLabel', { n }),
+      ...(cells ? { cells } : {}),
+    };
+    setTabs([...tabs, { ...newTab, connId: activeConnIdState }]);
+    setActiveTabId(tabId);
+  }, [t, tabs, activeConnIdState]);
+  const handleNewNotebook = React.useCallback(() => handleNewNotebookTab(), [handleNewNotebookTab]);
+
   // Open SQL tab with existing content (e.g. sync script from DB compare dialog)
   const openQueryTabWithSql = React.useCallback((sql: string) => {
     const tabId = `query_${Date.now()}`;
@@ -1988,7 +2034,14 @@ export const App: React.FC = () => {
     setActiveTabId(tabId);
   };
 
+  // From a menu: the tab with no file chosen — including when a request from an earlier pick is
+  // still held, which would otherwise load that file again.
   const handleOpenImportDb = () => {
+    setImportDbRequest(null);
+    openImportDbTab();
+  };
+
+  const openImportDbTab = () => {
     const tabId = `import_db_${activeConnIdState}`;
     const existing = visibleTabs.find((tb) => tb.id === tabId);
     if (existing) {
@@ -2000,6 +2053,49 @@ export const App: React.FC = () => {
       id: tabId,
       connId: activeConnIdState,
       type: 'import-db',
+      name: label,
+      label,
+    };
+    setTabs((prev) => [...prev, newTab]);
+    setActiveTabId(tabId);
+  };
+
+  // A dump picked from a table's Import (Sidebar or DataGrid) opens the same tab with the file
+  // already chosen. Held here rather than in the tab: a tab outlives the session (localStorage), and
+  // reopening the app must not re-read a file picked yesterday. `at` makes picking the same file
+  // twice a new request.
+  const [importDbRequest, setImportDbRequest] = useState<{ connId: string; path: string; at: number } | null>(null);
+  const openImportDbWithFile = (path: string) => {
+    setImportDbRequest({ connId: activeConnIdState, path, at: Date.now() });
+    openImportDbTab();
+  };
+  // DataGrid asks through an event (it has no handle on the tab list). Registered once; the ref
+  // always holds the latest handler.
+  const openImportDbRef = React.useRef(openImportDbWithFile);
+  React.useEffect(() => {
+    openImportDbRef.current = openImportDbWithFile;
+  });
+  React.useEffect(() => {
+    const onOpen = (e: Event) => {
+      const path = (e as CustomEvent).detail?.path;
+      if (typeof path === 'string' && path) openImportDbRef.current(path);
+    };
+    window.addEventListener('open-import-db', onOpen);
+    return () => window.removeEventListener('open-import-db', onOpen);
+  }, []);
+
+  const handleOpenCopyDb = () => {
+    const tabId = `copy_db_${activeConnIdState}`;
+    const existing = visibleTabs.find((tb) => tb.id === tabId);
+    if (existing) {
+      setActiveTabId(tabId);
+      return;
+    }
+    const label = `Copy: ${connection?.dbName || 'Database'}`;
+    const newTab: TabInfo = {
+      id: tabId,
+      connId: activeConnIdState,
+      type: 'copy-db',
       name: label,
       label,
     };
@@ -2055,7 +2151,7 @@ export const App: React.FC = () => {
   React.useEffect(() => {
     queueMicrotask(() => {
       setMountedQueryTabs(prev => {
-        const live = new Set(tabs.filter(tb => tb.type === 'query').map(tb => tb.id));
+        const live = new Set(tabs.filter(tb => tb.type === 'query' || tb.type === 'notebook').map(tb => tb.id));
         const next = new Set<string>();
         for (const id of prev) if (live.has(id)) next.add(id);
         if (activeTabId && live.has(activeTabId)) next.add(activeTabId);
@@ -2116,14 +2212,16 @@ export const App: React.FC = () => {
       onNewConnection={handleNewConnection}
       onDisconnect={handleDisconnect}
       onNewQuery={handleNewQueryTab}
-      onExportDatabase={handleOpenExportDb}
-      onImportDatabase={handleOpenImportDb}
+      onNewNotebook={connection?.dbType === 'redis' ? undefined : handleNewNotebook}
+      onExportDatabase={connCaps.dump ? handleOpenExportDb : undefined}
+      onImportDatabase={connCaps.dump ? handleOpenImportDb : undefined}
       onToggleSidebar={() => setShowSidebar(prev => !prev)}
       onToggleTheme={toggleTheme}
       onShowShortcuts={() => setShowShortcuts(true)}
       onShowAbout={() => setShowAbout(true)}
       onShowWhatsNew={() => setShowWhatsNew(true)}
-      onOpenCompare={handleOpenDbCompare}
+      onScheduledBackups={() => setShowBackupSchedules(true)}
+      onOpenCompare={connCaps.compare ? handleOpenDbCompare : undefined}
       onToggleTerminal={handleOpenTerminal}
       aiOpen={showAi}
       onToggleAiAssistant={() => setShowAi(prev => !prev)}
@@ -2140,16 +2238,26 @@ export const App: React.FC = () => {
           the question still appears wherever the command came from. */}
       <SafeModeGate />
       <McpApprovalGate />
+      {/* Asked from `dbHelper` when an SSH server's key is not trusted (yet) — see `utils/sshHostKeys.ts`. */}
+      <SshHostKeyGate />
+
+      {/* The master-password gate. An overlay ON TOP of the mounted app rather than an early
+          return: every query tab stays mounted so a run's results survive a tab switch, and an idle
+          lock that unmounted the tree would throw that away to protect secrets the backend has
+          already sealed. See `utils/vault.ts`. */}
+      {isVaultLocked(vault) && <LockScreen />}
 
       {/* Adding another connection while one is already open (the rail's `+` button). It reuses
           `ConnectionManager` whole rather than writing a second screen; `handleConnect` already does
-          the right thing (push into `openConns`, then move the workspace to the new connection). */}
+          the right thing (push into `openConns`, then move the workspace to the new connection).
+          `variant="new"` strips it down to "create one": no saved-profile list (the quick switcher
+          lists those), a type picker first, and the profile saved only once Connect succeeds. */}
       {addingConn && connection && (
         <Modal
           title={t('titlebar.newConnection')}
           onClose={() => setAddingConn(false)}
           zIndex={10000}
-          width="min(1100px, 94vw)"
+          width="min(760px, 94vw)"
         >
           {/* `ModalBody` defaults to padding 16 + gap 14 + its own scrolling: right for a form, wrong
               for a two-panel screen. With those defaults the container grows with its content, so the
@@ -2162,6 +2270,7 @@ export const App: React.FC = () => {
             <ConnectionManager
               connId={activeConnIdState}
               embedded
+              variant="new"
               onConnect={(...args) => {
                 setAddingConn(false);
                 handleConnect(...args);
@@ -2227,23 +2336,27 @@ export const App: React.FC = () => {
                 readOnly={readOnly}
                 onSelectTable={handleSelectTable}
                 onNewQuery={handleNewQueryTab}
+                onNewNotebook={handleNewNotebook}
                 onOpenTerminal={handleOpenTerminal}
                 terminalConfig={terminalConfig()}
                 onDisconnect={handleDisconnect}
                 activeTable={activeTable}
                 onImportToTable={handleImportToTableTrigger}
                 onExportTable={handleExportTableTrigger}
-                onExportDatabase={handleOpenExportDb}
-                onImportDatabase={handleOpenImportDb}
-                onImportNewTable={() => { setGlobalImportTargetTable(null); setShowGlobalImportPicker(true); }}
-                onOpenDbInfo={() => handleOpenDbInfo('current')}
-                onOpenProcessMonitor={handleOpenProcessMonitor}
-                onOpenAllDbStats={() => handleOpenDbInfo('all')}
-                onSchemaMigration={handleOpenSchemaMigration}
-                onCompareDatabases={handleOpenDbCompare}
+                // What a connection type cannot do is not offered (utils/dbCaps.ts): an absent handler
+                // hides its entry, rather than showing one that can only answer "not supported".
+                onExportDatabase={connCaps.dump ? handleOpenExportDb : undefined}
+                onImportDatabase={connCaps.dump ? handleOpenImportDb : undefined}
+                onCopyDatabase={connCaps.dump ? handleOpenCopyDb : undefined}
+                onImportNewTable={connCaps.write ? () => { setGlobalImportTargetTable(null); setShowGlobalImportPicker(true); } : undefined}
+                onOpenDbInfo={connCaps.properties ? () => handleOpenDbInfo('current') : undefined}
+                onOpenProcessMonitor={connCaps.processMonitor ? handleOpenProcessMonitor : undefined}
+                onOpenAllDbStats={connCaps.properties ? () => handleOpenDbInfo('all') : undefined}
+                onSchemaMigration={connCaps.compare ? handleOpenSchemaMigration : undefined}
+                onCompareDatabases={connCaps.compare ? handleOpenDbCompare : undefined}
                 onOpenErDiagram={handleOpenErDiagram}
-                onMcpSettings={handleOpenMcpServer}
-                onGenerateData={handleOpenDataGen}
+                onMcpSettings={connCaps.mcp ? handleOpenMcpServer : undefined}
+                onGenerateData={connCaps.dataGen ? handleOpenDataGen : undefined}
                 onTableRenamed={(oldName, newName) => handleTableRenamed(activeConnIdState, oldName, newName)}
                 onTableDropped={handleTableDropped}
                 schema={connection.schema}
@@ -2294,7 +2407,7 @@ export const App: React.FC = () => {
                       {t('app.terminalFloating')}
                     </div>
                   ) : null
-                ) : activeTab.type === 'query' || REDIS_TOOL_TAB_TYPES.has(activeTab.type) ? (
+                ) : activeTab.type === 'query' || activeTab.type === 'notebook' || REDIS_TOOL_TAB_TYPES.has(activeTab.type) ? (
                   // Query tabs and the six Redis tool tabs are all mounted permanently below (like
                   // the terminal), so nothing is rendered here — rendering would rebuild the tab and
                   // lose its results on every switch.
@@ -2316,7 +2429,8 @@ export const App: React.FC = () => {
                         initialViewMode={(activeTab as any).initialViewMode || 'data'}
                         initialFilter={(activeTab as any).initialFilter}
                         tableSchema={(activeTab as any).tableSchema}
-                        readOnly={readOnly}
+                        // DuckDB is read-mostly by design: no grid edits and a read-only structure view.
+                        readOnly={readOnly || !connCaps.write}
                         // The flag is only set for the mounted tab; DataGrid's cleanup always reports
                         // false, which clears the flag rather than leaving a mark on the wrong tab.
                         onDirtyChange={(dirty) => setDirtyTabId(dirty ? activeTab.id : null)}
@@ -2416,6 +2530,7 @@ export const App: React.FC = () => {
                         onClose={() => handleCloseTab(activeTab.id)}
                         onSelectTable={(tableName) => handleSelectTable(tableName)}
                         onDatabaseOpened={handleDatabaseOpened}
+                        onOpenSql={openQueryTabWithSql}
                       />
                     ) : activeTab.type === 'export-db' ? (
                       <ExportDatabaseDialog
@@ -2430,11 +2545,20 @@ export const App: React.FC = () => {
                       <ImportDatabaseDialog
                         key={activeConnIdState + '|' + activeTab.id}
                         currentDb={connection?.dbName}
-                        canManageDatabases={!!connection && connection.dbType !== 'sqlite'}
+                        canManageDatabases={!!connection && !isFileDb(connection.dbType)}
                         dbType={connection?.dbType}
                         asTab={true}
+                        fileRequest={importDbRequest?.connId === activeConnIdState ? importDbRequest : null}
                         onClose={() => handleCloseTab(activeTab.id)}
                         onSubmit={handleImportDatabase}
+                      />
+                    ) : activeTab.type === 'copy-db' ? (
+                      <CopyDatabaseDialog
+                        key={activeConnIdState + '|' + activeTab.id}
+                        connId={activeTab.connId || activeConnIdState}
+                        asTab={true}
+                        onClose={() => handleCloseTab(activeTab.id)}
+                        onSubmit={handleCopyDatabase}
                       />
                     ) : activeTab.type === 'mcp-server' ? (
                       <McpServerSettingsModal
@@ -2449,7 +2573,7 @@ export const App: React.FC = () => {
                 {/* Query tabs: mounted permanently (shown/hidden with CSS) so their results survive a
                     tab switch. Only tabs that have actually been opened are mounted — see
                     mountedQueryTabs. */}
-                {visibleTabs.filter(qt => qt.type === 'query' && mountedQueryTabs.has(qt.id)).map(qt => (
+                {visibleTabs.filter(qt => (qt.type === 'query' || qt.type === 'notebook') && mountedQueryTabs.has(qt.id)).map(qt => (
                   <QueryTabPanel
                     // The scope goes into the key too: a tab id is `query_<timestamp>`, so two
                     // different databases can still collide, and React would then reuse the old
@@ -2466,6 +2590,7 @@ export const App: React.FC = () => {
                     theme={theme}
                     readOnly={readOnly}
                     onPatch={patchTab}
+                    onOpenNotebook={handleNewNotebookTab}
                   />
                 ))}
 
@@ -2558,25 +2683,14 @@ export const App: React.FC = () => {
         onConfirm={handleGlobalFileImport}
       />
 
-      {/* Progress of importing data into a table (the preview modal has closed) */}
-      {globalImportProgress && (
-        <div style={{
-          position: 'fixed',
-          bottom: '16px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 10002,
-          width: '420px',
-          maxWidth: '90vw',
-          display: 'flex',
-          background: 'var(--win-bg-card)',
-          border: '1px solid var(--win-border-strong, var(--win-border))',
-          borderRadius: '6px',
-          boxShadow: '0 12px 30px rgba(0,0,0,0.4)',
-          padding: '10px 12px'
-        }}>
-          <ProgressBar progress={globalImportProgress} />
-        </div>
+      {importIntoTable && (
+        <ImportTableDataDialog
+          connId={activeConnIdState}
+          tableName={importIntoTable.table}
+          dbType={connection?.dbType}
+          path={importIntoTable.path}
+          onClose={() => setImportIntoTable(null)}
+        />
       )}
 
       {/* Export one table — from the Sidebar's context menu, the same dialog as the Export button under the grid */}
@@ -2587,217 +2701,7 @@ export const App: React.FC = () => {
           tableName={exportTableTarget}
           dbType={connection.dbType}
           onClose={() => setExportTableTarget(null)}
-          onSuccess={(msg) => alert(msg)}
-          onError={(msg) => alert(msg)}
         />
-      )}
-
-      {/* Global Import Table Modal (Import New Table) */}
-      {showGlobalImportModal && (
-        <Modal
-          title={globalImportTargetTable
-            ? t('app.importModalTitleExisting', { table: globalImportTargetTable, file: globalImportFileName })
-            : t('app.importModalTitleNew', { file: globalImportFileName })}
-          onClose={() => setShowGlobalImportModal(false)}
-          width="640px"
-          zIndex={9999}
-        >
-          <ModalBody>
-            <div className="form-group">
-              <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--win-text-secondary)' }}>
-                {globalImportTargetTable ? t('app.importTargetExisting') : t('app.importTargetNew')}
-              </label>
-              <input
-                type="text"
-                className="form-input"
-                value={globalImportTargetTable || globalImportTableName}
-                onChange={(e) => !globalImportTargetTable && setGlobalImportTableName(e.target.value)}
-                disabled={!!globalImportTargetTable}
-                placeholder={t('createTable.tableNamePlaceholder')}
-                style={{ height: '30px', fontSize: '11px', background: globalImportTargetTable ? 'var(--win-bg-hover)' : undefined }}
-              />
-            </div>
-
-            {globalImportFileType === 'sql' && (
-              <div className="form-group">
-                <label style={{ fontSize: '11px', fontWeight: 600, color: 'var(--win-text-secondary)', marginBottom: '6px', display: 'block' }}>
-                  {t('app.importSqlPick')}
-                </label>
-                <div style={{ display: 'flex', gap: '16px' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="sqlImportMode"
-                      checked={globalImportSqlMode === 'both'}
-                      onChange={() => setGlobalImportSqlMode('both')}
-                    />
-                    <span>{t('app.importSqlBoth')}</span>
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="sqlImportMode"
-                      checked={globalImportSqlMode === 'structure'}
-                      onChange={() => setGlobalImportSqlMode('structure')}
-                    />
-                    <span>{t('app.importSqlStructure')}</span>
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--win-text-primary)', cursor: 'pointer' }}>
-                    <input
-                      type="radio"
-                      name="sqlImportMode"
-                      checked={globalImportSqlMode === 'data'}
-                      onChange={() => setGlobalImportSqlMode('data')}
-                    />
-                    <span>{t('app.importSqlData')}</span>
-                  </label>
-                </div>
-              </div>
-            )}
-
-            <div>
-              <span style={{ fontSize: '11px', color: 'var(--win-text-secondary)' }}>
-                {globalImportFileType === 'sql' ? (
-                  <span>{t('app.importSqlNote')}</span>
-                ) : (
-                  <span>
-                    <Trans
-                      i18nKey="app.importSummary"
-                      values={{
-                        format: globalImportFileType.toUpperCase(),
-                        rows: globalImportPendingRows.length,
-                        cols: globalImportCols.length,
-                      }}
-                      components={{ strong: <b /> }}
-                    />
-                  </span>
-                )}
-              </span>
-            </div>
-
-            {/* Preview tabs: structure (columns + inferred types) | data (the first 10 rows) */}
-            {globalImportFileType !== 'sql' && (
-              <div style={{ display: 'flex', gap: '4px' }}>
-                {([
-                  { id: 'structure', label: t('app.importTabStructure', { n: globalImportCols.length }) },
-                  { id: 'data', label: t('app.importTabData', { n: globalImportPendingRows.length }) },
-                ] as const).map(tabDef => (
-                  <button
-                    key={tabDef.id}
-                    onClick={() => setGlobalImportTab(tabDef.id)}
-                    style={{
-                      padding: '4px 12px',
-                      fontSize: '11px',
-                      borderRadius: '4px',
-                      border: '1px solid var(--win-border)',
-                      cursor: 'pointer',
-                      background: globalImportTab === tabDef.id ? 'var(--win-accent)' : 'transparent',
-                      color: globalImportTab === tabDef.id ? '#fff' : 'var(--win-text-secondary)',
-                      fontWeight: 600
-                    }}
-                  >
-                    {tabDef.label}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {globalImportFileType === 'sql' ? (
-              <textarea
-                readOnly
-                value={globalImportSqlContent.slice(0, 5000)}
-                style={{
-                  width: '100%',
-                  height: '200px',
-                  background: 'var(--win-bg-window)',
-                  border: '1px solid var(--win-border)',
-                  color: 'var(--win-text-primary)',
-                  fontFamily: 'monospace',
-                  fontSize: '11px',
-                  padding: '10px',
-                  borderRadius: '4px',
-                  resize: 'none'
-                }}
-              />
-            ) : (
-              <div style={{
-                height: '200px',
-                overflow: 'auto',
-                border: '1px solid var(--win-border)',
-                borderRadius: '4px',
-                background: 'var(--win-bg-window)'
-              }}>
-                {globalImportPendingRows.length === 0 ? null : globalImportTab === 'structure' ? (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-                    <thead>
-                      <tr style={{ background: 'var(--win-bg-hover)', borderBottom: '1px solid var(--win-border)' }}>
-                        {[t('app.colInFile'), t('app.colInferredType'), t('app.colSampleValue')].map(h => (
-                          <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, borderRight: '1px solid var(--win-border)' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {globalImportCols.map(col => {
-                        const sample = globalImportPendingRows.find(r => r?.[col] !== null && r?.[col] !== undefined && r?.[col] !== '');
-                        return (
-                          <tr key={col} style={{ borderBottom: '1px solid var(--win-border)' }}>
-                            <td style={{ padding: '6px 8px', borderRight: '1px solid var(--win-border)', fontFamily: 'monospace', color: 'var(--win-text-primary)' }}>{col}</td>
-                            <td style={{ padding: '6px 8px', borderRight: '1px solid var(--win-border)', color: 'var(--win-text-secondary)' }}>{inferColType(globalImportPendingRows, col)}</td>
-                            <td style={{ padding: '6px 8px', color: 'var(--win-text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '260px' }}>
-                              {sample ? String(sample[col]) : '—'}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                ) : (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
-                    <thead>
-                      <tr style={{ background: 'var(--win-bg-hover)', borderBottom: '1px solid var(--win-border)' }}>
-                        {globalImportCols.map(col => (
-                          <th key={col} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, borderRight: '1px solid var(--win-border)' }}>
-                            {col}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {globalImportPendingRows.slice(0, 10).map((row, rIdx) => (
-                        <tr key={rIdx} style={{ borderBottom: '1px solid var(--win-border)' }}>
-                          {globalImportCols.map(col => (
-                            <td key={col} style={{ padding: '6px 8px', color: 'var(--win-text-primary)', borderRight: '1px solid var(--win-border)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '160px' }}>
-                              {row[col] === null || row[col] === undefined
-                                ? <span style={{ color: 'var(--win-text-disabled)', fontStyle: 'italic' }}>NULL</span>
-                                : String(row[col])}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            )}
-          </ModalBody>
-
-          <ModalFooter>
-            <button
-              className="btn btn-secondary"
-              onClick={() => setShowGlobalImportModal(false)}
-            >
-              {t('common.cancel')}
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={confirmGlobalImport}
-              disabled={globalImportLoading || (!globalImportTableName.trim() && globalImportFileType !== 'sql')}
-              style={{ background: 'var(--win-accent)', color: '#fff', border: 'none' }}
-            >
-              {globalImportLoading ? t('app.importProcessing') : t('app.importConfirm')}
-            </button>
-          </ModalFooter>
-        </Modal>
       )}
 
       {/* About Modal */}
@@ -2927,6 +2831,8 @@ export const App: React.FC = () => {
         isOpen={showWhatsNew}
         onClose={() => setShowWhatsNew(false)}
       />
+
+      {showBackupSchedules && <BackupSchedulesDialog onClose={() => setShowBackupSchedules(false)} />}
     </>
   );
 };
