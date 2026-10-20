@@ -53,7 +53,7 @@ bigdecimal = "0.4"
 # `v4` cho `Uuid::new_v4()`: conn_id do backend sinh (multi-connection-plan §4.3 — opaque, không
 # dẫn xuất từ config vì config mang secret). sqlx chỉ cần uuid để decode nên không bật feature này.
 uuid = { version = "1", features = ["v4"] }
-russh = "0.63.2"
+russh = "0.64.1"
 portable-pty = "0.9"
 zip = "8.6.0"
 # Incremental gzip for streamed exports (`export_sink.rs`). flate2 itself was already in the tree
