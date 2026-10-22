@@ -163,7 +163,9 @@ pub(crate) fn detect(path: &str) -> Result<Detected, String> {
             });
         }
         for i in 0..zip.len() {
-            let Some(entry) = zip.name_for_index(i) else {
+            // zip 9 decodes the name here and can fail on one it cannot decode; such an entry could
+            // not be opened by name later either, so it is skipped like a directory.
+            let Some(Ok(entry)) = zip.name_for_index(i) else {
                 continue;
             };
             if entry.ends_with('/') || entry.starts_with("__MACOSX/") {
