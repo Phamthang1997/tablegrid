@@ -693,6 +693,9 @@ const ja: typeof en = {
 
     rowAdded: '行を追加しました。値を入力して Ctrl+S で保存してください。',
     rowDuplicated: '行を複製しました。Ctrl+S で保存してください。',
+    pastedRows: '{{n}} 行を新しい行として貼り付けました。Ctrl+S で保存してください。',
+    pasteTooWide: 'クリップボードは {{width}} 列ですが、グリッドの表示は {{columns}} 列です。貼り付けていません。',
+    pasteTooMany: 'クリップボードに {{rows}} 行あります。一度に貼り付けられるのは {{limit}} 行までです。それ以上はインポートを使ってください。',
     errNoRowSelected: '先に行をクリックして選択してください。',
     discarded: '未保存の変更をすべて破棄しました。',
     errNoChanges: '保存する変更がありません。',

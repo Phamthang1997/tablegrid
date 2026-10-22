@@ -5,6 +5,7 @@ import { ColumnStatsDialog, TransposeDialog, ValueEditorDialog } from './GridToo
 import { VectorInspectorDialog, VectorSearchDialog } from './VectorDialogs';
 import { vectorKindOf } from '../utils/pgvector';
 import { resolveRowClick, resolveRowContextMenu } from '../utils/rowSelection';
+import { parseTsv, planPaste } from '../utils/clipboardTable';
 import { countKey, nextCountMode, seekColumn, seekViewKey } from '../utils/gridPaging';
 import { getCommitPreviewForKey, setCommitPreviewForKey } from '../utils/commitPreview';
 import { connKeyOfConn } from '../utils/safeMode';
@@ -155,6 +156,10 @@ interface FilterRow {
   operator: string;
   value: string;
 }
+
+/** Whether a keystroke or a paste belongs to a text field rather than to the grid. */
+const isTypingTarget = (el: Element | null): boolean =>
+  !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.getAttribute('contenteditable') === 'true');
 
 
 export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, initialViewMode = 'data', initialFilter, readOnly = false, onDirtyChange, tableSchema }) => {
@@ -563,7 +568,18 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
         return;
       }
 
-      // 3a. Copy the selected rows (Ctrl/Cmd + C)
+      // 3a. Select every row on the page (Ctrl/Cmd + A). Left to the browser it highlights the TEXT
+      // of the whole grid instead, and Ctrl+C then copies that highlight rather than the rows.
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'a') {
+        if (viewMode !== 'data' || editingCell || isTypingTarget(document.activeElement)) return;
+        e.preventDefault();
+        window.getSelection()?.removeAllRanges();
+        setSelectedRowIds(new Set(orderedRowKeys));
+        setAnchorRowId(orderedRowKeys[0] ?? null);
+        return;
+      }
+
+      // 3b. Copy the selected rows (Ctrl/Cmd + C)
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'c') {
         const el = document.activeElement;
         const inTextField = el && (
@@ -621,6 +637,32 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     const listener = (e: KeyboardEvent) => keyHandlerRef.current(e);
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
+  }, []);
+
+  // Ctrl/Cmd + V: the clipboard's rows become new rows, waiting for Ctrl+S like any other insert.
+  // Read from the `paste` event rather than `navigator.clipboard.readText()`, which needs a
+  // permission the webview may prompt for; the event carries the text with no prompt at all.
+  const pasteHandlerRef = useRef<(e: ClipboardEvent) => void>(() => { });
+
+  pasteHandlerRef.current = (e: ClipboardEvent) => {
+    // A cell editor, the search box or a dialog's field owns the paste.
+    if (viewMode !== 'data' || editingCell || documentViewerIndex !== null) return;
+    if (isTypingTarget(document.activeElement)) return;
+    const text = e.clipboardData?.getData('text/plain') ?? '';
+    if (text === '') return;
+    e.preventDefault();
+    if (readOnly) {
+      setErrorMsg(t('dataGrid.errReadOnlyAdd'));
+      setTimeout(() => setErrorMsg(null), 3000);
+      return;
+    }
+    pasteRowsAsInserts(text);
+  };
+
+  useEffect(() => {
+    const listener = (e: ClipboardEvent) => pasteHandlerRef.current(e);
+    window.addEventListener('paste', listener);
+    return () => window.removeEventListener('paste', listener);
   }, []);
 
   // Fetch Data Row
@@ -930,6 +972,45 @@ export const DataGrid: React.FC<DataGridProps> = ({ connId, tableName, dbType, i
     setSelectedRowId(tempId);
     setSuccessMsg(t('dataGrid.rowDuplicated'));
     setTimeout(() => setSuccessMsg(null), 3000);
+  };
+
+  /**
+   * Clipboard rows (TSV, from this grid or a spreadsheet) appended as new rows — the same pending
+   * inserts "Add row" makes, so nothing reaches the database before Ctrl+S.
+   *
+   * A column starts from the value "Add row" would give it and takes the pasted value on top. An
+   * auto-increment key and a generated column never take one: rows copied from this same table
+   * carry their ids, and pasting them back is a duplicate, not a key collision. An empty cell is
+   * NULL where the column allows it, since that is what the grid's own copy wrote for a NULL.
+   */
+  const pasteRowsAsInserts = (text: string) => {
+    const plan = planPaste(parseTsv(text), activeColumns.map(c => c.name));
+    if (!plan.ok) {
+      if (plan.reason === 'empty') return;
+      setErrorMsg(plan.reason === 'tooWide'
+        ? t('dataGrid.pasteTooWide', { width: plan.width, columns: plan.columns })
+        : t('dataGrid.pasteTooMany', { rows: plan.rows, limit: plan.limit }));
+      setTimeout(() => setErrorMsg(null), 5000);
+      return;
+    }
+
+    const added = plan.rows.map((pasted, i) => {
+      const row: any = { __tempId: `temp_${nextTempId + i}` };
+      columns.forEach(col => {
+        row[col.name] = col.name === primaryKey ? '' : (col.defaultValue || '');
+        if (!(col.name in pasted) || col.generated || (col.isPrimaryKey && col.autoIncrement)) return;
+        const value = pasted[col.name];
+        if (value !== '') row[col.name] = value;
+        else if (col.nullable) row[col.name] = null;
+      });
+      return row;
+    });
+    setNextTempId(n => n + added.length);
+    setInserts(prev => [...prev, ...added]);
+    setSelectedRowIds(new Set(added.map(r => r.__tempId)));
+    setAnchorRowId(added[0].__tempId);
+    setSuccessMsg(t('dataGrid.pastedRows', { n: added.length }));
+    setTimeout(() => setSuccessMsg(null), 4000);
   };
 
   // Copy helpers

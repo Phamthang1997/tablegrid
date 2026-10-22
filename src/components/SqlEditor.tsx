@@ -2548,6 +2548,22 @@ export const SqlEditor: React.FC<SqlEditorProps> = ({
       openQuickSearch(paneId);
       return;
     }
+    // Ctrl+A selects every row the grid shows (quick search applied), the table grid's binding. Left
+    // to the browser it highlights the grid's TEXT, and Ctrl+C below then yields to that highlight.
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'a') {
+      const el = document.activeElement;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.getAttribute('contenteditable') === 'true')) return;
+      if (editingCell) return;
+      e.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      const all = paneId === 1 ? visibleResults1 : visibleResults2;
+      (paneId === 1 ? setRowSel1 : setRowSel2)({
+        rows: new Set(all),
+        anchor: all[0] ?? null,
+        of: paneId === 1 ? results : results2,
+      });
+      return;
+    }
     if (e.key === 'Escape') {
       if (rowSelectionOf(paneId).rows.size === 0) return;
       e.preventDefault();
