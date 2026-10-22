@@ -704,6 +704,9 @@ const en = {
 
     rowAdded: 'Row added. Fill in the values, then press Ctrl+S to save.',
     rowDuplicated: 'Row duplicated. Press Ctrl+S to save.',
+    pastedRows: '{{n}} rows pasted as new rows. Press Ctrl+S to save.',
+    pasteTooWide: 'The clipboard has {{width}} columns but the grid shows {{columns}}. Nothing was pasted.',
+    pasteTooMany: 'The clipboard has {{rows}} rows. Paste at most {{limit}} at a time, or use Import.',
     errNoRowSelected: 'Click a row to select it first.',
     discarded: 'All draft changes discarded.',
     errNoChanges: 'There is nothing to save.',

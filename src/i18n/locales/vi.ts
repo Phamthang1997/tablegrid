@@ -696,6 +696,9 @@ const vi: typeof en = {
 
     rowAdded: 'Đã thêm dòng mới. Nhập giá trị rồi nhấn Ctrl+S để lưu.',
     rowDuplicated: 'Đã nhân bản dòng. Nhấn Ctrl+S để lưu.',
+    pastedRows: 'Đã dán {{n}} dòng thành dòng mới. Nhấn Ctrl+S để lưu.',
+    pasteTooWide: 'Clipboard có {{width}} cột nhưng grid đang hiện {{columns}} cột. Chưa dán gì.',
+    pasteTooMany: 'Clipboard có {{rows}} dòng. Mỗi lần dán tối đa {{limit}} dòng, nhiều hơn thì dùng Import.',
     errNoRowSelected: 'Vui lòng click chọn một dòng để xóa.',
     discarded: 'Đã hủy bỏ tất cả thay đổi nháp.',
     errNoChanges: 'Không có thay đổi nào cần lưu.',
