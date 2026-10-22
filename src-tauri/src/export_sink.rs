@@ -30,7 +30,8 @@ use serde_json::{Value, json};
 
 enum Writer {
     Plain(BufWriter<File>),
-    Gzip(GzEncoder<BufWriter<File>>),
+    // Boxed: the encoder carries the whole deflate state, which would make every Writer that size.
+    Gzip(Box<GzEncoder<BufWriter<File>>>),
 }
 
 impl Writer {
@@ -45,7 +46,7 @@ impl Writer {
     fn finish(self) -> std::io::Result<()> {
         match self {
             Writer::Plain(mut w) => w.flush(),
-            Writer::Gzip(w) => w.finish()?.flush(),
+            Writer::Gzip(w) => (*w).finish()?.flush(),
         }
     }
 }
@@ -104,7 +105,7 @@ pub async fn export_open(path: String, gzip: bool) -> Result<Value, String> {
         // 1MB of buffering: the frontend already batches its chunks, this only evens out the writes.
         let buffered = BufWriter::with_capacity(1 << 20, file);
         let writer = if gzip {
-            Writer::Gzip(GzEncoder::new(buffered, Compression::default()))
+            Writer::Gzip(Box::new(GzEncoder::new(buffered, Compression::default())))
         } else {
             Writer::Plain(buffered)
         };
