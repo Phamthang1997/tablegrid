@@ -28,10 +28,10 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 # refused with a message instead of fetching httpfs from the internet. The first build compiles
 # DuckDB's C++ (~7 minutes on the dev machine); the target dir must stay SHORT, since MSVC fails
 # on object paths past 260 characters (it did, from a deep temp directory).
-# The crate's version spells the ENGINE's: 1.10506 is DuckDB 1.5.6 and 1.20000 is DuckDB 2.0, which a
-# plain "1.10505" would let `cargo update` pull in as if it were a patch. The upper bound keeps an
-# engine major upgrade a deliberate change.
-duckdb = { version = ">=1.10505, <1.20000", features = ["bundled", "parquet", "json"] }
+# The crate's version spells the ENGINE's: 1.10506 is DuckDB 1.5.6 and 1.20000 is DuckDB 2.0, so a
+# plain caret requirement lets `cargo update` pull in an engine major as if it were a patch. The
+# upper bound (DuckDB 3.0) keeps that a deliberate change.
+duckdb = { version = ">=1.20000, <1.30000", features = ["bundled", "parquet", "json"] }
 sqlx = { version = "0.9.0", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
